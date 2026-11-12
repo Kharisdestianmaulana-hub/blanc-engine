@@ -1,9 +1,10 @@
 use std::path::PathBuf;
-use iced::widget::{button, column, container, image, row, scrollable, stack, text, text_editor, text_input, Space};
+use iced::widget::{button, canvas, column, container, image, row, scrollable, stack, text, text_editor, text_input, Space};
 use iced::{Alignment, Element, Length};
 
 use blanc_core::asset::{Asset, AssetCategory};
 use blanc_core::config::{AspectScalingMode, SystemScreensConfig};
+use blanc_core::flow::{FlowNodeType, StoryFlowGraph};
 use blanc_core::project::Project;
 use blanc_core::scene::{ActionBlock, CharacterPosition, ChoiceLayoutPosition, ChoiceOption as SceneChoiceOption, Scene};
 use blanc_core::story::{Story, StoryElement};
@@ -12,8 +13,9 @@ use blanc_core::theme::spacing::*;
 use blanc_core::theme::typography::*;
 
 use crate::icons::*;
+use crate::screens::flow_canvas::{FlowCanvasAction, FlowCanvasState, FlowCanvasWidget};
 use crate::theme::{
-    asset_card_button_style, badge_container_style, callout_container_style, card_container_style,
+    asset_card_button_style, badge_container_style, callout_container_style, canvas_container_style, card_container_style,
     code_container_style, danger_icon_button_style, icon_button_style, input_field_style,
     modal_backdrop_style, primary_button_style, project_card_style, secondary_button_style,
     sidebar_button_style, sidebar_container_style, subtle_button_style, text_editor_style,
@@ -115,6 +117,18 @@ pub enum DashboardMessage {
     UpdateTextSpeed(f32),
     UpdateAutoForwardDelay(f32),
     SaveSystemSettings,
+
+    // Story Flow messages
+    FlowAction(FlowCanvasAction),
+    FlowAddScene(String),
+    FlowRemoveNode(String),
+    FlowAutoLayout,
+    FlowResetView,
+    FlowZoomIn,
+    FlowZoomOut,
+    FlowSearchChanged(String),
+    DismissFlowStatusMessage,
+    SaveStoryFlow,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -123,6 +137,7 @@ pub enum WorkflowTab {
     Assets,
     Story,
     SceneEditor,
+    StoryFlow,
     Settings,
 }
 
@@ -133,6 +148,7 @@ impl WorkflowTab {
             Self::Assets => "Asset Manager",
             Self::Story => "Story Setup",
             Self::SceneEditor => "Scene Editor",
+            Self::StoryFlow => "Story Flow",
             Self::Settings => "Settings",
         }
     }
@@ -164,6 +180,15 @@ pub struct DashboardState {
     // Settings state
     pub system_screens_config: SystemScreensConfig,
     pub settings_status_message: Option<String>,
+
+    // Story Flow state
+    pub flow_graph: StoryFlowGraph,
+    #[allow(dead_code)]
+    pub flow_canvas_state: FlowCanvasState,
+    pub flow_selected_node_id: Option<String>,
+    pub flow_search_query: String,
+    pub flow_status_message: Option<String>,
+    pub all_scenes: Vec<Scene>,
 }
 
 impl DashboardState {
@@ -269,6 +294,24 @@ impl DashboardState {
         let system_screens_config = SystemScreensConfig::load_from_file(&config_path)
             .unwrap_or_default();
 
+        let flow_graph_path = project_dir.join("Story/story_flow.bgraph");
+        let flow_graph = if flow_graph_path.exists() {
+            StoryFlowGraph::load_from_file(&flow_graph_path)
+                .unwrap_or_else(|_| StoryFlowGraph::starter_graph(scenes.first().map(|s| s.as_str())))
+        } else {
+            let starter = StoryFlowGraph::starter_graph(scenes.first().map(|s| s.as_str()));
+            let _ = starter.save_to_file(&flow_graph_path);
+            starter
+        };
+
+        let mut all_scenes = Vec::new();
+        for scene_name in &scenes {
+            let path = scenes_dir.join(format!("{}.bscene", scene_name));
+            if let Ok(loaded) = Scene::load_from_file(&path) {
+                all_scenes.push(loaded);
+            }
+        }
+
         Self {
             active_tab: WorkflowTab::Dashboard,
             selected_category: Some(AssetCategory::Background),
@@ -288,6 +331,13 @@ impl DashboardState {
             asset_picker_modal: None,
             system_screens_config,
             settings_status_message: None,
+
+            flow_graph,
+            flow_canvas_state: FlowCanvasState::default(),
+            flow_selected_node_id: None,
+            flow_search_query: String::new(),
+            flow_status_message: None,
+            all_scenes,
         }
     }
 
@@ -295,12 +345,16 @@ impl DashboardState {
         let scenes_dir = project_dir.join("Scenes").join(&self.story_chapter_name);
         let _ = std::fs::create_dir_all(&scenes_dir);
         let mut scenes = Vec::new();
+        let mut all_scenes = Vec::new();
         if let Ok(entries) = std::fs::read_dir(&scenes_dir) {
             for entry in entries.flatten() {
                 let path = entry.path();
                 if path.is_file() && path.extension().and_then(|s| s.to_str()) == Some("bscene") {
                     if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
                         scenes.push(stem.to_string());
+                        if let Ok(loaded) = Scene::load_from_file(&path) {
+                            all_scenes.push(loaded);
+                        }
                     }
                 }
             }
@@ -310,6 +364,7 @@ impl DashboardState {
             scenes.push("01_opening".to_string());
         }
         self.scenes_list = scenes;
+        self.all_scenes = all_scenes;
         if self.selected_scene_index >= self.scenes_list.len() {
             self.selected_scene_index = 0;
         }
@@ -340,6 +395,13 @@ impl Default for DashboardState {
             asset_picker_modal: None,
             system_screens_config: SystemScreensConfig::default(),
             settings_status_message: None,
+
+            flow_graph: StoryFlowGraph::default(),
+            flow_canvas_state: FlowCanvasState::default(),
+            flow_selected_node_id: None,
+            flow_search_query: String::new(),
+            flow_status_message: None,
+            all_scenes: vec![Self::create_starter_scene()],
         }
     }
 }
@@ -354,6 +416,7 @@ impl DashboardState {
             WorkflowTab::Assets => self.view_assets_content(project, project_dir),
             WorkflowTab::Story => self.view_story_content(project, project_dir),
             WorkflowTab::SceneEditor => self.view_scene_editor_content(project, project_dir),
+            WorkflowTab::StoryFlow => self.view_story_flow_content(project, project_dir),
             WorkflowTab::Settings => self.view_settings_content(project, project_dir),
         };
 
@@ -444,6 +507,7 @@ impl DashboardState {
             WorkflowTab::Assets,
             WorkflowTab::Story,
             WorkflowTab::SceneEditor,
+            WorkflowTab::StoryFlow,
             WorkflowTab::Settings,
         ];
 
@@ -2048,6 +2112,319 @@ impl DashboardState {
             .center_x(Length::Fill)
             .center_y(Length::Fill)
             .style(modal_backdrop_style)
+            .into()
+    }
+
+    // ==========================================
+    // TAB 4: STORY FLOW (VISUAL NODE GRAPH)
+    // ==========================================
+    fn view_story_flow_content<'a>(&'a self, _project: &'a Project, _project_dir: &'a PathBuf) -> Element<'a, DashboardMessage> {
+        // --- 1. Left Sidebar (Controls & Available Scenes) ---
+        let title_row = row![
+            icon_branch(),
+            column![
+                text("Story Flow Map").size(HEADING_SM),
+                text("Visual Narrative Graph & Branching")
+                    .size(LABEL_SM)
+                    .color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b)),
+            ]
+            .spacing(2.0),
+        ]
+        .spacing(SPACE_3)
+        .align_y(Alignment::Center);
+
+        // Toolbar
+        let btn_zoom_in = button(text("+").size(LABEL_MD))
+            .padding([SPACE_1, SPACE_3])
+            .style(subtle_button_style)
+            .on_press(DashboardMessage::FlowZoomIn);
+
+        let btn_zoom_out = button(text("-").size(LABEL_MD))
+            .padding([SPACE_1, SPACE_3])
+            .style(subtle_button_style)
+            .on_press(DashboardMessage::FlowZoomOut);
+
+        let btn_reset_view = button(text("Reset View").size(LABEL_SM))
+            .padding([SPACE_1, SPACE_3])
+            .style(subtle_button_style)
+            .on_press(DashboardMessage::FlowResetView);
+
+        let btn_auto_layout = button(text("Auto Align").size(LABEL_SM))
+            .padding([SPACE_1, SPACE_3])
+            .style(subtle_button_style)
+            .on_press(DashboardMessage::FlowAutoLayout);
+
+        let btn_save = button(
+            row![icon_save(), text("Save Flow").size(LABEL_SM)]
+                .spacing(SPACE_1)
+                .align_y(Alignment::Center),
+        )
+        .padding([SPACE_1, SPACE_3])
+        .style(primary_button_style)
+        .on_press(DashboardMessage::SaveStoryFlow);
+
+        let controls_row = row![
+            btn_zoom_in,
+            btn_zoom_out,
+            btn_reset_view,
+            btn_auto_layout,
+            Space::with_width(Length::Fill),
+            btn_save,
+        ]
+        .spacing(SPACE_2)
+        .align_y(Alignment::Center);
+
+        // Summary Card
+        let total_nodes = self.flow_graph.nodes.len();
+        let total_conns = self.flow_graph.connections.len();
+        let scene_nodes_count = self
+            .flow_graph
+            .nodes
+            .iter()
+            .filter(|n| matches!(n.node_type, FlowNodeType::Scene { .. }))
+            .count();
+        let all_connected = self.flow_graph.nodes.iter().all(|n| match &n.node_type {
+            FlowNodeType::Scene { .. } => self
+                .flow_graph
+                .connections
+                .iter()
+                .any(|c| c.from_node_id == n.id),
+            _ => true,
+        });
+
+        let status_badge = if all_connected {
+            container(
+                row![
+                    icon_check(),
+                    text("All Paths Connected")
+                        .size(LABEL_SM)
+                        .color(iced::Color::from_rgb8(
+                            STATUS_SUCCESS.r,
+                            STATUS_SUCCESS.g,
+                            STATUS_SUCCESS.b,
+                        )),
+                ]
+                .spacing(SPACE_1)
+                .align_y(Alignment::Center),
+            )
+            .padding([2.0, 6.0])
+            .style(code_container_style)
+        } else {
+            container(
+                text("⚠ Unconnected Path(s)")
+                    .size(LABEL_SM)
+                    .color(iced::Color::from_rgb8(
+                        STATUS_WARNING.r,
+                        STATUS_WARNING.g,
+                        STATUS_WARNING.b,
+                    )),
+            )
+            .padding([2.0, 6.0])
+            .style(code_container_style)
+        };
+
+        let summary_card = container(
+            column![row![
+                text(format!(
+                    "{} Nodes ({} Scenes) · {} Wires",
+                    total_nodes, scene_nodes_count, total_conns
+                ))
+                .size(LABEL_SM),
+                Space::with_width(Length::Fill),
+                status_badge,
+            ]
+            .align_y(Alignment::Center)]
+            .spacing(SPACE_2),
+        )
+        .padding(SPACE_3)
+        .width(Length::Fill)
+        .style(code_container_style);
+
+        // Available Scenes List
+        let search_input = text_input("Search scenes...", &self.flow_search_query)
+            .on_input(DashboardMessage::FlowSearchChanged)
+            .padding(SPACE_2)
+            .size(LABEL_SM)
+            .style(input_field_style);
+
+        let mut scenes_list_col = column![].spacing(SPACE_2).width(Length::Fill);
+
+        for scene_name in &self.scenes_list {
+            if !self.flow_search_query.is_empty()
+                && !scene_name
+                    .to_lowercase()
+                    .contains(&self.flow_search_query.to_lowercase())
+            {
+                continue;
+            }
+            let node_id = format!("scene_{}", scene_name);
+            let is_on_canvas = self.flow_graph.nodes.iter().any(|n| n.id == node_id);
+
+            let row_item = if is_on_canvas {
+                row![
+                    icon_film(),
+                    text(scene_name).size(BODY_SM),
+                    Space::with_width(Length::Fill),
+                    button(text("✕").size(LABEL_SM))
+                        .padding([2.0, 6.0])
+                        .style(danger_icon_button_style)
+                        .on_press(DashboardMessage::FlowRemoveNode(node_id)),
+                    container(
+                        text("In Flow")
+                            .size(LABEL_SM)
+                            .color(iced::Color::from_rgb8(
+                                STATUS_SUCCESS.r,
+                                STATUS_SUCCESS.g,
+                                STATUS_SUCCESS.b,
+                            )),
+                    )
+                    .padding([2.0, 6.0])
+                    .style(code_container_style),
+                ]
+                .spacing(SPACE_2)
+                .align_y(Alignment::Center)
+                .padding([SPACE_1, SPACE_2])
+            } else {
+                row![
+                    icon_film(),
+                    text(scene_name).size(BODY_SM),
+                    Space::with_width(Length::Fill),
+                    button(text("+ Add").size(LABEL_SM))
+                        .padding([2.0, 8.0])
+                        .style(primary_button_style)
+                        .on_press(DashboardMessage::FlowAddScene(scene_name.clone())),
+                ]
+                .spacing(SPACE_2)
+                .align_y(Alignment::Center)
+                .padding([SPACE_1, SPACE_2])
+            };
+
+            scenes_list_col = scenes_list_col.push(
+                container(row_item)
+                    .width(Length::Fill)
+                    .style(callout_container_style),
+            );
+        }
+
+        let scenes_scroll = scrollable(scenes_list_col)
+            .width(Length::Fill)
+            .height(Length::Fill);
+
+        // Canvas Tips card at bottom
+        let tips_card = container(
+            column![
+                text("Interaction Guide:")
+                    .size(LABEL_SM)
+                    .color(iced::Color::from_rgb8(
+                        TEXT_PRIMARY.r,
+                        TEXT_PRIMARY.g,
+                        TEXT_PRIMARY.b,
+                    )),
+                text("• Click & drag from pin to connect wires")
+                    .size(LABEL_SM)
+                    .color(iced::Color::from_rgb8(
+                        TEXT_MUTED.r,
+                        TEXT_MUTED.g,
+                        TEXT_MUTED.b,
+                    )),
+                text("• Double-click scene to open in Scene Editor")
+                    .size(LABEL_SM)
+                    .color(iced::Color::from_rgb8(
+                        TEXT_MUTED.r,
+                        TEXT_MUTED.g,
+                        TEXT_MUTED.b,
+                    )),
+                text("• Right-click or middle-click to pan canvas")
+                    .size(LABEL_SM)
+                    .color(iced::Color::from_rgb8(
+                        TEXT_MUTED.r,
+                        TEXT_MUTED.g,
+                        TEXT_MUTED.b,
+                    )),
+                text("• Mouse scroll to zoom in and out")
+                    .size(LABEL_SM)
+                    .color(iced::Color::from_rgb8(
+                        TEXT_MUTED.r,
+                        TEXT_MUTED.g,
+                        TEXT_MUTED.b,
+                    )),
+            ]
+            .spacing(SPACE_1),
+        )
+        .padding(SPACE_3)
+        .width(Length::Fill)
+        .style(code_container_style);
+
+        let mut sidebar = column![
+            title_row,
+            controls_row,
+            summary_card,
+            text("Available Scenes:")
+                .size(LABEL_SM)
+                .color(iced::Color::from_rgb8(
+                    TEXT_MUTED.r,
+                    TEXT_MUTED.g,
+                    TEXT_MUTED.b,
+                )),
+            search_input,
+            scenes_scroll,
+            tips_card,
+        ]
+        .spacing(SPACE_3)
+        .padding(SPACE_4)
+        .width(Length::Fixed(320.0))
+        .height(Length::Fill);
+
+        if let Some(msg) = &self.flow_status_message {
+            let dismiss_btn = button(icon_close())
+                .padding([2.0, 6.0])
+                .style(danger_icon_button_style)
+                .on_press(DashboardMessage::DismissFlowStatusMessage);
+
+            let banner = container(
+                row![
+                    icon_check(),
+                    text(msg).size(BODY_SM).color(iced::Color::from_rgb8(
+                        STATUS_SUCCESS.r,
+                        STATUS_SUCCESS.g,
+                        STATUS_SUCCESS.b,
+                    )),
+                    Space::with_width(Length::Fill),
+                    dismiss_btn,
+                ]
+                .spacing(SPACE_2)
+                .align_y(Alignment::Center),
+            )
+            .padding([SPACE_2, SPACE_4])
+            .style(callout_container_style);
+
+            sidebar = sidebar.push(banner);
+        }
+
+        let sidebar_container = container(sidebar)
+            .width(Length::Fixed(320.0))
+            .height(Length::Fill)
+            .style(sidebar_container_style);
+
+        // --- 2. Right Canvas Area ---
+        let canvas_widget = canvas(FlowCanvasWidget {
+            graph: &self.flow_graph,
+            scenes: &self.all_scenes,
+            selected_node_id: self.flow_selected_node_id.as_deref(),
+        })
+        .width(Length::Fill)
+        .height(Length::Fill);
+
+        let canvas_element: Element<'a, FlowCanvasAction> = canvas_widget.into();
+        let canvas_container = container(canvas_element.map(DashboardMessage::FlowAction))
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .style(canvas_container_style);
+
+        row![sidebar_container, canvas_container]
+            .spacing(0)
+            .width(Length::Fill)
+            .height(Length::Fill)
             .into()
     }
 

@@ -3,12 +3,13 @@ use std::process::Command;
 use iced::{Element, Task};
 
 use blanc_core::asset::AssetCategory;
+use blanc_core::flow::FlowNodeType;
 use blanc_core::project::Project;
 use blanc_core::scene::{ActionBlock, CharacterPosition, ChoiceOption as SceneChoiceOption, Scene};
 use blanc_core::story::{Chapter, Story, StoryElement};
 use crate::screens::{
-    AssetPickerModalState, AssetPickerTarget, DashboardMessage, DashboardState, WelcomeMessage, WelcomeState,
-    WorkflowTab, DEFAULT_SCRIPT_TEMPLATE,
+    AssetPickerModalState, AssetPickerTarget, DashboardMessage, DashboardState, FlowCanvasAction,
+    WelcomeMessage, WelcomeState, WorkflowTab, DEFAULT_SCRIPT_TEMPLATE,
 };
 
 #[derive(Debug, Clone)]
@@ -223,7 +224,7 @@ impl EditorApp {
                 dashboard.active_tab = tab;
                 dashboard.status_message = None;
                 dashboard.story_status_message = None;
-                if tab == WorkflowTab::SceneEditor {
+                if tab == WorkflowTab::SceneEditor || tab == WorkflowTab::StoryFlow {
                     dashboard.refresh_scenes(project_dir);
                     if let Some(scene_name) = dashboard.scenes_list.get(dashboard.selected_scene_index) {
                         let scene_file = project_dir
@@ -839,6 +840,228 @@ impl EditorApp {
                     }
                     Err(err) => {
                         dashboard.settings_status_message = Some(format!("Failed to save settings: {}", err));
+                    }
+                }
+            }
+            DashboardMessage::FlowAction(action) => {
+                match action {
+                    FlowCanvasAction::SelectNode(node_id) => {
+                        dashboard.flow_selected_node_id = Some(node_id);
+                    }
+                    FlowCanvasAction::ClearSelection => {
+                        dashboard.flow_selected_node_id = None;
+                    }
+                    FlowCanvasAction::OpenSceneInEditor(scene_name) => {
+                        if let Some(idx) = dashboard.scenes_list.iter().position(|s| s == &scene_name) {
+                            Self::auto_save_current_scene(dashboard, project_dir);
+                            dashboard.selected_scene_index = idx;
+                            let scene_file = project_dir
+                                .join("Scenes")
+                                .join(&dashboard.story_chapter_name)
+                                .join(format!("{}.bscene", scene_name));
+                            if let Ok(loaded) = Scene::load_from_file(&scene_file) {
+                                dashboard.current_scene = Some(loaded);
+                            }
+                            dashboard.active_tab = WorkflowTab::SceneEditor;
+                            dashboard.scene_status_message = Some(format!("Opened scene '{}'.", scene_name));
+                            return Task::perform(
+                                tokio::time::sleep(std::time::Duration::from_secs(3)),
+                                |_| AppMessage::Dashboard(DashboardMessage::DismissSceneStatusMessage),
+                            );
+                        }
+                    }
+                    FlowCanvasAction::ConnectPins {
+                        from_node,
+                        from_pin,
+                        to_node,
+                        to_pin,
+                    } => {
+                        dashboard
+                            .flow_graph
+                            .connect_pins(&from_node, &from_pin, &to_node, &to_pin);
+
+                        // 1. If connecting from Main Menu: update starting_scene_id in settings
+                        if from_node == "system_main_menu" && from_pin == "new_game" {
+                            if let Some(sc_name) = to_node.strip_prefix("scene_") {
+                                dashboard.system_screens_config.starting_scene_id =
+                                    Some(sc_name.to_string());
+                                let config_dir = project_dir.join("Settings");
+                                let _ = std::fs::create_dir_all(&config_dir);
+                                let _ = dashboard
+                                    .system_screens_config
+                                    .save_to_file(&config_dir.join("system_screens.bconfig"));
+                            }
+                        }
+
+                        // 2. If connecting from a Scene's Choice option: update target_scene_id in the scene
+                        if let Some(from_sc) = from_node.strip_prefix("scene_") {
+                            if let Some(choice_idx_str) = from_pin.strip_prefix("choice_") {
+                                if let Ok(choice_idx) = choice_idx_str.parse::<usize>() {
+                                    let target_sc = to_node
+                                        .strip_prefix("scene_")
+                                        .unwrap_or(&to_node);
+                                    let sc_file = project_dir
+                                        .join("Scenes")
+                                        .join(&dashboard.story_chapter_name)
+                                        .join(format!("{}.bscene", from_sc));
+                                    if let Ok(mut sc) = Scene::load_from_file(&sc_file) {
+                                        for block in sc.blocks.iter_mut().rev() {
+                                            if let ActionBlock::Choice { options, .. } = block {
+                                                if let Some(opt) = options.get_mut(choice_idx) {
+                                                    opt.target_scene_id = target_sc.to_string();
+                                                }
+                                                break;
+                                            }
+                                        }
+                                        let _ = sc.save_to_file(&sc_file);
+                                        if let Some(cur) = &mut dashboard.current_scene {
+                                            if cur.name == from_sc {
+                                                *cur = sc.clone();
+                                            }
+                                        }
+                                        if let Some(cached) = dashboard
+                                            .all_scenes
+                                            .iter_mut()
+                                            .find(|s| s.name == from_sc)
+                                        {
+                                            *cached = sc;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // Auto-save flow graph
+                        let story_dir = project_dir.join("Story");
+                        let _ = std::fs::create_dir_all(&story_dir);
+                        let _ = dashboard
+                            .flow_graph
+                            .save_to_file(&story_dir.join("story_flow.bgraph"));
+                    }
+                    FlowCanvasAction::DisconnectPin { node_id, pin_id } => {
+                        dashboard.flow_graph.disconnect_pin(&node_id, &pin_id);
+                        let story_dir = project_dir.join("Story");
+                        let _ = std::fs::create_dir_all(&story_dir);
+                        let _ = dashboard
+                            .flow_graph
+                            .save_to_file(&story_dir.join("story_flow.bgraph"));
+                    }
+                    FlowCanvasAction::SetNodePosition { node_id, x, y } => {
+                        if let Some(node) = dashboard.flow_graph.find_node_mut(&node_id) {
+                            node.x = x;
+                            node.y = y;
+                        }
+                    }
+                    FlowCanvasAction::PanCanvas { dx, dy } => {
+                        dashboard.flow_graph.pan_x += dx;
+                        dashboard.flow_graph.pan_y += dy;
+                    }
+                    FlowCanvasAction::ZoomDelta(delta) => {
+                        dashboard.flow_graph.zoom =
+                            (dashboard.flow_graph.zoom + delta).clamp(0.4, 2.5);
+                    }
+                    FlowCanvasAction::RemoveNode(node_id) => {
+                        dashboard.flow_graph.remove_node(&node_id);
+                        let story_dir = project_dir.join("Story");
+                        let _ = std::fs::create_dir_all(&story_dir);
+                        let _ = dashboard
+                            .flow_graph
+                            .save_to_file(&story_dir.join("story_flow.bgraph"));
+                    }
+                }
+            }
+            DashboardMessage::FlowAddScene(scene_name) => {
+                let count = dashboard.flow_graph.nodes.len();
+                let new_x = 380.0 + (count as f32 % 3.0) * 260.0;
+                let new_y = 140.0 + (count as f32 / 3.0).floor() * 160.0;
+                if dashboard.flow_graph.add_scene_node(&scene_name, new_x, new_y) {
+                    let story_dir = project_dir.join("Story");
+                    let _ = std::fs::create_dir_all(&story_dir);
+                    let _ = dashboard
+                        .flow_graph
+                        .save_to_file(&story_dir.join("story_flow.bgraph"));
+                    dashboard.flow_status_message =
+                        Some(format!("Added scene '{}' to Flow canvas.", scene_name));
+                    return Task::perform(
+                        tokio::time::sleep(std::time::Duration::from_secs(3)),
+                        |_| AppMessage::Dashboard(DashboardMessage::DismissFlowStatusMessage),
+                    );
+                }
+            }
+            DashboardMessage::FlowRemoveNode(node_id) => {
+                dashboard.flow_graph.remove_node(&node_id);
+                let story_dir = project_dir.join("Story");
+                let _ = std::fs::create_dir_all(&story_dir);
+                let _ = dashboard
+                    .flow_graph
+                    .save_to_file(&story_dir.join("story_flow.bgraph"));
+            }
+            DashboardMessage::FlowAutoLayout => {
+                let mut cur_y = 120.0;
+                if let Some(mm) = dashboard.flow_graph.find_node_mut("system_main_menu") {
+                    mm.x = 60.0;
+                    mm.y = 180.0;
+                }
+                for node in dashboard.flow_graph.nodes.iter_mut() {
+                    if matches!(node.node_type, FlowNodeType::Scene { .. }) {
+                        node.x = 360.0;
+                        node.y = cur_y;
+                        cur_y += 160.0;
+                    }
+                }
+                for node in dashboard.flow_graph.nodes.iter_mut() {
+                    if matches!(node.node_type, FlowNodeType::Ending { .. }) {
+                        node.x = 720.0;
+                        node.y = 180.0;
+                    }
+                }
+                dashboard.flow_graph.pan_x = 0.0;
+                dashboard.flow_graph.pan_y = 0.0;
+                dashboard.flow_graph.zoom = 1.0;
+                let story_dir = project_dir.join("Story");
+                let _ = std::fs::create_dir_all(&story_dir);
+                let _ = dashboard
+                    .flow_graph
+                    .save_to_file(&story_dir.join("story_flow.bgraph"));
+                dashboard.flow_status_message = Some("Auto-aligned nodes on canvas.".to_string());
+                return Task::perform(
+                    tokio::time::sleep(std::time::Duration::from_secs(3)),
+                    |_| AppMessage::Dashboard(DashboardMessage::DismissFlowStatusMessage),
+                );
+            }
+            DashboardMessage::FlowResetView => {
+                dashboard.flow_graph.pan_x = 0.0;
+                dashboard.flow_graph.pan_y = 0.0;
+                dashboard.flow_graph.zoom = 1.0;
+            }
+            DashboardMessage::FlowZoomIn => {
+                dashboard.flow_graph.zoom = (dashboard.flow_graph.zoom + 0.15).min(2.5);
+            }
+            DashboardMessage::FlowZoomOut => {
+                dashboard.flow_graph.zoom = (dashboard.flow_graph.zoom - 0.15).max(0.4);
+            }
+            DashboardMessage::FlowSearchChanged(query) => {
+                dashboard.flow_search_query = query;
+            }
+            DashboardMessage::DismissFlowStatusMessage => {
+                dashboard.flow_status_message = None;
+            }
+            DashboardMessage::SaveStoryFlow => {
+                let story_dir = project_dir.join("Story");
+                let _ = std::fs::create_dir_all(&story_dir);
+                let graph_path = story_dir.join("story_flow.bgraph");
+                match dashboard.flow_graph.save_to_file(&graph_path) {
+                    Ok(_) => {
+                        dashboard.flow_status_message =
+                            Some("Saved story flow graph successfully.".to_string());
+                        return Task::perform(
+                            tokio::time::sleep(std::time::Duration::from_secs(3)),
+                            |_| AppMessage::Dashboard(DashboardMessage::DismissFlowStatusMessage),
+                        );
+                    }
+                    Err(err) => {
+                        dashboard.flow_status_message =
+                            Some(format!("Failed to save graph: {}", err));
                     }
                 }
             }

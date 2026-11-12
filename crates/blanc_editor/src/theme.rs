@@ -452,3 +452,16 @@ pub fn asset_card_button_style(is_selected: bool) -> impl Fn(&iced::Theme, butto
         }
     }
 }
+
+pub fn canvas_container_style(theme: &iced::Theme) -> container::Style {
+    let _ = theme;
+    container::Style {
+        background: Some(Background::Color(to_iced_color(BACKGROUND_PRIMARY, 1.0))),
+        border: Border {
+            radius: Radius::from(0.0),
+            width: 1.0,
+            color: to_iced_color(BORDER_DEFAULT, 0.7),
+        },
+        ..Default::default()
+    }
+}

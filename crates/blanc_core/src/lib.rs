@@ -5,6 +5,7 @@
 
 pub mod asset;
 pub mod config;
+pub mod flow;
 pub mod project;
 pub mod scene;
 pub mod story;
@@ -12,6 +13,7 @@ pub mod theme;
 
 pub use asset::{Asset, AssetCategory, AssetRegistry};
 pub use config::SystemScreensConfig;
+pub use flow::{FlowConnection, FlowNode, FlowNodeType, FlowPin, StoryFlowGraph};
 pub use project::Project;
 pub use scene::{ActionBlock, Scene, SceneNavigation};
 pub use story::Story;

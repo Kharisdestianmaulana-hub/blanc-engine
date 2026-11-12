@@ -1,0 +1,655 @@
+use std::time::Instant;
+use iced::mouse::{self, Cursor};
+use iced::widget::canvas::{self, Cache, Event, Geometry, Path, Program, Stroke, Text};
+use iced::{Color, Point, Rectangle, Renderer, Size, Theme};
+
+use blanc_core::flow::{FlowNode, FlowNodeType, StoryFlowGraph};
+use blanc_core::scene::ActionBlock;
+
+#[derive(Debug, Default)]
+pub struct FlowCanvasState {
+    pub cache: Cache,
+    pub is_panning: bool,
+    pub pan_start: Option<Point>,
+    pub dragging_node_id: Option<String>,
+    pub drag_offset_x: f32,
+    pub drag_offset_y: f32,
+    pub connecting_pin: Option<(String, String)>, // (node_id, pin_id)
+    pub current_mouse_pos: Option<Point>,
+    pub last_click_time: Option<Instant>,
+    pub last_click_node_id: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub enum FlowCanvasAction {
+    SelectNode(String),
+    OpenSceneInEditor(String),
+    ConnectPins {
+        from_node: String,
+        from_pin: String,
+        to_node: String,
+        to_pin: String,
+    },
+    #[allow(dead_code)]
+    DisconnectPin {
+        node_id: String,
+        pin_id: String,
+    },
+    SetNodePosition {
+        node_id: String,
+        x: f32,
+        y: f32,
+    },
+    PanCanvas {
+        dx: f32,
+        dy: f32,
+    },
+    ZoomDelta(f32),
+    RemoveNode(String),
+    ClearSelection,
+}
+
+pub struct FlowCanvasWidget<'a> {
+    pub graph: &'a StoryFlowGraph,
+    pub scenes: &'a [blanc_core::scene::Scene],
+    pub selected_node_id: Option<&'a str>,
+}
+
+impl<'a> Program<FlowCanvasAction, Theme, Renderer> for FlowCanvasWidget<'a> {
+    type State = FlowCanvasState;
+
+    fn update(
+        &self,
+        state: &mut Self::State,
+        event: Event,
+        bounds: Rectangle,
+        cursor: Cursor,
+    ) -> (canvas::event::Status, Option<FlowCanvasAction>) {
+        let cursor_position = match cursor.position_in(bounds) {
+            Some(pos) => pos,
+            None => {
+                if let Event::Mouse(mouse::Event::ButtonReleased(_)) = event {
+                    state.is_panning = false;
+                    state.dragging_node_id = None;
+                    state.connecting_pin = None;
+                    state.cache.clear();
+                }
+                return (canvas::event::Status::Ignored, None);
+            }
+        };
+
+        state.current_mouse_pos = Some(cursor_position);
+
+        match event {
+            Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
+                let zoom = self.graph.zoom;
+                let pan_x = self.graph.pan_x;
+                let pan_y = self.graph.pan_y;
+
+                // 1. Check if clicked on a Pin
+                for node in &self.graph.nodes {
+                    let nx = node.x * zoom + pan_x;
+                    let ny = node.y * zoom + pan_y;
+                    let nw = node.width * zoom;
+
+                    // Output pin(s)
+                    let output_pins = self.get_node_output_pins(node);
+                    for (p_idx, (pin_id, _label)) in output_pins.iter().enumerate() {
+                        let pin_x = nx + nw;
+                        let pin_y = ny + (45.0 + p_idx as f32 * 26.0) * zoom;
+                        let dist = ((cursor_position.x - pin_x).powi(2) + (cursor_position.y - pin_y).powi(2)).sqrt();
+                        if dist <= 12.0 * zoom {
+                            state.connecting_pin = Some((node.id.clone(), pin_id.clone()));
+                            state.cache.clear();
+                            return (canvas::event::Status::Captured, None);
+                        }
+                    }
+
+                    // Input pin
+                    if self.node_has_input_pin(node) {
+                        let pin_x = nx;
+                        let pin_y = ny + 45.0 * zoom;
+                        let dist = ((cursor_position.x - pin_x).powi(2) + (cursor_position.y - pin_y).powi(2)).sqrt();
+                        if dist <= 12.0 * zoom {
+                            if let Some((from_node, from_pin)) = state.connecting_pin.take() {
+                                if from_node != node.id {
+                                    state.cache.clear();
+                                    return (
+                                        canvas::event::Status::Captured,
+                                        Some(FlowCanvasAction::ConnectPins {
+                                            from_node,
+                                            from_pin,
+                                            to_node: node.id.clone(),
+                                            to_pin: "in".to_string(),
+                                        }),
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // 2. Check if clicked on Delete button of a node
+                for node in &self.graph.nodes {
+                    if node.id != "system_main_menu" {
+                        let nx = node.x * zoom + pan_x;
+                        let ny = node.y * zoom + pan_y;
+                        let nw = node.width * zoom;
+                        let del_btn_x = nx + nw - 20.0 * zoom;
+                        let del_btn_y = ny + 16.0 * zoom;
+                        let dist = ((cursor_position.x - del_btn_x).powi(2) + (cursor_position.y - del_btn_y).powi(2)).sqrt();
+                        if dist <= 14.0 * zoom {
+                            state.cache.clear();
+                            return (
+                                canvas::event::Status::Captured,
+                                Some(FlowCanvasAction::RemoveNode(node.id.clone())),
+                            );
+                        }
+                    }
+                }
+
+                // 3. Check if clicked on a Node header or body
+                for node in self.graph.nodes.iter().rev() {
+                    let nx = node.x * zoom + pan_x;
+                    let ny = node.y * zoom + pan_y;
+                    let nw = node.width * zoom;
+                    let nh = self.get_node_height(node) * zoom;
+
+                    if cursor_position.x >= nx
+                        && cursor_position.x <= nx + nw
+                        && cursor_position.y >= ny
+                        && cursor_position.y <= ny + nh
+                    {
+                        // Check double click (within 350ms)
+                        let now = Instant::now();
+                        let is_double_click = if let (Some(last_id), Some(last_time)) = (&state.last_click_node_id, state.last_click_time) {
+                            last_id == &node.id && now.duration_since(last_time).as_millis() < 350
+                        } else {
+                            false
+                        };
+
+                        state.last_click_time = Some(now);
+                        state.last_click_node_id = Some(node.id.clone());
+
+                        if is_double_click {
+                            if let FlowNodeType::Scene { scene_name } = &node.node_type {
+                                state.cache.clear();
+                                return (
+                                    canvas::event::Status::Captured,
+                                    Some(FlowCanvasAction::OpenSceneInEditor(scene_name.clone())),
+                                );
+                            }
+                        }
+
+                        // Start dragging
+                        state.dragging_node_id = Some(node.id.clone());
+                        state.drag_offset_x = (cursor_position.x - pan_x) / zoom - node.x;
+                        state.drag_offset_y = (cursor_position.y - pan_y) / zoom - node.y;
+                        state.cache.clear();
+                        return (
+                            canvas::event::Status::Captured,
+                            Some(FlowCanvasAction::SelectNode(node.id.clone())),
+                        );
+                    }
+                }
+
+                // Clicked on empty canvas
+                state.connecting_pin = None;
+                state.cache.clear();
+                (canvas::event::Status::Captured, Some(FlowCanvasAction::ClearSelection))
+            }
+
+            Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Right | mouse::Button::Middle)) => {
+                state.is_panning = true;
+                state.pan_start = Some(cursor_position);
+                state.cache.clear();
+                (canvas::event::Status::Captured, None)
+            }
+
+            Event::Mouse(mouse::Event::CursorMoved { position }) => {
+                let mut action = None;
+                if let Some(pos) = cursor.position_in(bounds) {
+                    if let Some(node_id) = &state.dragging_node_id {
+                        let zoom = self.graph.zoom;
+                        let pan_x = self.graph.pan_x;
+                        let pan_y = self.graph.pan_y;
+                        let new_x = (pos.x - pan_x) / zoom - state.drag_offset_x;
+                        let new_y = (pos.y - pan_y) / zoom - state.drag_offset_y;
+                        action = Some(FlowCanvasAction::SetNodePosition {
+                            node_id: node_id.clone(),
+                            x: new_x.max(0.0),
+                            y: new_y.max(0.0),
+                        });
+                        state.cache.clear();
+                    } else if state.is_panning {
+                        if let Some(start) = state.pan_start {
+                            let dx = pos.x - start.x;
+                            let dy = pos.y - start.y;
+                            state.pan_start = Some(pos);
+                            action = Some(FlowCanvasAction::PanCanvas { dx, dy });
+                            state.cache.clear();
+                        }
+                    } else if state.connecting_pin.is_some() {
+                        state.cache.clear();
+                    }
+                }
+                let _ = position;
+                (canvas::event::Status::Captured, action)
+            }
+
+            Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => {
+                let mut action = None;
+                if let Some((from_node, from_pin)) = state.connecting_pin.take() {
+                    let zoom = self.graph.zoom;
+                    let pan_x = self.graph.pan_x;
+                    let pan_y = self.graph.pan_y;
+
+                    for node in &self.graph.nodes {
+                        if self.node_has_input_pin(node) && node.id != from_node {
+                            let pin_x = node.x * zoom + pan_x;
+                            let pin_y = (node.y + 45.0) * zoom + pan_y;
+                            let dist = ((cursor_position.x - pin_x).powi(2) + (cursor_position.y - pin_y).powi(2)).sqrt();
+                            if dist <= 20.0 * zoom {
+                                action = Some(FlowCanvasAction::ConnectPins {
+                                    from_node: from_node.clone(),
+                                    from_pin: from_pin.clone(),
+                                    to_node: node.id.clone(),
+                                    to_pin: "in".to_string(),
+                                });
+                                break;
+                            }
+                        }
+                    }
+                }
+                state.dragging_node_id = None;
+                state.cache.clear();
+                (canvas::event::Status::Captured, action)
+            }
+
+            Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Right | mouse::Button::Middle)) => {
+                state.is_panning = false;
+                state.pan_start = None;
+                state.cache.clear();
+                (canvas::event::Status::Captured, None)
+            }
+
+            Event::Mouse(mouse::Event::WheelScrolled { delta }) => {
+                let factor = match delta {
+                    mouse::ScrollDelta::Lines { y, .. } => y * 0.1,
+                    mouse::ScrollDelta::Pixels { y, .. } => y * 0.005,
+                };
+                state.cache.clear();
+                (canvas::event::Status::Captured, Some(FlowCanvasAction::ZoomDelta(factor)))
+            }
+
+            _ => (canvas::event::Status::Ignored, None),
+        }
+    }
+
+    fn draw(
+        &self,
+        state: &Self::State,
+        renderer: &Renderer,
+        _theme: &Theme,
+        bounds: Rectangle,
+        _cursor: Cursor,
+    ) -> Vec<Geometry> {
+        let geom = state.cache.draw(renderer, bounds.size(), |frame| {
+            let zoom = self.graph.zoom;
+            let pan_x = self.graph.pan_x;
+            let pan_y = self.graph.pan_y;
+
+            // 1. Background
+            frame.fill_rectangle(
+                Point::ORIGIN,
+                bounds.size(),
+                Color::from_rgb8(15, 23, 42),
+            );
+
+            // 2. Grid dots
+            let grid_step = (40.0 * zoom).max(15.0);
+            let start_x = (pan_x % grid_step) - grid_step;
+            let start_y = (pan_y % grid_step) - grid_step;
+            let mut gx = start_x;
+            while gx < bounds.width + grid_step {
+                let mut gy = start_y;
+                while gy < bounds.height + grid_step {
+                    frame.fill_rectangle(
+                        Point::new(gx, gy),
+                        Size::new(2.0, 2.0),
+                        Color::from_rgba8(71, 85, 105, 0.4),
+                    );
+                    gy += grid_step;
+                }
+                gx += grid_step;
+            }
+
+            // 3. Draw Connections (Bézier Splines)
+            for conn in &self.graph.connections {
+                if let (Some(from_pos), Some(to_pos)) = (
+                    self.get_pin_screen_pos(&conn.from_node_id, &conn.from_pin_id, true),
+                    self.get_pin_screen_pos(&conn.to_node_id, &conn.to_pin_id, false),
+                ) {
+                    let dx = ((to_pos.x - from_pos.x).abs() * 0.55).max(40.0 * zoom);
+                    let cp1 = Point::new(from_pos.x + dx, from_pos.y);
+                    let cp2 = Point::new(to_pos.x - dx, to_pos.y);
+
+                    let path = Path::new(|builder| {
+                        builder.move_to(from_pos);
+                        builder.bezier_curve_to(cp1, cp2, to_pos);
+                    });
+
+                    // Glow line
+                    frame.stroke(
+                        &path,
+                        Stroke::default()
+                            .with_color(Color::from_rgba8(99, 102, 241, 0.35))
+                            .with_width(6.0 * zoom),
+                    );
+
+                    // Core line
+                    frame.stroke(
+                        &path,
+                        Stroke::default()
+                            .with_color(Color::from_rgb8(129, 140, 248))
+                            .with_width(2.5 * zoom),
+                    );
+
+                    // Destination arrow dot
+                    frame.fill_rectangle(
+                        Point::new(to_pos.x - 3.0, to_pos.y - 3.0),
+                        Size::new(6.0, 6.0),
+                        Color::from_rgb8(165, 180, 252),
+                    );
+                }
+            }
+
+            // 4. In-flight Wire (during drag)
+            if let Some((from_node, from_pin)) = &state.connecting_pin {
+                if let (Some(from_pos), Some(mouse_pos)) = (
+                    self.get_pin_screen_pos(from_node, from_pin, true),
+                    state.current_mouse_pos,
+                ) {
+                    let dx = ((mouse_pos.x - from_pos.x).abs() * 0.55).max(30.0 * zoom);
+                    let cp1 = Point::new(from_pos.x + dx, from_pos.y);
+                    let cp2 = Point::new(mouse_pos.x - dx, mouse_pos.y);
+
+                    let path = Path::new(|builder| {
+                        builder.move_to(from_pos);
+                        builder.bezier_curve_to(cp1, cp2, mouse_pos);
+                    });
+
+                    frame.stroke(
+                        &path,
+                        Stroke::default()
+                            .with_color(Color::from_rgb8(245, 158, 11))
+                            .with_width(3.0 * zoom),
+                    );
+                }
+            }
+
+            // 5. Draw Nodes
+            for node in &self.graph.nodes {
+                let nx = node.x * zoom + pan_x;
+                let ny = node.y * zoom + pan_y;
+                let nw = node.width * zoom;
+                let nh = self.get_node_height(node) * zoom;
+                let is_selected = self.selected_node_id == Some(node.id.as_str());
+
+                // Node Body Background
+                frame.fill_rectangle(
+                    Point::new(nx, ny),
+                    Size::new(nw, nh),
+                    Color::from_rgb8(24, 27, 36),
+                );
+
+                // Node Header Background
+                let header_h = 32.0 * zoom;
+                let header_color = match &node.node_type {
+                    FlowNodeType::MainMenu => Color::from_rgb8(16, 185, 129), // Emerald
+                    FlowNodeType::Ending { .. } => Color::from_rgb8(244, 63, 94), // Rose
+                    FlowNodeType::Scene { scene_name } => {
+                        if self.scene_has_choice(scene_name) {
+                            Color::from_rgb8(245, 158, 11) // Amber for choices
+                        } else {
+                            Color::from_rgb8(99, 102, 241) // Indigo for standard
+                        }
+                    }
+                };
+
+                frame.fill_rectangle(
+                    Point::new(nx, ny),
+                    Size::new(nw, header_h),
+                    header_color,
+                );
+
+                // Node Border
+                let border_color = if is_selected {
+                    Color::from_rgb8(165, 180, 252)
+                } else {
+                    Color::from_rgb8(51, 65, 85)
+                };
+                let border_width = if is_selected { 2.5 * zoom } else { 1.0 * zoom };
+
+                let border_path = Path::rectangle(Point::new(nx, ny), Size::new(nw, nh));
+                frame.stroke(
+                    &border_path,
+                    Stroke::default()
+                        .with_color(border_color)
+                        .with_width(border_width),
+                );
+
+                // Title Text
+                frame.fill_text(Text {
+                    content: node.title.clone(),
+                    position: Point::new(nx + 10.0 * zoom, ny + 8.0 * zoom),
+                    color: Color::WHITE,
+                    size: (13.0 * zoom).max(9.0).into(),
+                    ..Default::default()
+                });
+
+                // Delete Button [x] (except Main Menu)
+                if node.id != "system_main_menu" {
+                    frame.fill_text(Text {
+                        content: "✕".to_string(),
+                        position: Point::new(nx + nw - 18.0 * zoom, ny + 8.0 * zoom),
+                        color: Color::from_rgb8(254, 202, 202),
+                        size: (12.0 * zoom).max(8.0).into(),
+                        ..Default::default()
+                    });
+                }
+
+                // Subtitle / Info Text
+                let info_text = match &node.node_type {
+                    FlowNodeType::MainMenu => "Entry Screen (Starts New Game)".to_string(),
+                    FlowNodeType::Ending { ending_name } => format!("Arc End: {}", ending_name),
+                    FlowNodeType::Scene { scene_name } => {
+                        let block_count = self.get_scene_block_count(scene_name);
+                        if self.scene_has_choice(scene_name) {
+                            format!("{} block(s) · Branching Choices", block_count)
+                        } else {
+                            format!("{} block(s) · Sequential Flow", block_count)
+                        }
+                    }
+                };
+
+                frame.fill_text(Text {
+                    content: info_text,
+                    position: Point::new(nx + 10.0 * zoom, ny + 38.0 * zoom),
+                    color: Color::from_rgb8(148, 163, 184),
+                    size: (11.0 * zoom).max(8.0).into(),
+                    ..Default::default()
+                });
+
+                // Input Pin (Left Edge)
+                if self.node_has_input_pin(node) {
+                    let pin_x = nx;
+                    let pin_y = ny + 45.0 * zoom;
+                    frame.fill_rectangle(
+                        Point::new(pin_x - 5.0 * zoom, pin_y - 5.0 * zoom),
+                        Size::new(10.0 * zoom, 10.0 * zoom),
+                        Color::from_rgb8(52, 211, 153),
+                    );
+                }
+
+                // Output Pins (Right Edge)
+                let output_pins = self.get_node_output_pins(node);
+                for (p_idx, (_pin_id, label)) in output_pins.iter().enumerate() {
+                    let pin_x = nx + nw;
+                    let pin_y = ny + (45.0 + p_idx as f32 * 26.0) * zoom;
+
+                    frame.fill_rectangle(
+                        Point::new(pin_x - 5.0 * zoom, pin_y - 5.0 * zoom),
+                        Size::new(10.0 * zoom, 10.0 * zoom),
+                        Color::from_rgb8(129, 140, 248),
+                    );
+
+                    // Pin Label inside node
+                    let text_w = label.len() as f32 * 6.5 * zoom;
+                    frame.fill_text(Text {
+                        content: label.clone(),
+                        position: Point::new(pin_x - text_w - 12.0 * zoom, pin_y - 6.0 * zoom),
+                        color: Color::from_rgb8(226, 232, 240),
+                        size: (11.0 * zoom).max(8.0).into(),
+                        ..Default::default()
+                    });
+                }
+
+                // Warning indicator if scene node is unconnected
+                if let FlowNodeType::Scene { .. } = &node.node_type {
+                    let is_connected = self.graph.connections.iter().any(|c| c.from_node_id == node.id);
+                    if !is_connected {
+                        frame.fill_text(Text {
+                            content: "⚠ Unconnected".to_string(),
+                            position: Point::new(nx + 10.0 * zoom, ny + nh - 18.0 * zoom),
+                            color: Color::from_rgb8(251, 191, 36),
+                            size: (10.0 * zoom).max(7.0).into(),
+                            ..Default::default()
+                        });
+                    }
+                }
+            }
+        });
+
+        vec![geom]
+    }
+
+    fn mouse_interaction(
+        &self,
+        state: &Self::State,
+        bounds: Rectangle,
+        cursor: Cursor,
+    ) -> mouse::Interaction {
+        if state.is_panning {
+            return mouse::Interaction::Grabbing;
+        }
+        if state.dragging_node_id.is_some() {
+            return mouse::Interaction::Grabbing;
+        }
+        if let Some(pos) = cursor.position_in(bounds) {
+            let zoom = self.graph.zoom;
+            let pan_x = self.graph.pan_x;
+            let pan_y = self.graph.pan_y;
+
+            // Check if hovering a pin
+            for node in &self.graph.nodes {
+                let nx = node.x * zoom + pan_x;
+                let ny = node.y * zoom + pan_y;
+                let nw = node.width * zoom;
+
+                let output_pins = self.get_node_output_pins(node);
+                for (p_idx, _) in output_pins.iter().enumerate() {
+                    let pin_x = nx + nw;
+                    let pin_y = ny + (45.0 + p_idx as f32 * 26.0) * zoom;
+                    let dist = ((pos.x - pin_x).powi(2) + (pos.y - pin_y).powi(2)).sqrt();
+                    if dist <= 12.0 * zoom {
+                        return mouse::Interaction::Crosshair;
+                    }
+                }
+
+                if self.node_has_input_pin(node) {
+                    let pin_x = nx;
+                    let pin_y = ny + 45.0 * zoom;
+                    let dist = ((pos.x - pin_x).powi(2) + (pos.y - pin_y).powi(2)).sqrt();
+                    if dist <= 12.0 * zoom {
+                        return mouse::Interaction::Crosshair;
+                    }
+                }
+            }
+        }
+        mouse::Interaction::default()
+    }
+}
+
+impl<'a> FlowCanvasWidget<'a> {
+    fn node_has_input_pin(&self, node: &FlowNode) -> bool {
+        node.id != "system_main_menu"
+    }
+
+    fn get_node_height(&self, node: &FlowNode) -> f32 {
+        let pin_count = self.get_node_output_pins(node).len().max(1);
+        70.0 + pin_count as f32 * 26.0
+    }
+
+    fn get_node_output_pins(&self, node: &FlowNode) -> Vec<(String, String)> {
+        match &node.node_type {
+            FlowNodeType::MainMenu => {
+                vec![("new_game".to_string(), "New Game ▶".to_string())]
+            }
+            FlowNodeType::Ending { .. } => Vec::new(),
+            FlowNodeType::Scene { scene_name } => {
+                if let Some(scene) = self.scenes.iter().find(|s| &s.name == scene_name) {
+                    // Check if scene has Choice blocks
+                    for block in scene.blocks.iter().rev() {
+                        if let ActionBlock::Choice { options, .. } = block {
+                            if !options.is_empty() {
+                                return options
+                                    .iter()
+                                    .enumerate()
+                                    .map(|(idx, opt)| {
+                                        (format!("choice_{}", idx), format!("{} ▶", opt.text))
+                                    })
+                                    .collect();
+                            }
+                        }
+                    }
+                }
+                vec![("next".to_string(), "Next Scene ▶".to_string())]
+            }
+        }
+    }
+
+    fn get_pin_screen_pos(&self, node_id: &str, pin_id: &str, is_output: bool) -> Option<Point> {
+        let node = self.graph.find_node(node_id)?;
+        let zoom = self.graph.zoom;
+        let pan_x = self.graph.pan_x;
+        let pan_y = self.graph.pan_y;
+        let nx = node.x * zoom + pan_x;
+        let ny = node.y * zoom + pan_y;
+        let nw = node.width * zoom;
+
+        if is_output {
+            let pins = self.get_node_output_pins(node);
+            let idx = pins.iter().position(|(p, _)| p == pin_id)?;
+            Some(Point::new(nx + nw, ny + (45.0 + idx as f32 * 26.0) * zoom))
+        } else {
+            Some(Point::new(nx, ny + 45.0 * zoom))
+        }
+    }
+
+    fn scene_has_choice(&self, scene_name: &str) -> bool {
+        self.scenes
+            .iter()
+            .find(|s| &s.name == scene_name)
+            .map(|s| s.blocks.iter().any(|b| matches!(b, ActionBlock::Choice { .. })))
+            .unwrap_or(false)
+    }
+
+    fn get_scene_block_count(&self, scene_name: &str) -> usize {
+        self.scenes
+            .iter()
+            .find(|s| &s.name == scene_name)
+            .map(|s| s.blocks.len())
+            .unwrap_or(0)
+    }
+}
