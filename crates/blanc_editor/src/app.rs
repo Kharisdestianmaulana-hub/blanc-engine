@@ -4,9 +4,12 @@ use iced::{Element, Task};
 
 use blanc_core::asset::AssetCategory;
 use blanc_core::project::Project;
-use blanc_core::scene::{ActionBlock, ChoiceOption as SceneChoiceOption, Scene};
+use blanc_core::scene::{ActionBlock, CharacterPosition, ChoiceOption as SceneChoiceOption, Scene};
 use blanc_core::story::{Chapter, Story, StoryElement};
-use crate::screens::{DashboardMessage, DashboardState, WelcomeMessage, WelcomeState, WorkflowTab, DEFAULT_SCRIPT_TEMPLATE};
+use crate::screens::{
+    AssetPickerModalState, DashboardMessage, DashboardState, WelcomeMessage, WelcomeState,
+    WorkflowTab, DEFAULT_SCRIPT_TEMPLATE,
+};
 
 #[derive(Debug, Clone)]
 pub enum AppMessage {
@@ -394,8 +397,22 @@ impl EditorApp {
                             }
                             current_scene_name = s.scene_name.clone();
                             current_scene = Scene::new(&current_scene_name, &dashboard.story_chapter_name);
+                            current_scene.add_block(ActionBlock::Background {
+                                asset_id: s.scene_name.to_lowercase(),
+                                transition: Some(blanc_core::scene::TransitionType::Fade),
+                            });
                         }
                         StoryElement::Dialogue(d) => {
+                            if let Some(exp) = &d.expression {
+                                current_scene.add_block(ActionBlock::Character {
+                                    character_id: d.speaker.clone(),
+                                    expression: exp.clone(),
+                                    position: CharacterPosition::Center,
+                                    offset_x: 0.0,
+                                    offset_y: 0.0,
+                                    transition: Some(blanc_core::scene::TransitionType::Fade),
+                                });
+                            }
                             current_scene.add_block(ActionBlock::Dialogue {
                                 speaker: d.speaker.clone(),
                                 text: d.text.clone(),
@@ -464,10 +481,15 @@ impl EditorApp {
                     }
                 }
 
+                dashboard.active_tab = WorkflowTab::SceneEditor;
                 dashboard.story_status_message = Some(format!(
                     "Successfully generated {} scene(s) into Scenes/{}/ and saved story chapter!",
                     scenes_count,
                     dashboard.story_chapter_name
+                ));
+                dashboard.scene_status_message = Some(format!(
+                    "Converted screenplay to {} scene(s)! Showing first scene.",
+                    scenes_count
                 ));
             }
             DashboardMessage::SelectScene(idx) => {
@@ -620,6 +642,106 @@ impl EditorApp {
                 if let Some(scene) = &mut dashboard.current_scene {
                     if let Some(ActionBlock::Choice { prompt, .. }) = scene.blocks.get_mut(idx) {
                         *prompt = pmt;
+                    }
+                }
+            }
+            DashboardMessage::OpenAssetPickerModal { block_index, category } => {
+                let initial_selected = if let Some(scene) = &dashboard.current_scene {
+                    match scene.blocks.get(block_index) {
+                        Some(ActionBlock::Background { asset_id, .. }) => Some(asset_id.clone()),
+                        Some(ActionBlock::Character { character_id, .. }) => Some(character_id.clone()),
+                        Some(ActionBlock::PlayBgm { asset_id, .. }) => Some(asset_id.clone()),
+                        Some(ActionBlock::PlaySfx { asset_id, .. }) => Some(asset_id.clone()),
+                        _ => None,
+                    }
+                } else {
+                    None
+                };
+                dashboard.asset_picker_modal = Some(AssetPickerModalState {
+                    block_index,
+                    category,
+                    search_query: String::new(),
+                    selected_asset_id: initial_selected,
+                });
+            }
+            DashboardMessage::CloseAssetPickerModal => {
+                dashboard.asset_picker_modal = None;
+            }
+            DashboardMessage::AssetPickerSearchChanged(query) => {
+                if let Some(modal) = &mut dashboard.asset_picker_modal {
+                    modal.search_query = query;
+                }
+            }
+            DashboardMessage::SelectAssetInModal(asset_id) => {
+                if let Some(modal) = &mut dashboard.asset_picker_modal {
+                    modal.selected_asset_id = Some(asset_id);
+                }
+            }
+            DashboardMessage::ConfirmAssetPickerSelection => {
+                if let Some(modal) = &dashboard.asset_picker_modal {
+                    if let Some(sel_id) = &modal.selected_asset_id {
+                        let asset_id_val = sel_id.clone();
+                        let b_idx = modal.block_index;
+                        if let Some(scene) = &mut dashboard.current_scene {
+                            match scene.blocks.get_mut(b_idx) {
+                                Some(ActionBlock::Background { asset_id, .. }) => {
+                                    *asset_id = asset_id_val;
+                                }
+                                Some(ActionBlock::Character { character_id, .. }) => {
+                                    *character_id = asset_id_val;
+                                }
+                                Some(ActionBlock::PlayBgm { asset_id, .. }) => {
+                                    *asset_id = asset_id_val;
+                                }
+                                Some(ActionBlock::PlaySfx { asset_id, .. }) => {
+                                    *asset_id = asset_id_val;
+                                }
+                                _ => {}
+                            }
+                        }
+                        Self::auto_save_current_scene(dashboard, project_dir);
+                    }
+                }
+                dashboard.asset_picker_modal = None;
+            }
+            DashboardMessage::ImportAssetFromModal(category) => {
+                let mut dialog = rfd::FileDialog::new();
+                match category {
+                    AssetCategory::Background => {
+                        dialog = dialog.add_filter("Images (*.png, *.jpg, *.webp)", &["png", "jpg", "jpeg", "webp"]);
+                    }
+                    AssetCategory::Character | AssetCategory::CharacterExpression => {
+                        dialog = dialog.add_filter("Character Sprites (*.png, *.webp)", &["png", "webp"]);
+                    }
+                    AssetCategory::Bgm => {
+                        dialog = dialog.add_filter("BGM Audio (*.ogg, *.mp3, *.wav)", &["ogg", "mp3", "wav"]);
+                    }
+                    AssetCategory::Sfx => {
+                        dialog = dialog.add_filter("SFX Audio (*.wav, *.ogg, *.mp3)", &["wav", "ogg", "mp3"]);
+                    }
+                    AssetCategory::Font => {
+                        dialog = dialog.add_filter("Fonts (*.ttf, *.otf)", &["ttf", "otf"]);
+                    }
+                    AssetCategory::Ui | AssetCategory::Other => {
+                        dialog = dialog.add_filter("Supported Assets", &["png", "jpg", "jpeg", "webp", "ogg", "wav", "mp3", "ttf", "otf"]);
+                    }
+                }
+
+                if let Some(picked_path) = dialog.pick_file() {
+                    match project.import_asset(project_dir, &picked_path, category) {
+                        Ok(asset) => {
+                            if let Some(modal) = &mut dashboard.asset_picker_modal {
+                                modal.selected_asset_id = Some(asset.id.clone());
+                            }
+                            dashboard.scene_status_message = Some(format!(
+                                "Imported '{}' to {}.",
+                                asset.name,
+                                asset.category.display_name()
+                            ));
+                        }
+                        Err(err) => {
+                            dashboard.scene_status_message = Some(format!("Failed to import asset: {}", err));
+                        }
                     }
                 }
             }

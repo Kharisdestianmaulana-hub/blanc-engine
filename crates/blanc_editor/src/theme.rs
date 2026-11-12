@@ -393,3 +393,62 @@ pub fn callout_container_style(theme: &iced::Theme) -> container::Style {
         shadow: Shadow::default(),
     }
 }
+
+pub fn modal_backdrop_style(theme: &iced::Theme) -> container::Style {
+    let _ = theme;
+    container::Style {
+        background: Some(Background::Color(Color::from_rgba(0.05, 0.05, 0.08, 0.82))),
+        ..Default::default()
+    }
+}
+
+pub fn asset_card_button_style(is_selected: bool) -> impl Fn(&iced::Theme, button::Status) -> button::Style {
+    move |_theme, status| {
+        let (bg, border_col) = if is_selected {
+            (
+                to_iced_color(ACCENT_SUBTLE, 0.7),
+                to_iced_color(ACCENT_PRIMARY, 1.0),
+            )
+        } else {
+            (
+                to_iced_color(SURFACE_PRIMARY, 0.95),
+                to_iced_color(BORDER_DEFAULT, 0.8),
+            )
+        };
+
+        let base = button::Style {
+            background: Some(Background::Color(bg)),
+            text_color: to_iced_color(TEXT_PRIMARY, 1.0),
+            border: Border {
+                radius: Radius::from(RADIUS_MD),
+                width: if is_selected { 2.0 } else { 1.0 },
+                color: border_col,
+            },
+            shadow: Shadow {
+                color: Color::from_rgba(0.0, 0.0, 0.0, 0.2),
+                offset: Vector::new(0.0, 2.0),
+                blur_radius: 4.0,
+            },
+        };
+
+        match status {
+            button::Status::Active => base,
+            button::Status::Hovered => button::Style {
+                background: Some(Background::Color(to_iced_color(SURFACE_HOVER, 1.0))),
+                border: Border {
+                    color: to_iced_color(ACCENT_PRIMARY, 0.8),
+                    ..base.border
+                },
+                ..base
+            },
+            button::Status::Pressed => button::Style {
+                background: Some(Background::Color(to_iced_color(SURFACE_ELEVATED, 1.0))),
+                ..base
+            },
+            button::Status::Disabled => button::Style {
+                text_color: to_iced_color(TEXT_DISABLED, 1.0),
+                ..base
+            },
+        }
+    }
+}

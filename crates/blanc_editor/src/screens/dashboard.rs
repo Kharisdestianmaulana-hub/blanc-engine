@@ -1,5 +1,5 @@
 use std::path::PathBuf;
-use iced::widget::{button, column, container, row, scrollable, text, text_editor, text_input, Space};
+use iced::widget::{button, column, container, image, row, scrollable, stack, text, text_editor, text_input, Space};
 use iced::{Alignment, Element, Length};
 
 use blanc_core::asset::{Asset, AssetCategory};
@@ -12,10 +12,10 @@ use blanc_core::theme::typography::*;
 
 use crate::icons::*;
 use crate::theme::{
-    badge_container_style, callout_container_style, card_container_style, code_container_style,
-    danger_icon_button_style, icon_button_style, input_field_style, primary_button_style,
-    project_card_style, secondary_button_style, sidebar_button_style, sidebar_container_style,
-    subtle_button_style, text_editor_style,
+    asset_card_button_style, badge_container_style, callout_container_style, card_container_style,
+    code_container_style, danger_icon_button_style, icon_button_style, input_field_style,
+    modal_backdrop_style, primary_button_style, project_card_style, secondary_button_style,
+    sidebar_button_style, sidebar_container_style, subtle_button_style, text_editor_style,
 };
 
 pub const DEFAULT_SCRIPT_TEMPLATE: &str = r#"// Blanc Engine Screenplay Script
@@ -36,6 +36,14 @@ Alice: "The weather is so lovely today. Would you like to take a quick walk in t
   - "Stay and finish preparations" -> Scene_Classroom_Work
 ]
 "#;
+
+#[derive(Debug, Clone)]
+pub struct AssetPickerModalState {
+    pub block_index: usize,
+    pub category: AssetCategory,
+    pub search_query: String,
+    pub selected_asset_id: Option<String>,
+}
 
 #[derive(Debug, Clone)]
 pub enum DashboardMessage {
@@ -74,6 +82,14 @@ pub enum DashboardMessage {
     UpdateSpeakerName(usize, String),
     UpdateDialogueText(usize, String),
     UpdateChoicePrompt(usize, String),
+
+    // Custom Modal Asset Picker messages
+    OpenAssetPickerModal { block_index: usize, category: AssetCategory },
+    CloseAssetPickerModal,
+    AssetPickerSearchChanged(String),
+    SelectAssetInModal(String),
+    ConfirmAssetPickerSelection,
+    ImportAssetFromModal(AssetCategory),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -116,6 +132,9 @@ pub struct DashboardState {
     pub selected_scene_index: usize,
     pub current_scene: Option<Scene>,
     pub scene_status_message: Option<String>,
+
+    // Custom Modal Asset Picker state
+    pub asset_picker_modal: Option<AssetPickerModalState>,
 }
 
 impl DashboardState {
@@ -232,6 +251,8 @@ impl DashboardState {
             selected_scene_index: 0,
             current_scene,
             scene_status_message: None,
+
+            asset_picker_modal: None,
         }
     }
 
@@ -280,6 +301,8 @@ impl Default for DashboardState {
             selected_scene_index: 0,
             current_scene: Some(Self::create_starter_scene()),
             scene_status_message: None,
+
+            asset_picker_modal: None,
         }
     }
 }
@@ -302,10 +325,17 @@ impl DashboardState {
             .width(Length::Fill)
             .height(Length::Fill);
 
-        container(layout)
+        let base_view: Element<'a, DashboardMessage> = container(layout)
             .width(Length::Fill)
             .height(Length::Fill)
-            .into()
+            .into();
+
+        if let Some(modal) = &self.asset_picker_modal {
+            let modal_overlay = self.view_asset_picker_modal(modal, project, project_dir);
+            stack![base_view, modal_overlay].into()
+        } else {
+            base_view
+        }
     }
 
     // ==========================================
@@ -1436,12 +1466,27 @@ impl DashboardState {
                 .spacing(SPACE_2)
                 .align_y(Alignment::Center);
 
+                let btn_pick_char = button(
+                    row![icon_user(), text("Select Sprite...").size(LABEL_SM)]
+                        .spacing(SPACE_2)
+                        .align_y(Alignment::Center),
+                )
+                .padding([SPACE_1, SPACE_3])
+                .style(primary_button_style)
+                .on_press(DashboardMessage::OpenAssetPickerModal {
+                    block_index: idx,
+                    category: AssetCategory::Character,
+                });
+
                 let info_row = row![
                     text(format!("Character: {}", character_id)).size(BODY_SM).color(iced::Color::from_rgb8(TEXT_PRIMARY.r, TEXT_PRIMARY.g, TEXT_PRIMARY.b)),
                     text("•").size(LABEL_SM).color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b)),
                     text(format!("Expression: {}", expression)).size(BODY_SM).color(iced::Color::from_rgb8(ACCENT_PRIMARY.r, ACCENT_PRIMARY.g, ACCENT_PRIMARY.b)),
+                    Space::with_width(Length::Fill),
+                    btn_pick_char,
                 ]
-                .spacing(SPACE_2);
+                .spacing(SPACE_2)
+                .align_y(Alignment::Center);
 
                 (
                     "Character Sprite",
@@ -1477,12 +1522,29 @@ impl DashboardState {
             }
             ActionBlock::Background { asset_id, transition } => {
                 let trans_name = transition.map(|t| format!("{:?}", t)).unwrap_or_else(|| "Cut".to_string());
+                let display_id = if asset_id.is_empty() { "None (Click to choose)".to_string() } else { asset_id.clone() };
+
+                let btn_pick_bg = button(
+                    row![icon_image(), text(if asset_id.is_empty() { "Select Background..." } else { "Change Background..." }).size(LABEL_SM)]
+                        .spacing(SPACE_2)
+                        .align_y(Alignment::Center),
+                )
+                .padding([SPACE_1, SPACE_3])
+                .style(primary_button_style)
+                .on_press(DashboardMessage::OpenAssetPickerModal {
+                    block_index: idx,
+                    category: AssetCategory::Background,
+                });
+
                 let content = row![
-                    text(format!("Asset: {}", asset_id)).size(BODY_SM).color(iced::Color::from_rgb8(TEXT_PRIMARY.r, TEXT_PRIMARY.g, TEXT_PRIMARY.b)),
+                    text(format!("Asset: {}", display_id)).size(BODY_SM).color(iced::Color::from_rgb8(TEXT_PRIMARY.r, TEXT_PRIMARY.g, TEXT_PRIMARY.b)),
                     text("•").size(LABEL_SM).color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b)),
                     text(format!("Transition: {}", trans_name)).size(BODY_SM).color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b)),
+                    Space::with_width(Length::Fill),
+                    btn_pick_bg,
                 ]
-                .spacing(SPACE_2);
+                .spacing(SPACE_2)
+                .align_y(Alignment::Center);
 
                 (
                     "Background",
@@ -1542,17 +1604,61 @@ impl DashboardState {
                 )
             }
             ActionBlock::PlayBgm { asset_id, volume, looping } => {
+                let btn_pick_bgm = button(
+                    row![icon_music(), text("Choose BGM Track...").size(LABEL_SM)]
+                        .spacing(SPACE_2)
+                        .align_y(Alignment::Center),
+                )
+                .padding([SPACE_1, SPACE_3])
+                .style(primary_button_style)
+                .on_press(DashboardMessage::OpenAssetPickerModal {
+                    block_index: idx,
+                    category: AssetCategory::Bgm,
+                });
+
                 let info = row![
                     text(format!("Track: {}", asset_id)).size(BODY_SM).color(iced::Color::from_rgb8(STATUS_SUCCESS.r, STATUS_SUCCESS.g, STATUS_SUCCESS.b)),
                     text("•").size(LABEL_SM).color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b)),
                     text(format!("Volume: {:.0}%", volume * 100.0)).size(BODY_SM).color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b)),
                     text("•").size(LABEL_SM).color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b)),
                     text(if *looping { "Looping: Yes" } else { "Looping: No" }).size(BODY_SM).color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b)),
+                    Space::with_width(Length::Fill),
+                    btn_pick_bgm,
                 ]
-                .spacing(SPACE_2);
+                .spacing(SPACE_2)
+                .align_y(Alignment::Center);
 
                 (
                     "Play BGM",
+                    icon_music(),
+                    info.into(),
+                )
+            }
+            ActionBlock::PlaySfx { asset_id, volume } => {
+                let btn_pick_sfx = button(
+                    row![icon_music(), text("Choose SFX Track...").size(LABEL_SM)]
+                        .spacing(SPACE_2)
+                        .align_y(Alignment::Center),
+                )
+                .padding([SPACE_1, SPACE_3])
+                .style(primary_button_style)
+                .on_press(DashboardMessage::OpenAssetPickerModal {
+                    block_index: idx,
+                    category: AssetCategory::Sfx,
+                });
+
+                let info = row![
+                    text(format!("SFX: {}", asset_id)).size(BODY_SM).color(iced::Color::from_rgb8(TEXT_PRIMARY.r, TEXT_PRIMARY.g, TEXT_PRIMARY.b)),
+                    text("•").size(LABEL_SM).color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b)),
+                    text(format!("Volume: {:.0}%", volume * 100.0)).size(BODY_SM).color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b)),
+                    Space::with_width(Length::Fill),
+                    btn_pick_sfx,
+                ]
+                .spacing(SPACE_2)
+                .align_y(Alignment::Center);
+
+                (
+                    "Play SFX",
                     icon_music(),
                     info.into(),
                 )
@@ -1622,6 +1728,277 @@ impl DashboardState {
             .padding(SPACE_4)
             .width(Length::Fill)
             .style(project_card_style)
+            .into()
+    }
+
+    // ==========================================
+    // CUSTOM MODAL ASSET PICKER
+    // ==========================================
+    fn view_asset_picker_modal<'a>(
+        &'a self,
+        modal: &'a AssetPickerModalState,
+        project: &'a Project,
+        project_dir: &'a PathBuf,
+    ) -> Element<'a, DashboardMessage> {
+        let (title, cat_name) = match modal.category {
+            AssetCategory::Background => ("Select Background Illustration", "Backgrounds"),
+            AssetCategory::Character => ("Select Character Sprite", "Characters"),
+            AssetCategory::CharacterExpression => ("Select Character Expression", "Expressions"),
+            AssetCategory::Bgm => ("Select Background Music (BGM)", "BGM"),
+            AssetCategory::Sfx => ("Select Sound Effect (SFX)", "SFX"),
+            AssetCategory::Font => ("Select Font Asset", "Fonts"),
+            AssetCategory::Ui => ("Select UI Asset", "UI"),
+            AssetCategory::Other => ("Select Asset", "Other"),
+        };
+
+        // Header
+        let title_text = text(title)
+            .size(HEADING_MD)
+            .color(iced::Color::from_rgb8(TEXT_PRIMARY.r, TEXT_PRIMARY.g, TEXT_PRIMARY.b));
+
+        let badge = container(
+            text(cat_name)
+                .size(LABEL_SM)
+                .color(iced::Color::from_rgb8(ACCENT_PRIMARY.r, ACCENT_PRIMARY.g, ACCENT_PRIMARY.b)),
+        )
+        .padding([2.0, 8.0])
+        .style(badge_container_style);
+
+        let btn_close = button(icon_close())
+            .padding([SPACE_1, SPACE_2])
+            .style(danger_icon_button_style)
+            .on_press(DashboardMessage::CloseAssetPickerModal);
+
+        let header_row = row![
+            title_text,
+            Space::with_width(SPACE_2),
+            badge,
+            Space::with_width(Length::Fill),
+            btn_close,
+        ]
+        .align_y(Alignment::Center);
+
+        // Search & Import Bar
+        let search_box = text_input("Search assets by name...", &modal.search_query)
+            .on_input(DashboardMessage::AssetPickerSearchChanged)
+            .padding([SPACE_2, SPACE_3])
+            .width(Length::Fill)
+            .style(input_field_style);
+
+        let btn_import = button(
+            row![icon_plus(), text("Import New Asset...").size(LABEL_MD)]
+                .spacing(SPACE_2)
+                .align_y(Alignment::Center),
+        )
+        .padding([SPACE_2, SPACE_4])
+        .style(primary_button_style)
+        .on_press(DashboardMessage::ImportAssetFromModal(modal.category));
+
+        let toolbar = row![search_box, btn_import].spacing(SPACE_3).align_y(Alignment::Center);
+
+        // Filter assets
+        let q_lower = modal.search_query.to_lowercase();
+        let assets: Vec<&Asset> = project
+            .assets
+            .assets
+            .values()
+            .filter(|a| {
+                let matches_cat = if modal.category == AssetCategory::Character {
+                    a.category == AssetCategory::Character || a.category == AssetCategory::CharacterExpression
+                } else {
+                    a.category == modal.category
+                };
+                if !matches_cat {
+                    return false;
+                }
+                if q_lower.is_empty() {
+                    true
+                } else {
+                    a.name.to_lowercase().contains(&q_lower)
+                        || a.id.to_lowercase().contains(&q_lower)
+                        || a.relative_path.to_lowercase().contains(&q_lower)
+                }
+            })
+            .collect();
+
+        let grid_content: Element<'a, DashboardMessage> = if assets.is_empty() {
+            let empty_view = column![
+                icon_image(),
+                text(if modal.search_query.is_empty() {
+                    "No Assets Available in This Category"
+                } else {
+                    "No Assets Match Your Search"
+                })
+                .size(HEADING_SM)
+                .color(iced::Color::from_rgb8(TEXT_PRIMARY.r, TEXT_PRIMARY.g, TEXT_PRIMARY.b)),
+                text("Click 'Import New Asset...' to add files directly from your computer.")
+                    .size(BODY_SM)
+                    .color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b)),
+                Space::with_height(SPACE_2),
+                button(
+                    row![icon_plus(), text("Import Asset Now").size(LABEL_MD)]
+                        .spacing(SPACE_2)
+                        .align_y(Alignment::Center),
+                )
+                .padding([SPACE_2, SPACE_4])
+                .style(primary_button_style)
+                .on_press(DashboardMessage::ImportAssetFromModal(modal.category)),
+            ]
+            .spacing(SPACE_2)
+            .align_x(Alignment::Center);
+
+            container(empty_view)
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .center_x(Length::Fill)
+                .center_y(Length::Fill)
+                .into()
+        } else {
+            let mut cards_col = column![].spacing(SPACE_3).width(Length::Fill);
+            let mut current_row = row![].spacing(SPACE_3).width(Length::Fill);
+            let mut in_row = 0;
+
+            for asset in &assets {
+                let is_selected = modal.selected_asset_id.as_deref() == Some(&asset.id);
+                let full_path = project_dir.join(&asset.relative_path);
+
+                let preview_element: Element<'a, DashboardMessage> = if modal.category == AssetCategory::Background
+                    || modal.category == AssetCategory::Character
+                    || modal.category == AssetCategory::CharacterExpression
+                {
+                    if full_path.exists() {
+                        container(
+                            image(image::Handle::from_path(&full_path))
+                                .content_fit(iced::ContentFit::Cover)
+                                .width(Length::Fixed(190.0))
+                                .height(Length::Fixed(110.0)),
+                        )
+                        .style(code_container_style)
+                        .into()
+                    } else {
+                        container(icon_image())
+                            .width(Length::Fixed(190.0))
+                            .height(Length::Fixed(110.0))
+                            .center_x(Length::Fill)
+                            .center_y(Length::Fill)
+                            .style(code_container_style)
+                            .into()
+                    }
+                } else {
+                    container(icon_music())
+                        .width(Length::Fixed(190.0))
+                        .height(Length::Fixed(80.0))
+                        .center_x(Length::Fill)
+                        .center_y(Length::Fill)
+                        .style(code_container_style)
+                        .into()
+                };
+
+                let card_body = column![
+                    preview_element,
+                    row![
+                        text(&asset.name)
+                            .size(LABEL_MD)
+                            .color(iced::Color::from_rgb8(TEXT_PRIMARY.r, TEXT_PRIMARY.g, TEXT_PRIMARY.b)),
+                        Space::with_width(Length::Fill),
+                        if is_selected {
+                            text("✓ Selected").size(LABEL_SM).color(iced::Color::from_rgb8(ACCENT_PRIMARY.r, ACCENT_PRIMARY.g, ACCENT_PRIMARY.b))
+                        } else {
+                            text("").size(LABEL_SM)
+                        },
+                    ]
+                    .align_y(Alignment::Center),
+                    text(format!("{} • {}", &asset.relative_path, format_bytes(asset.file_size)))
+                        .size(LABEL_SM)
+                        .color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b)),
+                ]
+                .spacing(SPACE_2);
+
+                let card_btn = button(card_body)
+                    .padding(SPACE_3)
+                    .width(Length::Fixed(220.0))
+                    .style(asset_card_button_style(is_selected))
+                    .on_press(DashboardMessage::SelectAssetInModal(asset.id.clone()));
+
+                current_row = current_row.push(card_btn);
+                in_row += 1;
+
+                if in_row == 3 {
+                    cards_col = cards_col.push(current_row);
+                    current_row = row![].spacing(SPACE_3).width(Length::Fill);
+                    in_row = 0;
+                }
+            }
+
+            if in_row > 0 {
+                cards_col = cards_col.push(current_row);
+            }
+
+            scrollable(cards_col).width(Length::Fill).height(Length::Fill).into()
+        };
+
+        // Footer
+        let selected_label = if let Some(sel_id) = &modal.selected_asset_id {
+            let asset_name = project.assets.assets.get(sel_id).map(|a| a.name.as_str()).unwrap_or(sel_id);
+            format!("Selected: {}", asset_name)
+        } else {
+            "No asset selected".to_string()
+        };
+
+        let footer_info = text(selected_label)
+            .size(BODY_SM)
+            .color(iced::Color::from_rgb8(TEXT_PRIMARY.r, TEXT_PRIMARY.g, TEXT_PRIMARY.b));
+
+        let btn_cancel = button(text("Cancel").size(LABEL_MD))
+            .padding([SPACE_2, SPACE_4])
+            .style(secondary_button_style)
+            .on_press(DashboardMessage::CloseAssetPickerModal);
+
+        let btn_confirm = if modal.selected_asset_id.is_some() {
+            button(
+                row![icon_sparkle(), text("Use Selected Asset").size(LABEL_MD)]
+                    .spacing(SPACE_2)
+                    .align_y(Alignment::Center),
+            )
+            .padding([SPACE_2, SPACE_4])
+            .style(primary_button_style)
+            .on_press(DashboardMessage::ConfirmAssetPickerSelection)
+        } else {
+            button(text("Use Selected Asset").size(LABEL_MD))
+                .padding([SPACE_2, SPACE_4])
+                .style(subtle_button_style)
+        };
+
+        let footer_row = row![
+            footer_info,
+            Space::with_width(Length::Fill),
+            btn_cancel,
+            btn_confirm,
+        ]
+        .spacing(SPACE_3)
+        .align_y(Alignment::Center);
+
+        let dialog_box = column![
+            header_row,
+            toolbar,
+            container(grid_content)
+                .height(Length::Fixed(400.0))
+                .width(Length::Fill),
+            footer_row,
+        ]
+        .spacing(SPACE_4);
+
+        let modal_card = container(dialog_box)
+            .width(Length::Fixed(780.0))
+            .padding(SPACE_6)
+            .style(card_container_style);
+
+        container(modal_card)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .center_x(Length::Fill)
+            .center_y(Length::Fill)
+            .style(modal_backdrop_style)
             .into()
     }
 
