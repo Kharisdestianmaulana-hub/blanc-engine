@@ -76,6 +76,7 @@ pub mod radius {
     pub const RADIUS_MD: f32 = 6.0;
     pub const RADIUS_LG: f32 = 8.0;
     pub const RADIUS_XL: f32 = 10.0;
+    pub const RADIUS_FULL: f32 = 999.0;
 }
 
 pub mod typography {

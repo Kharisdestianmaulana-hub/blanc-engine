@@ -52,11 +52,24 @@ impl EditorApp {
         };
 
         match message {
-            WelcomeMessage::ShowCreateDialog => {
-                state.is_creating_project = true;
+            WelcomeMessage::SelectTab(tab) => {
+                state.active_tab = tab;
                 state.error_message = None;
             }
-            WelcomeMessage::CancelCreateDialog => {
+            WelcomeMessage::SelectDocsTopic(topic) => {
+                state.active_docs_topic = topic;
+            }
+            WelcomeMessage::SearchQueryChanged(query) => {
+                state.search_query = query;
+            }
+            WelcomeMessage::ShowCreateModal => {
+                state.is_creating_project = true;
+                state.error_message = None;
+                if state.selected_folder.is_none() {
+                    state.selected_folder = state.config.default_folder.clone();
+                }
+            }
+            WelcomeMessage::CancelCreateModal => {
                 state.is_creating_project = false;
                 state.error_message = None;
             }
@@ -76,12 +89,12 @@ impl EditorApp {
                 let author = state.input_author.trim();
 
                 if name.is_empty() {
-                    state.error_message = Some("Please enter a valid project name.".to_string());
+                    state.error_message = Some("Mohon masukkan nama proyek yang valid.".to_string());
                     return Task::none();
                 }
 
                 let Some(base_folder) = &state.selected_folder else {
-                    state.error_message = Some("Please choose a folder to save your project.".to_string());
+                    state.error_message = Some("Mohon pilih folder tujuan penyimpanan proyek.".to_string());
                     return Task::none();
                 };
 
@@ -90,6 +103,10 @@ impl EditorApp {
 
                 match Project::create_project_structure(&target_dir, name, author) {
                     Ok(project) => {
+                        let manifest_filename = format!("{}.{}", project_folder_name, Project::MANIFEST_EXTENSION);
+                        let manifest_path = target_dir.join(manifest_filename);
+                        state.config.add_recent(name, author, manifest_path);
+
                         self.screen = CurrentScreen::Workspace {
                             project,
                             project_dir: target_dir,
@@ -97,7 +114,7 @@ impl EditorApp {
                         };
                     }
                     Err(err) => {
-                        state.error_message = Some(format!("Failed to create project: {}", err));
+                        state.error_message = Some(format!("Gagal membuat proyek: {}", err));
                     }
                 }
             }
@@ -109,6 +126,7 @@ impl EditorApp {
                     match Project::load_from_manifest(&file_path) {
                         Ok(project) => {
                             let project_dir = file_path.parent().unwrap_or(&file_path).to_path_buf();
+                            state.config.add_recent(&project.name, &project.author, file_path);
                             self.screen = CurrentScreen::Workspace {
                                 project,
                                 project_dir,
@@ -116,9 +134,47 @@ impl EditorApp {
                             };
                         }
                         Err(err) => {
-                            state.error_message = Some(format!("Failed to open project: {}", err));
+                            state.error_message = Some(format!("Gagal membuka proyek: {}", err));
                         }
                     }
+                }
+            }
+            WelcomeMessage::OpenRecentProject(path) => {
+                match Project::load_from_manifest(&path) {
+                    Ok(project) => {
+                        let project_dir = path.parent().unwrap_or(&path).to_path_buf();
+                        state.config.add_recent(&project.name, &project.author, path);
+                        self.screen = CurrentScreen::Workspace {
+                            project,
+                            project_dir,
+                            dashboard: DashboardState::default(),
+                        };
+                    }
+                    Err(err) => {
+                        state.error_message = Some(format!(
+                            "Gagal membuka proyek '{}': {}. Pastikan file proyek masih ada.",
+                            path.display(),
+                            err
+                        ));
+                    }
+                }
+            }
+            WelcomeMessage::RemoveRecentProject(path) => {
+                state.config.remove_recent(&path);
+            }
+            WelcomeMessage::RevealInExplorer(path) => {
+                #[cfg(target_os = "windows")]
+                let _ = Command::new("explorer").arg(path).spawn();
+                #[cfg(target_os = "macos")]
+                let _ = Command::new("open").arg(path).spawn();
+                #[cfg(target_os = "linux")]
+                let _ = Command::new("xdg-open").arg(path).spawn();
+            }
+            WelcomeMessage::ChangeDefaultFolder => {
+                if let Some(folder) = rfd::FileDialog::new().pick_folder() {
+                    state.config.default_folder = Some(folder.clone());
+                    state.selected_folder = Some(folder);
+                    state.config.save();
                 }
             }
         }
