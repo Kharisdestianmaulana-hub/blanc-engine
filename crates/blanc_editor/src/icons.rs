@@ -19,6 +19,10 @@ const CHEVRON_LEFT_SVG: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewB
 
 const CHEVRON_RIGHT_SVG: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#94a3b8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>"##;
 
+const ARROW_UP_SVG: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#94a3b8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" x2="12" y1="19" y2="5"/><polyline points="5 12 12 5 19 12"/></svg>"##;
+
+const ARROW_DOWN_SVG: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#94a3b8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" x2="12" y1="5" y2="19"/><polyline points="19 12 12 19 5 12"/></svg>"##;
+
 const CLOSE_SVG: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#94a3b8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18M6 6l12 12"/></svg>"##;
 
 const EXTERNAL_LINK_SVG: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#94a3b8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></svg>"##;
@@ -111,6 +115,18 @@ pub fn icon_chevron_right<'a>() -> Svg<'a, iced::Theme> {
     Svg::new(Handle::from_memory(CHEVRON_RIGHT_SVG.as_bytes()))
         .width(Length::Fixed(16.0))
         .height(Length::Fixed(16.0))
+}
+
+pub fn icon_arrow_up<'a>() -> Svg<'a, iced::Theme> {
+    Svg::new(Handle::from_memory(ARROW_UP_SVG.as_bytes()))
+        .width(Length::Fixed(14.0))
+        .height(Length::Fixed(14.0))
+}
+
+pub fn icon_arrow_down<'a>() -> Svg<'a, iced::Theme> {
+    Svg::new(Handle::from_memory(ARROW_DOWN_SVG.as_bytes()))
+        .width(Length::Fixed(14.0))
+        .height(Length::Fixed(14.0))
 }
 
 pub fn icon_close<'a>() -> Svg<'a, iced::Theme> {

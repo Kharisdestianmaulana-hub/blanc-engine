@@ -4,6 +4,7 @@ use iced::{Alignment, Element, Length};
 
 use blanc_core::asset::{Asset, AssetCategory};
 use blanc_core::project::Project;
+use blanc_core::scene::{ActionBlock, CharacterPosition, ChoiceLayoutPosition, ChoiceOption as SceneChoiceOption, Scene};
 use blanc_core::story::{Story, StoryElement};
 use blanc_core::theme::colors::*;
 use blanc_core::theme::spacing::*;
@@ -12,8 +13,9 @@ use blanc_core::theme::typography::*;
 use crate::icons::*;
 use crate::theme::{
     badge_container_style, callout_container_style, card_container_style, code_container_style,
-    input_field_style, primary_button_style, project_card_style, secondary_button_style,
-    sidebar_button_style, sidebar_container_style, subtle_button_style, text_editor_style,
+    icon_button_style, input_field_style, primary_button_style, project_card_style,
+    secondary_button_style, sidebar_button_style, sidebar_container_style, subtle_button_style,
+    text_editor_style,
 };
 
 pub const DEFAULT_SCRIPT_TEMPLATE: &str = r#"// Blanc Engine Screenplay Script
@@ -56,6 +58,21 @@ pub enum DashboardMessage {
     ImportScriptFileClicked,
     SaveStoryChapterClicked,
     ConvertScriptToScenesClicked,
+
+    // Scene Editor messages
+    SelectScene(usize),
+    CreateNewScene,
+    SaveCurrentScene,
+    OpenScenesFolder,
+    AddBlockToScene(ActionBlock),
+    RemoveBlockFromScene(usize),
+    MoveBlockUp(usize),
+    MoveBlockDown(usize),
+    UpdateBlockCharacterPosition(usize, CharacterPosition),
+    UpdateBlockChoicePosition(usize, ChoiceLayoutPosition),
+    UpdateSpeakerName(usize, String),
+    UpdateDialogueText(usize, String),
+    UpdateChoicePrompt(usize, String),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -92,12 +109,54 @@ pub struct DashboardState {
     pub parsed_story_elements: Vec<StoryElement>,
     pub story_chapter_name: String,
     pub story_status_message: Option<String>,
+
+    // Scene Editor state
+    pub scenes_list: Vec<String>,
+    pub selected_scene_index: usize,
+    pub current_scene: Option<Scene>,
+    pub scene_status_message: Option<String>,
 }
 
 impl Default for DashboardState {
     fn default() -> Self {
         let initial_script = DEFAULT_SCRIPT_TEMPLATE.to_string();
         let parsed = Story::parse_script(&initial_script);
+
+        // Initial default scene
+        let mut opening_scene = Scene::new("01_opening", "Chapter_01");
+        opening_scene.add_block(ActionBlock::Background {
+            asset_id: "classroom_afternoon".to_string(),
+            transition: Some(blanc_core::scene::TransitionType::Fade),
+        });
+        opening_scene.add_block(ActionBlock::Character {
+            character_id: "Alice".to_string(),
+            expression: "Happy".to_string(),
+            position: CharacterPosition::Center,
+            offset_x: 0.0,
+            offset_y: 0.0,
+            transition: Some(blanc_core::scene::TransitionType::Fade),
+        });
+        opening_scene.add_block(ActionBlock::Dialogue {
+            speaker: "Alice".to_string(),
+            text: "Hello! Welcome to Blanc Engine's Visual Scene Editor.".to_string(),
+            voice_asset_id: None,
+        });
+        opening_scene.add_block(ActionBlock::Choice {
+            prompt: "What would you like to explore next?".to_string(),
+            position: ChoiceLayoutPosition::Center,
+            options: vec![
+                SceneChoiceOption {
+                    id: uuid::Uuid::new_v4().to_string(),
+                    text: "Explore Classroom".to_string(),
+                    target_scene_id: "Scene_Classroom".to_string(),
+                },
+                SceneChoiceOption {
+                    id: uuid::Uuid::new_v4().to_string(),
+                    text: "Head Outside to Courtyard".to_string(),
+                    target_scene_id: "Scene_Courtyard".to_string(),
+                },
+            ],
+        });
 
         Self {
             active_tab: WorkflowTab::Dashboard,
@@ -109,6 +168,11 @@ impl Default for DashboardState {
             parsed_story_elements: parsed,
             story_chapter_name: "Chapter_01".to_string(),
             story_status_message: None,
+
+            scenes_list: vec!["01_opening".to_string()],
+            selected_scene_index: 0,
+            current_scene: Some(opening_scene),
+            scene_status_message: None,
         }
     }
 }
@@ -122,7 +186,7 @@ impl DashboardState {
             WorkflowTab::Dashboard => self.view_overview_content(project, project_dir),
             WorkflowTab::Assets => self.view_assets_content(project, project_dir),
             WorkflowTab::Story => self.view_story_content(project, project_dir),
-            WorkflowTab::SceneEditor => self.view_placeholder_content("Block-Based Scene Editor", "Action block timeline and branching dialogue visual graph are coming in Phase 4."),
+            WorkflowTab::SceneEditor => self.view_scene_editor_content(project, project_dir),
             WorkflowTab::Settings => self.view_placeholder_content("Project & System Screen Settings", "Runtime UI configurations (Main Menu, Save/Load, In-Game Pause) coming in Phase 5."),
         };
 
@@ -275,19 +339,19 @@ impl DashboardState {
 
         let next_step_box = container(
             column![
-                text("Step 3: Setup Story Scripts & Screenplay").size(HEADING_SM).color(iced::Color::from_rgb8(ACCENT_PRIMARY.r, ACCENT_PRIMARY.g, ACCENT_PRIMARY.b)),
-                text("Switch to the 'Story Setup' tab to type or import screenplays (.txt, .md, .fountain) and automatically parse dialogues into visual scene blocks.")
+                text("Step 4: Block-Based Scene Editor").size(HEADING_SM).color(iced::Color::from_rgb8(ACCENT_PRIMARY.r, ACCENT_PRIMARY.g, ACCENT_PRIMARY.b)),
+                text("Switch to 'Scene Editor' to sequence modular action blocks: Dialogue, Character Sprites (with Left/Center/Right presets), Backgrounds, Audio, and Decision Choices.")
                     .size(BODY_SM)
                     .color(iced::Color::from_rgb8(TEXT_SECONDARY.r, TEXT_SECONDARY.g, TEXT_SECONDARY.b)),
                 Space::with_height(SPACE_2),
                 button(
-                    row![icon_edit(), text("Open Story Setup").size(BODY_SM)]
+                    row![icon_film(), text("Open Scene Editor").size(BODY_SM)]
                         .spacing(SPACE_2)
                         .align_y(Alignment::Center),
                 )
                 .padding([SPACE_2, SPACE_4])
                 .style(primary_button_style)
-                .on_press(DashboardMessage::SelectWorkflowTab(WorkflowTab::Story)),
+                .on_press(DashboardMessage::SelectWorkflowTab(WorkflowTab::SceneEditor)),
             ]
             .spacing(SPACE_3),
         )
@@ -455,7 +519,6 @@ impl DashboardState {
         .spacing(SPACE_3)
         .align_y(Alignment::Center);
 
-        // Filtered Asset List
         let q_lower = self.asset_search_query.to_lowercase();
         let filtered_assets: Vec<&Asset> = project
             .assets
@@ -689,7 +752,6 @@ impl DashboardState {
         .spacing(SPACE_3)
         .align_y(Alignment::Center);
 
-        // Split Panes: Left = Text Editor, Right = Live Parsed Stream
         let left_editor_pane = self.view_script_editor_pane();
         let right_preview_pane = self.view_script_parsed_preview_pane();
 
@@ -947,6 +1009,497 @@ impl DashboardState {
                     .into()
             }
         }
+    }
+
+    // ==========================================
+    // TAB 4: BLOCK-BASED SCENE EDITOR
+    // ==========================================
+    fn view_scene_editor_content<'a>(&'a self, project: &'a Project, project_dir: &'a PathBuf) -> Element<'a, DashboardMessage> {
+        let left_sidebar = self.view_scene_selector_sidebar(project_dir);
+        let main_canvas = self.view_scene_canvas_pane(project);
+
+        let split = row![left_sidebar, main_canvas]
+            .width(Length::Fill)
+            .height(Length::Fill);
+
+        container(split)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .into()
+    }
+
+    fn view_scene_selector_sidebar<'a>(&'a self, _project_dir: &'a PathBuf) -> Element<'a, DashboardMessage> {
+        let title_row = row![
+            icon_film(),
+            text("SCENES")
+                .size(LABEL_SM)
+                .color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b)),
+            Space::with_width(Length::Fill),
+            text(format!("{}", self.scenes_list.len()))
+                .size(LABEL_SM)
+                .color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b)),
+        ]
+        .align_y(Alignment::Center);
+
+        let mut scenes_col = column![title_row].spacing(SPACE_2);
+
+        for (idx, scene_name) in self.scenes_list.iter().enumerate() {
+            let is_selected = self.selected_scene_index == idx;
+            let block_count = if is_selected {
+                self.current_scene.as_ref().map(|s| s.blocks.len()).unwrap_or(0)
+            } else {
+                0
+            };
+
+            let btn_scene = button(
+                row![
+                    icon_film(),
+                    text(scene_name).size(LABEL_MD),
+                    Space::with_width(Length::Fill),
+                    if is_selected {
+                        text(format!("{} blocks", block_count))
+                            .size(LABEL_SM)
+                            .color(iced::Color::from_rgb8(ACCENT_PRIMARY.r, ACCENT_PRIMARY.g, ACCENT_PRIMARY.b))
+                    } else {
+                        text("").size(LABEL_SM)
+                    },
+                ]
+                .spacing(SPACE_2)
+                .align_y(Alignment::Center),
+            )
+            .padding([SPACE_2, SPACE_3])
+            .width(Length::Fill)
+            .style(sidebar_button_style(is_selected))
+            .on_press(DashboardMessage::SelectScene(idx));
+
+            scenes_col = scenes_col.push(btn_scene);
+        }
+
+        let btn_new_scene = button(
+            row![icon_plus(), text("New Scene").size(BODY_SM)]
+                .spacing(SPACE_2)
+                .align_y(Alignment::Center),
+        )
+        .padding([SPACE_2, SPACE_3])
+        .width(Length::Fill)
+        .style(primary_button_style)
+        .on_press(DashboardMessage::CreateNewScene);
+
+        let btn_open_folder = button(
+            row![icon_folder(), text("Scenes Folder").size(LABEL_SM)]
+                .spacing(SPACE_1)
+                .align_y(Alignment::Center),
+        )
+        .padding([SPACE_2, SPACE_3])
+        .width(Length::Fill)
+        .style(subtle_button_style)
+        .on_press(DashboardMessage::OpenScenesFolder);
+
+        let sidebar_layout = column![
+            scenes_col,
+            Space::with_height(Length::Fill),
+            btn_new_scene,
+            btn_open_folder,
+        ]
+        .spacing(SPACE_2)
+        .padding(SPACE_4)
+        .width(Length::Fixed(260.0))
+        .height(Length::Fill);
+
+        container(sidebar_layout)
+            .style(sidebar_container_style)
+            .height(Length::Fill)
+            .into()
+    }
+
+    fn view_scene_canvas_pane<'a>(&'a self, _project: &'a Project) -> Element<'a, DashboardMessage> {
+        let Some(scene) = &self.current_scene else {
+            return container(text("No scene selected.").size(BODY_MD))
+                .center_x(Length::Fill)
+                .center_y(Length::Fill)
+                .into();
+        };
+
+        // Header bar with Scene Title and Save/Action buttons
+        let scene_header = column![
+            row![
+                text(format!("Scene: {}", scene.name))
+                    .size(HEADING_LG)
+                    .color(iced::Color::from_rgb8(TEXT_PRIMARY.r, TEXT_PRIMARY.g, TEXT_PRIMARY.b)),
+                container(
+                    text(&scene.chapter_id)
+                        .size(LABEL_SM)
+                        .color(iced::Color::from_rgb8(ACCENT_PRIMARY.r, ACCENT_PRIMARY.g, ACCENT_PRIMARY.b)),
+                )
+                .padding([2.0, 8.0])
+                .style(badge_container_style),
+            ]
+            .spacing(SPACE_3)
+            .align_y(Alignment::Center),
+            text(format!("{} action blocks sequenced in this scene", scene.blocks.len()))
+                .size(BODY_SM)
+                .color(iced::Color::from_rgb8(TEXT_SECONDARY.r, TEXT_SECONDARY.g, TEXT_SECONDARY.b)),
+        ]
+        .spacing(SPACE_1);
+
+        let btn_save = button(
+            row![icon_save(), text("Save Scene").size(LABEL_MD)]
+                .spacing(SPACE_2)
+                .align_y(Alignment::Center),
+        )
+        .padding([SPACE_2, SPACE_4])
+        .style(secondary_button_style)
+        .on_press(DashboardMessage::SaveCurrentScene);
+
+        let top_action_bar = row![
+            scene_header,
+            Space::with_width(Length::Fill),
+            btn_save,
+        ]
+        .align_y(Alignment::Center);
+
+        // Add Block Quick Bar
+        let bar_label = text("ADD ACTION BLOCK:")
+            .size(LABEL_SM)
+            .color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b));
+
+        let btn_add_dialogue = button(
+            row![icon_message(), text("Dialogue").size(LABEL_SM)].spacing(SPACE_1).align_y(Alignment::Center),
+        )
+        .padding([SPACE_1, SPACE_3])
+        .style(secondary_button_style)
+        .on_press(DashboardMessage::AddBlockToScene(ActionBlock::Dialogue {
+            speaker: "Alice".to_string(),
+            text: "Type your spoken dialogue here...".to_string(),
+            voice_asset_id: None,
+        }));
+
+        let btn_add_char = button(
+            row![icon_user(), text("Character").size(LABEL_SM)].spacing(SPACE_1).align_y(Alignment::Center),
+        )
+        .padding([SPACE_1, SPACE_3])
+        .style(secondary_button_style)
+        .on_press(DashboardMessage::AddBlockToScene(ActionBlock::Character {
+            character_id: "Alice".to_string(),
+            expression: "Normal".to_string(),
+            position: CharacterPosition::Center,
+            offset_x: 0.0,
+            offset_y: 0.0,
+            transition: Some(blanc_core::scene::TransitionType::Fade),
+        }));
+
+        let btn_add_bg = button(
+            row![icon_image(), text("Background").size(LABEL_SM)].spacing(SPACE_1).align_y(Alignment::Center),
+        )
+        .padding([SPACE_1, SPACE_3])
+        .style(secondary_button_style)
+        .on_press(DashboardMessage::AddBlockToScene(ActionBlock::Background {
+            asset_id: "classroom_day".to_string(),
+            transition: Some(blanc_core::scene::TransitionType::Fade),
+        }));
+
+        let btn_add_choice = button(
+            row![icon_branch(), text("Choice").size(LABEL_SM)].spacing(SPACE_1).align_y(Alignment::Center),
+        )
+        .padding([SPACE_1, SPACE_3])
+        .style(secondary_button_style)
+        .on_press(DashboardMessage::AddBlockToScene(ActionBlock::Choice {
+            prompt: "What will the player choose?".to_string(),
+            position: ChoiceLayoutPosition::Center,
+            options: vec![
+                SceneChoiceOption {
+                    id: uuid::Uuid::new_v4().to_string(),
+                    text: "Option A".to_string(),
+                    target_scene_id: "Scene_Next".to_string(),
+                },
+                SceneChoiceOption {
+                    id: uuid::Uuid::new_v4().to_string(),
+                    text: "Option B".to_string(),
+                    target_scene_id: "Scene_Alternative".to_string(),
+                },
+            ],
+        }));
+
+        let btn_add_bgm = button(
+            row![icon_music(), text("BGM Audio").size(LABEL_SM)].spacing(SPACE_1).align_y(Alignment::Center),
+        )
+        .padding([SPACE_1, SPACE_3])
+        .style(secondary_button_style)
+        .on_press(DashboardMessage::AddBlockToScene(ActionBlock::PlayBgm {
+            asset_id: "theme_peaceful".to_string(),
+            volume: 1.0,
+            looping: true,
+        }));
+
+        let add_bar = container(
+            row![
+                bar_label,
+                btn_add_dialogue,
+                btn_add_char,
+                btn_add_bg,
+                btn_add_choice,
+                btn_add_bgm,
+            ]
+            .spacing(SPACE_3)
+            .align_y(Alignment::Center),
+        )
+        .padding(SPACE_3)
+        .width(Length::Fill)
+        .style(card_container_style);
+
+        // Blocks Stack list
+        let mut blocks_col = column![].spacing(SPACE_3).width(Length::Fill);
+
+        for (idx, block) in scene.blocks.iter().enumerate() {
+            let card = self.view_action_block_card(idx, block, scene.blocks.len());
+            blocks_col = blocks_col.push(card);
+        }
+
+        let scroll_pane = scrollable(blocks_col).width(Length::Fill).height(Length::Fill);
+
+        let mut pane = column![
+            top_action_bar,
+            Space::with_height(SPACE_3),
+            add_bar,
+            Space::with_height(SPACE_3),
+            scroll_pane,
+        ]
+        .spacing(SPACE_2)
+        .padding(SPACE_6)
+        .width(Length::Fill)
+        .height(Length::Fill);
+
+        if let Some(msg) = &self.scene_status_message {
+            let status_banner = container(
+                text(msg)
+                    .size(BODY_SM)
+                    .color(iced::Color::from_rgb8(STATUS_SUCCESS.r, STATUS_SUCCESS.g, STATUS_SUCCESS.b)),
+            )
+            .padding(SPACE_3)
+            .style(callout_container_style);
+            pane = pane.push(status_banner);
+        }
+
+        pane.into()
+    }
+
+    fn view_action_block_card<'a>(&'a self, idx: usize, block: &'a ActionBlock, total: usize) -> Element<'a, DashboardMessage> {
+        let order_badge = container(
+            text(format!("#{}", idx + 1))
+                .size(LABEL_SM)
+                .color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b)),
+        )
+        .padding([2.0, 6.0])
+        .style(code_container_style);
+
+        // Block Type Header & Custom Inline Controls
+        let (block_type_label, block_icon, content_element): (&'static str, iced::widget::svg::Svg<'a, iced::Theme>, Element<'a, DashboardMessage>) = match block {
+            ActionBlock::Character { character_id, expression, position, .. } => {
+                let pos_buttons = row![
+                    text("Screen Position:").size(LABEL_SM).color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b)),
+                    button(text("Left").size(LABEL_SM))
+                        .padding([2.0, 8.0])
+                        .style(if *position == CharacterPosition::Left { primary_button_style } else { subtle_button_style })
+                        .on_press(DashboardMessage::UpdateBlockCharacterPosition(idx, CharacterPosition::Left)),
+                    button(text("Center").size(LABEL_SM))
+                        .padding([2.0, 8.0])
+                        .style(if *position == CharacterPosition::Center { primary_button_style } else { subtle_button_style })
+                        .on_press(DashboardMessage::UpdateBlockCharacterPosition(idx, CharacterPosition::Center)),
+                    button(text("Right").size(LABEL_SM))
+                        .padding([2.0, 8.0])
+                        .style(if *position == CharacterPosition::Right { primary_button_style } else { subtle_button_style })
+                        .on_press(DashboardMessage::UpdateBlockCharacterPosition(idx, CharacterPosition::Right)),
+                ]
+                .spacing(SPACE_2)
+                .align_y(Alignment::Center);
+
+                let info_row = row![
+                    text(format!("Character: {}", character_id)).size(BODY_SM).color(iced::Color::from_rgb8(TEXT_PRIMARY.r, TEXT_PRIMARY.g, TEXT_PRIMARY.b)),
+                    text("•").size(LABEL_SM).color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b)),
+                    text(format!("Expression: {}", expression)).size(BODY_SM).color(iced::Color::from_rgb8(ACCENT_PRIMARY.r, ACCENT_PRIMARY.g, ACCENT_PRIMARY.b)),
+                ]
+                .spacing(SPACE_2);
+
+                (
+                    "Character Sprite",
+                    icon_user(),
+                    column![info_row, pos_buttons].spacing(SPACE_2).into(),
+                )
+            }
+            ActionBlock::Dialogue { speaker, text: spoken_text, .. } => {
+                let speaker_input = text_input("Speaker", speaker)
+                    .on_input(move |val| DashboardMessage::UpdateSpeakerName(idx, val))
+                    .padding(SPACE_1)
+                    .width(Length::Fixed(160.0))
+                    .style(input_field_style);
+
+                let text_field = text_input("Spoken dialogue...", spoken_text)
+                    .on_input(move |val| DashboardMessage::UpdateDialogueText(idx, val))
+                    .padding(SPACE_1)
+                    .width(Length::Fill)
+                    .style(input_field_style);
+
+                let inputs_row = row![
+                    speaker_input,
+                    text_field,
+                ]
+                .spacing(SPACE_3)
+                .align_y(Alignment::Center);
+
+                (
+                    "Dialogue",
+                    icon_message(),
+                    inputs_row.into(),
+                )
+            }
+            ActionBlock::Background { asset_id, transition } => {
+                let trans_name = transition.map(|t| format!("{:?}", t)).unwrap_or_else(|| "Cut".to_string());
+                let content = row![
+                    text(format!("Asset: {}", asset_id)).size(BODY_SM).color(iced::Color::from_rgb8(TEXT_PRIMARY.r, TEXT_PRIMARY.g, TEXT_PRIMARY.b)),
+                    text("•").size(LABEL_SM).color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b)),
+                    text(format!("Transition: {}", trans_name)).size(BODY_SM).color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b)),
+                ]
+                .spacing(SPACE_2);
+
+                (
+                    "Background",
+                    icon_image(),
+                    content.into(),
+                )
+            }
+            ActionBlock::Choice { prompt, options, position } => {
+                let prompt_input = text_input("Question / Prompt", prompt)
+                    .on_input(move |val| DashboardMessage::UpdateChoicePrompt(idx, val))
+                    .padding(SPACE_1)
+                    .width(Length::Fill)
+                    .style(input_field_style);
+
+                let pos_buttons = row![
+                    text("Button Layout:").size(LABEL_SM).color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b)),
+                    button(text("Center Screen").size(LABEL_SM))
+                        .padding([2.0, 8.0])
+                        .style(if *position == ChoiceLayoutPosition::Center { primary_button_style } else { subtle_button_style })
+                        .on_press(DashboardMessage::UpdateBlockChoicePosition(idx, ChoiceLayoutPosition::Center)),
+                    button(text("Above Dialogue").size(LABEL_SM))
+                        .padding([2.0, 8.0])
+                        .style(if *position == ChoiceLayoutPosition::AboveDialogueBox { primary_button_style } else { subtle_button_style })
+                        .on_press(DashboardMessage::UpdateBlockChoicePosition(idx, ChoiceLayoutPosition::AboveDialogueBox)),
+                    button(text("Left").size(LABEL_SM))
+                        .padding([2.0, 8.0])
+                        .style(if *position == ChoiceLayoutPosition::Left { primary_button_style } else { subtle_button_style })
+                        .on_press(DashboardMessage::UpdateBlockChoicePosition(idx, ChoiceLayoutPosition::Left)),
+                    button(text("Right").size(LABEL_SM))
+                        .padding([2.0, 8.0])
+                        .style(if *position == ChoiceLayoutPosition::Right { primary_button_style } else { subtle_button_style })
+                        .on_press(DashboardMessage::UpdateBlockChoicePosition(idx, ChoiceLayoutPosition::Right)),
+                ]
+                .spacing(SPACE_2)
+                .align_y(Alignment::Center);
+
+                let mut opts_col = column![prompt_input, pos_buttons].spacing(SPACE_2);
+
+                for (opt_idx, opt) in options.iter().enumerate() {
+                    let opt_item = row![
+                        text(format!("{}. \"{}\"", opt_idx + 1, opt.text)).size(BODY_SM),
+                        Space::with_width(Length::Fill),
+                        text(format!("➔ Jump to: {}", opt.target_scene_id))
+                            .size(LABEL_SM)
+                            .color(iced::Color::from_rgb8(ACCENT_PRIMARY.r, ACCENT_PRIMARY.g, ACCENT_PRIMARY.b)),
+                    ]
+                    .spacing(SPACE_2)
+                    .align_y(Alignment::Center);
+
+                    opts_col = opts_col.push(container(opt_item).padding(SPACE_2).style(code_container_style));
+                }
+
+                (
+                    "Branching Player Choice",
+                    icon_branch(),
+                    opts_col.into(),
+                )
+            }
+            ActionBlock::PlayBgm { asset_id, volume, looping } => {
+                let info = row![
+                    text(format!("Track: {}", asset_id)).size(BODY_SM).color(iced::Color::from_rgb8(STATUS_SUCCESS.r, STATUS_SUCCESS.g, STATUS_SUCCESS.b)),
+                    text("•").size(LABEL_SM).color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b)),
+                    text(format!("Volume: {:.0}%", volume * 100.0)).size(BODY_SM).color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b)),
+                    text("•").size(LABEL_SM).color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b)),
+                    text(if *looping { "Looping: Yes" } else { "Looping: No" }).size(BODY_SM).color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b)),
+                ]
+                .spacing(SPACE_2);
+
+                (
+                    "Play BGM",
+                    icon_music(),
+                    info.into(),
+                )
+            }
+            ActionBlock::Narration { text: narrative } => {
+                let text_field = text_input("Narration text...", narrative)
+                    .on_input(move |val| DashboardMessage::UpdateDialogueText(idx, val))
+                    .padding(SPACE_1)
+                    .width(Length::Fill)
+                    .style(input_field_style);
+
+                (
+                    "Narration",
+                    icon_file_text(),
+                    text_field.into(),
+                )
+            }
+            other => (
+                other.block_type_name(),
+                icon_blocks(),
+                text("Custom block action").size(BODY_SM).into(),
+            ),
+        };
+
+        // Header line for each block
+        let block_header = row![
+            order_badge,
+            block_icon,
+            text(block_type_label)
+                .size(LABEL_MD)
+                .color(iced::Color::from_rgb8(TEXT_PRIMARY.r, TEXT_PRIMARY.g, TEXT_PRIMARY.b)),
+        ]
+        .spacing(SPACE_2)
+        .align_y(Alignment::Center);
+
+        // Control buttons (Move Up, Move Down, Delete)
+        let btn_up = button(icon_arrow_up())
+            .padding([SPACE_1, SPACE_2])
+            .style(icon_button_style)
+            .on_press_maybe(if idx > 0 { Some(DashboardMessage::MoveBlockUp(idx)) } else { None });
+
+        let btn_down = button(icon_arrow_down())
+            .padding([SPACE_1, SPACE_2])
+            .style(icon_button_style)
+            .on_press_maybe(if idx + 1 < total { Some(DashboardMessage::MoveBlockDown(idx)) } else { None });
+
+        let btn_delete = button(icon_trash())
+            .padding([SPACE_1, SPACE_2])
+            .style(icon_button_style)
+            .on_press(DashboardMessage::RemoveBlockFromScene(idx));
+
+        let control_buttons = row![btn_up, btn_down, btn_delete]
+            .spacing(SPACE_1)
+            .align_y(Alignment::Center);
+
+        let top_row = row![block_header, Space::with_width(Length::Fill), control_buttons]
+            .align_y(Alignment::Center);
+
+        let card_layout = column![
+            top_row,
+            Space::with_height(SPACE_1),
+            content_element,
+        ]
+        .spacing(SPACE_2);
+
+        container(card_layout)
+            .padding(SPACE_4)
+            .width(Length::Fill)
+            .style(project_card_style)
+            .into()
     }
 
     // ==========================================

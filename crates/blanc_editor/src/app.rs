@@ -398,6 +398,7 @@ impl EditorApp {
                         StoryElement::Choice(c) => {
                             current_scene.add_block(ActionBlock::Choice {
                                 prompt: c.prompt.clone().unwrap_or_else(|| "Make a choice".to_string()),
+                                position: blanc_core::scene::ChoiceLayoutPosition::Center,
                                 options: c.options.iter().map(|opt| SceneChoiceOption {
                                     id: uuid::Uuid::new_v4().to_string(),
                                     text: opt.text.clone(),
@@ -430,6 +431,116 @@ impl EditorApp {
                     scenes_count,
                     dashboard.story_chapter_name
                 ));
+            }
+            DashboardMessage::SelectScene(idx) => {
+                if idx < dashboard.scenes_list.len() {
+                    dashboard.selected_scene_index = idx;
+                    let scene_name = &dashboard.scenes_list[idx];
+                    let scene_file = project_dir
+                        .join("Scenes")
+                        .join(&dashboard.story_chapter_name)
+                        .join(format!("{}.bscene", scene_name.replace(' ', "_")));
+                    if let Ok(loaded) = Scene::load_from_file(&scene_file) {
+                        dashboard.current_scene = Some(loaded);
+                    }
+                }
+            }
+            DashboardMessage::CreateNewScene => {
+                let new_idx = dashboard.scenes_list.len() + 1;
+                let new_name = format!("scene_{:02}", new_idx);
+                let new_scene = Scene::new(&new_name, &dashboard.story_chapter_name);
+                let scene_file = project_dir
+                    .join("Scenes")
+                    .join(&dashboard.story_chapter_name)
+                    .join(format!("{}.bscene", new_name));
+                let _ = new_scene.save_to_file(&scene_file);
+                dashboard.scenes_list.push(new_name);
+                dashboard.selected_scene_index = dashboard.scenes_list.len() - 1;
+                dashboard.current_scene = Some(new_scene);
+                dashboard.scene_status_message = Some("Created new scene.".to_string());
+            }
+            DashboardMessage::SaveCurrentScene => {
+                if let Some(scene) = &dashboard.current_scene {
+                    let scene_file = project_dir
+                        .join("Scenes")
+                        .join(&dashboard.story_chapter_name)
+                        .join(format!("{}.bscene", scene.name.replace(' ', "_")));
+                    match scene.save_to_file(&scene_file) {
+                        Ok(_) => {
+                            dashboard.scene_status_message = Some(format!("Saved scene '{}'.", scene.name));
+                        }
+                        Err(err) => {
+                            dashboard.scene_status_message = Some(format!("Failed to save scene: {}", err));
+                        }
+                    }
+                }
+            }
+            DashboardMessage::OpenScenesFolder => {
+                let folder = project_dir.join("Scenes").join(&dashboard.story_chapter_name);
+                let _ = std::fs::create_dir_all(&folder);
+                #[cfg(target_os = "windows")]
+                let _ = Command::new("explorer").arg(folder).spawn();
+                #[cfg(target_os = "macos")]
+                let _ = Command::new("open").arg(folder).spawn();
+                #[cfg(target_os = "linux")]
+                let _ = Command::new("xdg-open").arg(folder).spawn();
+            }
+            DashboardMessage::AddBlockToScene(block) => {
+                if let Some(scene) = &mut dashboard.current_scene {
+                    scene.add_block(block);
+                }
+            }
+            DashboardMessage::RemoveBlockFromScene(idx) => {
+                if let Some(scene) = &mut dashboard.current_scene {
+                    scene.remove_block(idx);
+                }
+            }
+            DashboardMessage::MoveBlockUp(idx) => {
+                if let Some(scene) = &mut dashboard.current_scene {
+                    scene.move_block_up(idx);
+                }
+            }
+            DashboardMessage::MoveBlockDown(idx) => {
+                if let Some(scene) = &mut dashboard.current_scene {
+                    scene.move_block_down(idx);
+                }
+            }
+            DashboardMessage::UpdateBlockCharacterPosition(idx, pos) => {
+                if let Some(scene) = &mut dashboard.current_scene {
+                    if let Some(ActionBlock::Character { position, .. }) = scene.blocks.get_mut(idx) {
+                        *position = pos;
+                    }
+                }
+            }
+            DashboardMessage::UpdateBlockChoicePosition(idx, pos) => {
+                if let Some(scene) = &mut dashboard.current_scene {
+                    if let Some(ActionBlock::Choice { position, .. }) = scene.blocks.get_mut(idx) {
+                        *position = pos;
+                    }
+                }
+            }
+            DashboardMessage::UpdateSpeakerName(idx, spk) => {
+                if let Some(scene) = &mut dashboard.current_scene {
+                    if let Some(ActionBlock::Dialogue { speaker, .. }) = scene.blocks.get_mut(idx) {
+                        *speaker = spk;
+                    }
+                }
+            }
+            DashboardMessage::UpdateDialogueText(idx, txt) => {
+                if let Some(scene) = &mut dashboard.current_scene {
+                    match scene.blocks.get_mut(idx) {
+                        Some(ActionBlock::Dialogue { text, .. }) => *text = txt,
+                        Some(ActionBlock::Narration { text, .. }) => *text = txt,
+                        _ => {}
+                    }
+                }
+            }
+            DashboardMessage::UpdateChoicePrompt(idx, pmt) => {
+                if let Some(scene) = &mut dashboard.current_scene {
+                    if let Some(ActionBlock::Choice { prompt, .. }) = scene.blocks.get_mut(idx) {
+                        *prompt = pmt;
+                    }
+                }
             }
             DashboardMessage::PlayPreview => {
                 // Launch blanc_runtime as child process
