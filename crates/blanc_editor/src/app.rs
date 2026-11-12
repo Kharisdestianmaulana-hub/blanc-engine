@@ -52,6 +52,9 @@ impl EditorApp {
         };
 
         match message {
+            WelcomeMessage::ToggleSidebar => {
+                state.is_sidebar_expanded = !state.is_sidebar_expanded;
+            }
             WelcomeMessage::SelectTab(tab) => {
                 state.active_tab = tab;
                 state.error_message = None;

@@ -8,10 +8,11 @@ use blanc_core::theme::colors::*;
 use blanc_core::theme::spacing::*;
 use blanc_core::theme::typography::*;
 
+use crate::icons::*;
 use crate::theme::{
     badge_container_style, callout_container_style, card_container_style, code_container_style,
-    input_field_style, primary_button_style, project_card_style, secondary_button_style,
-    sidebar_button_style, sidebar_container_style, subtle_button_style,
+    icon_button_style, input_field_style, primary_button_style, project_card_style,
+    secondary_button_style, sidebar_button_style, sidebar_container_style, subtle_button_style,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -109,6 +110,7 @@ impl HubConfig {
 
 #[derive(Debug, Clone)]
 pub enum WelcomeMessage {
+    ToggleSidebar,
     SelectTab(HubTab),
     SelectDocsTopic(DocsTopic),
     SearchQueryChanged(String),
@@ -129,6 +131,7 @@ pub enum WelcomeMessage {
 pub struct WelcomeState {
     pub active_tab: HubTab,
     pub active_docs_topic: DocsTopic,
+    pub is_sidebar_expanded: bool,
     pub search_query: String,
 
     // New project modal state
@@ -150,6 +153,7 @@ impl Default for WelcomeState {
         Self {
             active_tab: HubTab::Projects,
             active_docs_topic: DocsTopic::QuickStart,
+            is_sidebar_expanded: true,
             search_query: String::new(),
             is_creating_project: false,
             input_name: "Echoes of Memories".to_string(),
@@ -186,21 +190,37 @@ impl WelcomeState {
     }
 
     // ==========================================
-    // SIDEBAR
+    // SIDEBAR (COLLAPSIBLE)
     // ==========================================
     fn view_sidebar(&self) -> Element<'_, WelcomeMessage> {
-        // App brand header
-        let brand_icon = text("✦")
-            .size(HEADING_MD)
-            .color(iced::Color::from_rgb8(ACCENT_PRIMARY.r, ACCENT_PRIMARY.g, ACCENT_PRIMARY.b));
+        if self.is_sidebar_expanded {
+            self.view_expanded_sidebar()
+        } else {
+            self.view_collapsed_sidebar()
+        }
+    }
+
+    fn view_expanded_sidebar(&self) -> Element<'_, WelcomeMessage> {
+        // Brand header with collapse button
+        let brand_icon = icon_sparkle();
 
         let brand_title = text("BLANC ENGINE")
             .size(HEADING_SM)
             .color(iced::Color::from_rgb8(TEXT_PRIMARY.r, TEXT_PRIMARY.g, TEXT_PRIMARY.b));
 
-        let brand_row = row![brand_icon, brand_title]
-            .spacing(SPACE_2)
-            .align_y(Alignment::Center);
+        let btn_collapse = button(icon_chevron_left())
+            .padding([SPACE_1, SPACE_2])
+            .style(icon_button_style)
+            .on_press(WelcomeMessage::ToggleSidebar);
+
+        let brand_row = row![
+            brand_icon,
+            brand_title,
+            Space::with_width(Length::Fill),
+            btn_collapse,
+        ]
+        .spacing(SPACE_2)
+        .align_y(Alignment::Center);
 
         let badge = container(
             text("v0.1.0-alpha")
@@ -214,13 +234,16 @@ impl WelcomeState {
             .size(LABEL_SM)
             .color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b));
 
-        let brand_section = column![brand_row, row![badge, brand_subtitle].spacing(SPACE_2).align_y(Alignment::Center)]
-            .spacing(SPACE_2);
+        let brand_section = column![
+            brand_row,
+            row![badge, brand_subtitle].spacing(SPACE_2).align_y(Alignment::Center),
+        ]
+        .spacing(SPACE_2);
 
         // Sidebar Navigation Buttons
         let btn_projects = button(
             row![
-                text("📁").size(BODY_MD),
+                icon_folder(),
                 text("Projects").size(BODY_MD),
                 Space::with_width(Length::Fill),
                 text(format!("{}", self.config.recent_projects.len()))
@@ -237,7 +260,7 @@ impl WelcomeState {
 
         let btn_learn = button(
             row![
-                text("📚").size(BODY_MD),
+                icon_book(),
                 text("Learn & Docs").size(BODY_MD),
             ]
             .spacing(SPACE_3)
@@ -250,7 +273,7 @@ impl WelcomeState {
 
         let btn_settings = button(
             row![
-                text("⚙️").size(BODY_MD),
+                icon_settings(),
                 text("Settings").size(BODY_MD),
             ]
             .spacing(SPACE_3)
@@ -291,6 +314,50 @@ impl WelcomeState {
             .into()
     }
 
+    fn view_collapsed_sidebar(&self) -> Element<'_, WelcomeMessage> {
+        let btn_expand = button(icon_menu())
+            .padding(SPACE_2)
+            .style(icon_button_style)
+            .on_press(WelcomeMessage::ToggleSidebar);
+
+        let btn_projects = button(icon_folder())
+            .padding(SPACE_3)
+            .style(sidebar_button_style(self.active_tab == HubTab::Projects))
+            .on_press(WelcomeMessage::SelectTab(HubTab::Projects));
+
+        let btn_learn = button(icon_book())
+            .padding(SPACE_3)
+            .style(sidebar_button_style(self.active_tab == HubTab::LearnDocs))
+            .on_press(WelcomeMessage::SelectTab(HubTab::LearnDocs));
+
+        let btn_settings = button(icon_settings())
+            .padding(SPACE_3)
+            .style(sidebar_button_style(self.active_tab == HubTab::Settings))
+            .on_press(WelcomeMessage::SelectTab(HubTab::Settings));
+
+        let nav_icons = column![btn_projects, btn_learn, btn_settings]
+            .spacing(SPACE_3)
+            .align_x(Alignment::Center);
+
+        let layout = column![
+            btn_expand,
+            Space::with_height(SPACE_6),
+            nav_icons,
+            Space::with_height(Length::Fill),
+            icon_sparkle(),
+        ]
+        .spacing(SPACE_2)
+        .align_x(Alignment::Center)
+        .padding(SPACE_3)
+        .width(Length::Fixed(64.0))
+        .height(Length::Fill);
+
+        container(layout)
+            .style(sidebar_container_style)
+            .height(Length::Fill)
+            .into()
+    }
+
     // ==========================================
     // PROJECTS TAB
     // ==========================================
@@ -304,7 +371,7 @@ impl WelcomeState {
             text("Projects")
                 .size(HEADING_LG)
                 .color(iced::Color::from_rgb8(TEXT_PRIMARY.r, TEXT_PRIMARY.g, TEXT_PRIMARY.b)),
-            text("Create or manage your visual novel projects")
+            text("Manage and create your visual novel projects")
                 .size(BODY_SM)
                 .color(iced::Color::from_rgb8(TEXT_SECONDARY.r, TEXT_SECONDARY.g, TEXT_SECONDARY.b)),
         ]
@@ -317,7 +384,7 @@ impl WelcomeState {
             .style(input_field_style);
 
         let btn_open = button(
-            row![text("📂").size(LABEL_MD), text("Open...").size(LABEL_MD)]
+            row![icon_folder(), text("Open...").size(LABEL_MD)]
                 .spacing(SPACE_2)
                 .align_y(Alignment::Center),
         )
@@ -326,7 +393,7 @@ impl WelcomeState {
         .on_press(WelcomeMessage::OpenProjectClicked);
 
         let btn_new = button(
-            row![text("+").size(LABEL_MD), text("New Project").size(LABEL_MD)]
+            row![icon_plus(), text("New Project").size(LABEL_MD)]
                 .spacing(SPACE_2)
                 .align_y(Alignment::Center),
         )
@@ -362,19 +429,19 @@ impl WelcomeState {
             .collect();
 
         let list_content: Element<'_, WelcomeMessage> = if filtered_projects.is_empty() {
-            let empty_icon = text(if self.search_query.is_empty() { "🎮" } else { "🔍" }).size(48);
+            let empty_icon = icon_gamepad();
             let empty_title = text(if self.search_query.is_empty() {
                 "No Visual Novel Projects Found"
             } else {
-                "No matching projects"
+                "No Matching Projects"
             })
             .size(HEADING_MD)
             .color(iced::Color::from_rgb8(TEXT_PRIMARY.r, TEXT_PRIMARY.g, TEXT_PRIMARY.b));
 
             let empty_sub = text(if self.search_query.is_empty() {
-                "Get started by creating a new project or open an existing .blanc manifest."
+                "Get started by creating a new visual novel project or open an existing .blanc manifest."
             } else {
-                "Try searching with a different name or path."
+                "Try searching with a different project name or path."
             })
             .size(BODY_SM)
             .color(iced::Color::from_rgb8(TEXT_SECONDARY.r, TEXT_SECONDARY.g, TEXT_SECONDARY.b));
@@ -384,10 +451,14 @@ impl WelcomeState {
                 .align_x(Alignment::Center);
 
             if self.search_query.is_empty() {
-                let btn_first_create = button(text("+ Create Your First Project").size(BODY_MD))
-                    .padding([SPACE_3, SPACE_6])
-                    .style(primary_button_style)
-                    .on_press(WelcomeMessage::ShowCreateModal);
+                let btn_first_create = button(
+                    row![icon_plus(), text("Create Your First Project").size(BODY_MD)]
+                        .spacing(SPACE_2)
+                        .align_y(Alignment::Center),
+                )
+                .padding([SPACE_3, SPACE_6])
+                .style(primary_button_style)
+                .on_press(WelcomeMessage::ShowCreateModal);
                 empty_col = empty_col.push(Space::with_height(SPACE_4)).push(btn_first_create);
             }
 
@@ -428,7 +499,7 @@ impl WelcomeState {
     }
 
     fn view_project_card<'a>(&'a self, project: &'a RecentProject) -> Element<'a, WelcomeMessage> {
-        let icon_box = container(text("📖").size(24))
+        let icon_box = container(icon_folder())
             .padding(SPACE_3)
             .style(card_container_style);
 
@@ -463,12 +534,16 @@ impl WelcomeState {
             .on_press(WelcomeMessage::OpenRecentProject(project.path.clone()));
 
         let parent_dir = project.path.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| project.path.clone());
-        let btn_reveal = button(text("Explorer").size(LABEL_SM))
-            .padding([SPACE_2, SPACE_3])
-            .style(subtle_button_style)
-            .on_press(WelcomeMessage::RevealInExplorer(parent_dir));
+        let btn_reveal = button(
+            row![icon_external_link(), text("Explorer").size(LABEL_SM)]
+                .spacing(SPACE_1)
+                .align_y(Alignment::Center),
+        )
+        .padding([SPACE_2, SPACE_3])
+        .style(subtle_button_style)
+        .on_press(WelcomeMessage::RevealInExplorer(parent_dir));
 
-        let btn_remove = button(text("✕").size(LABEL_SM))
+        let btn_remove = button(icon_close())
             .padding([SPACE_2, SPACE_3])
             .style(subtle_button_style)
             .on_press(WelcomeMessage::RemoveRecentProject(project.path.clone()));
@@ -499,13 +574,23 @@ impl WelcomeState {
     // CREATE PROJECT MODAL
     // ==========================================
     fn view_create_project_modal(&self) -> Element<'_, WelcomeMessage> {
-        let title = text("Create New Visual Novel Project")
-            .size(HEADING_LG)
-            .color(iced::Color::from_rgb8(TEXT_PRIMARY.r, TEXT_PRIMARY.g, TEXT_PRIMARY.b));
-
-        let subtitle = text("Setup project details and directory structure")
-            .size(BODY_SM)
-            .color(iced::Color::from_rgb8(TEXT_SECONDARY.r, TEXT_SECONDARY.g, TEXT_SECONDARY.b));
+        let title_row = row![
+            column![
+                text("Create New Visual Novel Project")
+                    .size(HEADING_LG)
+                    .color(iced::Color::from_rgb8(TEXT_PRIMARY.r, TEXT_PRIMARY.g, TEXT_PRIMARY.b)),
+                text("Configure project details and directory structure")
+                    .size(BODY_SM)
+                    .color(iced::Color::from_rgb8(TEXT_SECONDARY.r, TEXT_SECONDARY.g, TEXT_SECONDARY.b)),
+            ]
+            .spacing(SPACE_1),
+            Space::with_width(Length::Fill),
+            button(icon_close())
+                .padding(SPACE_2)
+                .style(icon_button_style)
+                .on_press(WelcomeMessage::CancelCreateModal),
+        ]
+        .align_y(Alignment::Center);
 
         // Name field
         let name_label = text("Project Title").size(LABEL_MD).color(iced::Color::from_rgb8(TEXT_SECONDARY.r, TEXT_SECONDARY.g, TEXT_SECONDARY.b));
@@ -522,7 +607,7 @@ impl WelcomeState {
             .style(input_field_style);
 
         // Folder selection
-        let folder_label = text("Destination Parent Folder").size(LABEL_MD).color(iced::Color::from_rgb8(TEXT_SECONDARY.r, TEXT_SECONDARY.g, TEXT_SECONDARY.b));
+        let folder_label = text("Project Parent Directory").size(LABEL_MD).color(iced::Color::from_rgb8(TEXT_SECONDARY.r, TEXT_SECONDARY.g, TEXT_SECONDARY.b));
         let folder_text = self
             .selected_folder
             .as_ref()
@@ -563,7 +648,7 @@ impl WelcomeState {
 
         let preview_box = container(
             column![
-                text("Project Target Path Preview:").size(LABEL_SM).color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b)),
+                text("Project Target File Preview:").size(LABEL_SM).color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b)),
                 text(preview_path).size(BODY_SM).color(iced::Color::from_rgb8(ACCENT_PRIMARY.r, ACCENT_PRIMARY.g, ACCENT_PRIMARY.b)),
             ]
             .spacing(SPACE_1),
@@ -573,13 +658,12 @@ impl WelcomeState {
         .style(code_container_style);
 
         // Preset badge summary
-        let specs_info = text("⚙️ Default Specs: 1920×1080 (16:9 Full HD) • Dual-process Runtime • GPLv3 Engine")
+        let specs_info = text("Specifications: 1920×1080 (16:9 Full HD) • Dual-process Architecture • GPLv3 Engine")
             .size(LABEL_SM)
             .color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b));
 
         let mut form = column![
-            title,
-            subtitle,
+            title_row,
             Space::with_height(SPACE_3),
             name_label,
             name_input,
@@ -592,7 +676,7 @@ impl WelcomeState {
             specs_info,
         ]
         .spacing(SPACE_3)
-        .width(Length::Fixed(560.0));
+        .width(Length::Fixed(580.0));
 
         if let Some(err) = &self.error_message {
             form = form.push(
@@ -631,52 +715,72 @@ impl WelcomeState {
     }
 
     // ==========================================
-    // LEARN & DOCS TAB
+    // LEARN & DOCS TAB (ALL IN ENGLISH)
     // ==========================================
     fn view_learn_docs_tab(&self) -> Element<'_, WelcomeMessage> {
         let header = column![
             text("Learn & Documentation")
                 .size(HEADING_LG)
                 .color(iced::Color::from_rgb8(TEXT_PRIMARY.r, TEXT_PRIMARY.g, TEXT_PRIMARY.b)),
-            text("Panduan lengkap dan referensi pengembangan Visual Novel di Blanc Engine")
+            text("Complete guide and reference for Visual Novel development in Blanc Engine")
                 .size(BODY_SM)
                 .color(iced::Color::from_rgb8(TEXT_SECONDARY.r, TEXT_SECONDARY.g, TEXT_SECONDARY.b)),
         ]
         .spacing(SPACE_1);
 
         // Subtopics navigation
-        let topic_quick = button(text("🚀 Panduan Cepat").size(LABEL_MD))
-            .padding([SPACE_2, SPACE_3])
-            .width(Length::Fill)
-            .style(sidebar_button_style(self.active_docs_topic == DocsTopic::QuickStart))
-            .on_press(WelcomeMessage::SelectDocsTopic(DocsTopic::QuickStart));
+        let topic_quick = button(
+            row![icon_rocket(), text("Quick Start Guide").size(LABEL_MD)]
+                .spacing(SPACE_2)
+                .align_y(Alignment::Center),
+        )
+        .padding([SPACE_2, SPACE_3])
+        .width(Length::Fill)
+        .style(sidebar_button_style(self.active_docs_topic == DocsTopic::QuickStart))
+        .on_press(WelcomeMessage::SelectDocsTopic(DocsTopic::QuickStart));
 
-        let topic_script = button(text("✍️ Format Naskah Cerita").size(LABEL_MD))
-            .padding([SPACE_2, SPACE_3])
-            .width(Length::Fill)
-            .style(sidebar_button_style(self.active_docs_topic == DocsTopic::StoryScript))
-            .on_press(WelcomeMessage::SelectDocsTopic(DocsTopic::StoryScript));
+        let topic_script = button(
+            row![icon_edit(), text("Story Script Format").size(LABEL_MD)]
+                .spacing(SPACE_2)
+                .align_y(Alignment::Center),
+        )
+        .padding([SPACE_2, SPACE_3])
+        .width(Length::Fill)
+        .style(sidebar_button_style(self.active_docs_topic == DocsTopic::StoryScript))
+        .on_press(WelcomeMessage::SelectDocsTopic(DocsTopic::StoryScript));
 
-        let topic_blocks = button(text("🎬 Sistem Action Blocks").size(LABEL_MD))
-            .padding([SPACE_2, SPACE_3])
-            .width(Length::Fill)
-            .style(sidebar_button_style(self.active_docs_topic == DocsTopic::ActionBlocks))
-            .on_press(WelcomeMessage::SelectDocsTopic(DocsTopic::ActionBlocks));
+        let topic_blocks = button(
+            row![icon_blocks(), text("Action Block System").size(LABEL_MD)]
+                .spacing(SPACE_2)
+                .align_y(Alignment::Center),
+        )
+        .padding([SPACE_2, SPACE_3])
+        .width(Length::Fill)
+        .style(sidebar_button_style(self.active_docs_topic == DocsTopic::ActionBlocks))
+        .on_press(WelcomeMessage::SelectDocsTopic(DocsTopic::ActionBlocks));
 
-        let topic_assets = button(text("🎨 Standar Aset & Audio").size(LABEL_MD))
-            .padding([SPACE_2, SPACE_3])
-            .width(Length::Fill)
-            .style(sidebar_button_style(self.active_docs_topic == DocsTopic::AssetGuidelines))
-            .on_press(WelcomeMessage::SelectDocsTopic(DocsTopic::AssetGuidelines));
+        let topic_assets = button(
+            row![icon_palette(), text("Asset Guidelines").size(LABEL_MD)]
+                .spacing(SPACE_2)
+                .align_y(Alignment::Center),
+        )
+        .padding([SPACE_2, SPACE_3])
+        .width(Length::Fill)
+        .style(sidebar_button_style(self.active_docs_topic == DocsTopic::AssetGuidelines))
+        .on_press(WelcomeMessage::SelectDocsTopic(DocsTopic::AssetGuidelines));
 
-        let topic_controls = button(text("🎮 Kontrol & Shortcut").size(LABEL_MD))
-            .padding([SPACE_2, SPACE_3])
-            .width(Length::Fill)
-            .style(sidebar_button_style(self.active_docs_topic == DocsTopic::RuntimeControls))
-            .on_press(WelcomeMessage::SelectDocsTopic(DocsTopic::RuntimeControls));
+        let topic_controls = button(
+            row![icon_keyboard(), text("Runtime Controls").size(LABEL_MD)]
+                .spacing(SPACE_2)
+                .align_y(Alignment::Center),
+        )
+        .padding([SPACE_2, SPACE_3])
+        .width(Length::Fill)
+        .style(sidebar_button_style(self.active_docs_topic == DocsTopic::RuntimeControls))
+        .on_press(WelcomeMessage::SelectDocsTopic(DocsTopic::RuntimeControls));
 
         let topics_menu = column![
-            text("TOPIK PANDUAN").size(LABEL_SM).color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b)),
+            text("DOCUMENTATION TOPICS").size(LABEL_SM).color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b)),
             topic_quick,
             topic_script,
             topic_blocks,
@@ -684,7 +788,7 @@ impl WelcomeState {
             topic_controls,
         ]
         .spacing(SPACE_2)
-        .width(Length::Fixed(220.0));
+        .width(Length::Fixed(240.0));
 
         let content_body = match self.active_docs_topic {
             DocsTopic::QuickStart => self.doc_quick_start(),
@@ -713,32 +817,32 @@ impl WelcomeState {
 
     fn doc_quick_start(&self) -> Element<'_, WelcomeMessage> {
         column![
-            text("🚀 Panduan Cepat: Membuat Visual Novel dalam 5 Menit")
+            text("Quick Start Guide: Create a Visual Novel in 5 Minutes")
                 .size(HEADING_MD)
                 .color(iced::Color::from_rgb8(TEXT_PRIMARY.r, TEXT_PRIMARY.g, TEXT_PRIMARY.b)),
-            text("Selamat datang di Blanc Engine! Panduan ini akan memandu Anda membuat proyek visual novel pertama Anda.")
+            text("Welcome to Blanc Engine! This guide walks you through setting up and running your first visual novel project.")
                 .size(BODY_MD)
                 .color(iced::Color::from_rgb8(TEXT_SECONDARY.r, TEXT_SECONDARY.g, TEXT_SECONDARY.b)),
             Space::with_height(SPACE_3),
-            
+
             self.create_step_card(
-                "Langkah 1: Buat Proyek Baru",
-                "Klik tab 'Projects' di bilah kiri, lalu klik tombol '+ New Project'. Beri nama visual novel dan tentukan studio pembuatnya. Lokasi folder bawaan telah disiapkan di folder Documents Anda."
+                "Step 1: Create a New Project",
+                "Navigate to the 'Projects' tab in the left sidebar and click '+ New Project'. Enter your project title and author name. The engine automatically creates standard directories and initializes the project manifest."
             ),
-            
+
             self.create_step_card(
-                "Langkah 2: Tulis Dialog & Naskah Cerita",
-                "Di Editor Workspace, masuk ke tab 'Story Script'. Anda dapat mengetik naskah langsung dengan format sederhana seperti:\n\nAlice (Happy): \"Halo! Selamat datang di Blanc Engine!\"\nBob: \"Luar biasa, pembuatan VN jadi sangat mudah!\""
+                "Step 2: Write Story & Dialogue",
+                "In the Editor Workspace, switch to the 'Story Script' tab. You can type screenplay-style scripts naturally:\n\nAlice (Happy): \"Hello! Welcome to Blanc Engine!\"\nBob: \"Writing visual novels has never been easier!\""
             ),
-            
+
             self.create_step_card(
-                "Langkah 3: Kelola Aset & Background",
-                "Di tab 'Asset Registry', impor gambar latar belakang (Backgrounds) dan sprite karakter (Characters). Cukup drag-and-drop atau salin gambar ke folder proyek Anda."
+                "Step 3: Organize Assets & Characters",
+                "Switch to the 'Asset Registry' tab or simply place your images and audio files inside your project's 'Assets/Backgrounds/', 'Assets/Characters/', and 'Assets/BGM/' folders."
             ),
-            
+
             self.create_step_card(
-                "Langkah 4: Jalankan Permainan Instan",
-                "Klik tombol hijau '▶ Play Preview' di pojok kanan atas editor. Standalone Runtime (blanc_runtime.exe) akan langsung muncul sebagai proses terpisah yang mulus tanpa delay!"
+                "Step 4: Launch Instant Play Preview",
+                "Click the green 'Play Preview' button in the upper-right corner of the editor. The standalone runtime (blanc_runtime.exe) launches instantly as a smooth child process without recompilation delay!"
             ),
         ]
         .spacing(SPACE_4)
@@ -746,31 +850,31 @@ impl WelcomeState {
     }
 
     fn doc_story_script(&self) -> Element<'_, WelcomeMessage> {
-        let code_sample = r#"// Contoh Naskah Cerita Blanc Engine (.txt / .md / .fountain)
-[Scene: Ruang_Kelas]
-[BGM: santai_siang]
+        let code_sample = r#"// Blanc Engine Story Script Sample (.txt / .md / .fountain)
+[Scene: Classroom]
+[BGM: peaceful_afternoon]
 
-Alice (Happy): "Selamat pagi! Kamu sudah sarapan belum?"
-Bob (Thinking): "Hmm... baru saja minum kopi sih."
+Alice (Happy): "Good morning! Have you had breakfast yet?"
+Bob (Thinking): "Hmm... I only had a cup of coffee so far."
 
-Alice: "Kalau begitu, ayo ke kantin bareng!"
+Alice: "In that case, let's head to the cafeteria together!"
 
 [Choice:
-  - "Ikut ke kantin" -> Scene_Kantin
-  - "Tolak dengan sopan" -> Scene_Belajar
+  - "Go to the cafeteria" -> Scene_Cafeteria
+  - "Politely decline" -> Scene_Study
 ]"#;
 
         column![
-            text("✍️ Format Naskah Cerita (Story Script)")
+            text("Story Script Format & Dialogue Syntax")
                 .size(HEADING_MD)
                 .color(iced::Color::from_rgb8(TEXT_PRIMARY.r, TEXT_PRIMARY.g, TEXT_PRIMARY.b)),
-            text("Blanc Engine mendukung format teks naskah alami. Anda dapat menulis seperti menulis naskah teater atau film, dan engine akan otomatis mengonversinya menjadi action blocks!")
+            text("Blanc Engine supports natural dialogue screenplay syntax. Write your story like a theatrical script, and the engine automatically translates lines into visual action blocks.")
                 .size(BODY_MD)
                 .color(iced::Color::from_rgb8(TEXT_SECONDARY.r, TEXT_SECONDARY.g, TEXT_SECONDARY.b)),
             Space::with_height(SPACE_2),
 
-            text("Sintaks Dialog:").size(HEADING_SM).color(iced::Color::from_rgb8(TEXT_PRIMARY.r, TEXT_PRIMARY.g, TEXT_PRIMARY.b)),
-            text("Gunakan format: Karakter (Emosi): \"Teks dialog\". Emosi dalam kurung bersifat opsional dan akan otomatis memilih sprite karakter yang sesuai.").size(BODY_SM).color(iced::Color::from_rgb8(TEXT_SECONDARY.r, TEXT_SECONDARY.g, TEXT_SECONDARY.b)),
+            text("Dialogue Syntax:").size(HEADING_SM).color(iced::Color::from_rgb8(TEXT_PRIMARY.r, TEXT_PRIMARY.g, TEXT_PRIMARY.b)),
+            text("Format: Character (Emotion): \"Spoken text\". Emotion tags in parentheses are optional and will automatically bind to corresponding character sprite expressions.").size(BODY_SM).color(iced::Color::from_rgb8(TEXT_SECONDARY.r, TEXT_SECONDARY.g, TEXT_SECONDARY.b)),
 
             container(
                 text(code_sample).size(BODY_SM).color(iced::Color::from_rgb8(ACCENT_PRIMARY.r, ACCENT_PRIMARY.g, ACCENT_PRIMARY.b))
@@ -780,10 +884,10 @@ Alice: "Kalau begitu, ayo ke kantin bareng!"
             .style(code_container_style),
 
             Space::with_height(SPACE_2),
-            text("💡 Tips Impor Eksternal:")
+            text("External Script Import:")
                 .size(LABEL_MD)
                 .color(iced::Color::from_rgb8(STATUS_SUCCESS.r, STATUS_SUCCESS.g, STATUS_SUCCESS.b)),
-            text("Anda juga dapat menulis skenario menggunakan aplikasi favorit Anda (Notepad, Obsidian, VS Code, atau WriterDuet) dan langsung mengimpor file .txt, .md, atau .fountain ke dalam Blanc Engine.")
+            text("You can draft your story scripts in your favorite text editor (Notepad, Obsidian, VS Code, or Fountain screenplay software) and directly import .txt, .md, or .fountain files into Blanc Engine.")
                 .size(BODY_SM)
                 .color(iced::Color::from_rgb8(TEXT_SECONDARY.r, TEXT_SECONDARY.g, TEXT_SECONDARY.b)),
         ]
@@ -793,29 +897,29 @@ Alice: "Kalau begitu, ayo ke kantin bareng!"
 
     fn doc_action_blocks(&self) -> Element<'_, WelcomeMessage> {
         column![
-            text("🎬 Sistem Action Blocks Tanpa Koding")
+            text("Modular No-Code Action Block System")
                 .size(HEADING_MD)
                 .color(iced::Color::from_rgb8(TEXT_PRIMARY.r, TEXT_PRIMARY.g, TEXT_PRIMARY.b)),
-            text("Setiap adegan (Scene) di Blanc Engine tersusun atas blok-blok aksi modular. Anda dapat menyusun alur cerita semudah menyusun balok puzzle.")
+            text("Every scene in Blanc Engine is composed of modular action blocks arranged sequentially. Build dynamic game mechanics with zero programming required.")
                 .size(BODY_MD)
                 .color(iced::Color::from_rgb8(TEXT_SECONDARY.r, TEXT_SECONDARY.g, TEXT_SECONDARY.b)),
             Space::with_height(SPACE_3),
 
             self.create_step_card(
-                "1. Dialog Block",
-                "Menampilkan kotak dialog, nama karakter pembicara, emosi wajah, teks cerita yang dapat diatur kecepatan ketiknya (typewriter effect), serta pemutaran voice acting."
+                "1. Dialogue Block",
+                "Displays the dialogue box, speaker portrait, character name, emotion expression, typewriter text speed, and optional voice acting audio trigger."
             ),
             self.create_step_card(
                 "2. Choice & Branching Block",
-                "Menyajikan pilihan interaktif di layar kepada pemain. Setiap pilihan dapat mengarahkan cerita ke adegan baru (jump scene), menyetel variabel flags (misalnya relasi atau poin cinta)."
+                "Presents interactive decision buttons on screen. Each choice can jump to a target scene, evaluate variables, and update story flags."
             ),
             self.create_step_card(
                 "3. Audio & Music Block",
-                "Mengontrol musik latar (BGM Play/Stop/Fade-In/Fade-Out) dan efek suara (SFX Play/Volume). Mendukung pemutaran looping audio yang mulus."
+                "Controls background music (BGM Play/Stop/Fade-In/Fade-Out) and sound effects (SFX Play/Volume). Supports seamless looping playback."
             ),
             self.create_step_card(
                 "4. Character & Camera Block",
-                "Mengatur kemunculan sprite karakter pada preset posisi (Left, Center, Right), transisi kemunculan, dan efek transisi latar belakang (Fade to Black, Cross Dissolve)."
+                "Manages character sprite placement across presets (Left, Center, Right), appearance animations, and scene background transitions (Fade to Black, Cross Dissolve)."
             ),
         ]
         .spacing(SPACE_4)
@@ -824,29 +928,29 @@ Alice: "Kalau begitu, ayo ke kantin bareng!"
 
     fn doc_asset_guidelines(&self) -> Element<'_, WelcomeMessage> {
         column![
-            text("🎨 Standar Aset Visual & Audio")
+            text("Visual & Audio Asset Guidelines")
                 .size(HEADING_MD)
                 .color(iced::Color::from_rgb8(TEXT_PRIMARY.r, TEXT_PRIMARY.g, TEXT_PRIMARY.b)),
-            text("Agar visual novel Anda tampil optimal di berbagai layar dengan performa mulus, ikuti panduan format berikut:")
+            text("To ensure crisp presentation and fast loading times across different display aspect ratios, follow these recommended asset standards:")
                 .size(BODY_MD)
                 .color(iced::Color::from_rgb8(TEXT_SECONDARY.r, TEXT_SECONDARY.g, TEXT_SECONDARY.b)),
             Space::with_height(SPACE_3),
 
             self.create_step_card(
-                "📐 Resolusi Kanvas Standar: 1920 × 1080 (16:9 Full HD)",
-                "Semua background dianjurkan berukuran 1920x1080 px. Runtime otomatis melakukan aspect-ratio scaling letterbox jika dimainkan pada rasio layar yang berbeda."
+                "Default Canvas: 1920 × 1080 (16:9 Full HD)",
+                "All backgrounds are recommended at 1920x1080 px. The runtime player automatically handles letterboxing and aspect-ratio scaling on wider or taller screens."
             ),
             self.create_step_card(
-                "🖼 Format Gambar: PNG & WebP",
-                "Gunakan PNG dengan transparansi untuk Sprite Karakter dan UI. WebP sangat direkomendasikan untuk Backgrounds karena ukuran file jauh lebih kecil tanpa mengurangi kualitas visual."
+                "Image Formats: PNG & WebP",
+                "Use transparent PNG for Character Sprites and UI elements. WebP is highly recommended for Backgrounds to minimize file size while preserving high visual fidelity."
             ),
             self.create_step_card(
-                "🎵 Format Audio: OGG, WAV, MP3",
-                "Format OGG sangat direkomendasikan untuk BGM karena efisiensi memori dan mendukung seamless looping audio. WAV cocok untuk SFX pendek yang responsif."
+                "Audio Formats: OGG, WAV, MP3",
+                "OGG is recommended for BGM tracks due to low memory footprint and seamless looping support. WAV is best for snappy, responsive sound effects."
             ),
             self.create_step_card(
-                "📁 Struktur Folder Proyek",
-                "Aset tersimpan rapi dalam folder proyek Anda:\n• Assets/Backgrounds/\n• Assets/Characters/\n• Assets/BGM/\n• Assets/SFX/\n• Assets/Fonts/"
+                "Project Folder Structure",
+                "Assets are organized cleanly within your project directory:\n• Assets/Backgrounds/\n• Assets/Characters/\n• Assets/BGM/\n• Assets/SFX/\n• Assets/Fonts/"
             ),
         ]
         .spacing(SPACE_4)
@@ -855,33 +959,33 @@ Alice: "Kalau begitu, ayo ke kantin bareng!"
 
     fn doc_runtime_controls(&self) -> Element<'_, WelcomeMessage> {
         column![
-            text("🎮 Kontrol Runtime & Shortcut")
+            text("Runtime Controls & Keyboard Shortcuts")
                 .size(HEADING_MD)
                 .color(iced::Color::from_rgb8(TEXT_PRIMARY.r, TEXT_PRIMARY.g, TEXT_PRIMARY.b)),
-            text("Kontrol standar bawaan saat menjalankan permainan di Blanc Runtime:")
+            text("Built-in controls for playing visual novels in the standalone Blanc Runtime:")
                 .size(BODY_MD)
                 .color(iced::Color::from_rgb8(TEXT_SECONDARY.r, TEXT_SECONDARY.g, TEXT_SECONDARY.b)),
             Space::with_height(SPACE_3),
 
             self.create_step_card(
-                "Space / Enter / Klik Kiri",
-                "Maju ke baris dialog berikutnya atau mengonfirmasi pilihan interaktif."
+                "Space / Enter / Left Click",
+                "Advances dialogue to the next line or confirms an on-screen interactive choice."
             ),
             self.create_step_card(
-                "Ctrl (Tahan)",
-                "Fitur Skip / Fast-Forward untuk mempercepat dialog yang sudah pernah dibaca sebelumnya."
+                "Ctrl (Hold)",
+                "Fast-forward / Skip mode to quickly advance through dialogue that has already been read."
             ),
             self.create_step_card(
                 "H (Hide UI)",
-                "Menyembunyikan teks box dialog untuk menikmati ilustrasi CG atau latar belakang secara penuh."
+                "Toggles dialogue box visibility to view full-screen background artwork and character illustrations."
             ),
             self.create_step_card(
                 "Escape (Esc)",
-                "Membuka menu jeda dalam game (In-Game Pause Menu) untuk Save, Load, atau kembali ke Main Menu."
+                "Opens the In-Game Pause Menu for Saving, Loading, Volume Settings, or returning to Title Screen."
             ),
             self.create_step_card(
                 "F5 (Quick Save) & F8 (Quick Load)",
-                "Menyimpan permainan secara instan ke Quick Slot dan memuatnya kembali kapan saja."
+                "Instantly saves current progress to the quick save slot, and reloads it anytime."
             ),
         ]
         .spacing(SPACE_4)
@@ -907,14 +1011,14 @@ Alice: "Kalau begitu, ayo ke kantin bareng!"
     }
 
     // ==========================================
-    // SETTINGS TAB
+    // SETTINGS TAB (ALL IN ENGLISH)
     // ==========================================
     fn view_settings_tab(&self) -> Element<'_, WelcomeMessage> {
         let title_col = column![
             text("Engine Settings & Preferences")
                 .size(HEADING_LG)
                 .color(iced::Color::from_rgb8(TEXT_PRIMARY.r, TEXT_PRIMARY.g, TEXT_PRIMARY.b)),
-            text("Konfigurasi penyimpanan proyek bawaan dan informasi engine")
+            text("Configure default project storage directory and engine specifications")
                 .size(BODY_SM)
                 .color(iced::Color::from_rgb8(TEXT_SECONDARY.r, TEXT_SECONDARY.g, TEXT_SECONDARY.b)),
         ]
@@ -928,17 +1032,17 @@ Alice: "Kalau begitu, ayo ke kantin bareng!"
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_else(|| "Not configured (User Documents default)".to_string());
 
-        let btn_change_folder = button(text("Ganti Folder...").size(LABEL_MD))
+        let btn_change_folder = button(text("Change Folder...").size(LABEL_MD))
             .padding([SPACE_2, SPACE_4])
             .style(secondary_button_style)
             .on_press(WelcomeMessage::ChangeDefaultFolder);
 
         let folder_card = container(
             column![
-                text("📁 Folder Penyimpanan Proyek Bawaan")
+                text("Default Project Directory")
                     .size(HEADING_SM)
                     .color(iced::Color::from_rgb8(TEXT_PRIMARY.r, TEXT_PRIMARY.g, TEXT_PRIMARY.b)),
-                text("Lokasi default saat Anda membuat proyek visual novel baru.")
+                text("The default parent folder where newly created visual novel projects will be initialized.")
                     .size(BODY_SM)
                     .color(iced::Color::from_rgb8(TEXT_SECONDARY.r, TEXT_SECONDARY.g, TEXT_SECONDARY.b)),
                 Space::with_height(SPACE_2),
@@ -965,28 +1069,28 @@ Alice: "Kalau begitu, ayo ke kantin bareng!"
         // Section 2: Engine Specifications & License
         let info_card = container(
             column![
-                text("ℹ️ Informasi Engine & Lisensi")
+                text("Engine Specifications & Licensing")
                     .size(HEADING_SM)
                     .color(iced::Color::from_rgb8(TEXT_PRIMARY.r, TEXT_PRIMARY.g, TEXT_PRIMARY.b)),
                 Space::with_height(SPACE_2),
                 row![
-                    text("Versi Engine:").size(BODY_SM).color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b)).width(Length::Fixed(160.0)),
+                    text("Engine Version:").size(BODY_SM).color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b)).width(Length::Fixed(180.0)),
                     text("v0.1.0-alpha (Milestone 1)").size(BODY_SM).color(iced::Color::from_rgb8(TEXT_PRIMARY.r, TEXT_PRIMARY.g, TEXT_PRIMARY.b)),
                 ].spacing(SPACE_2),
                 row![
-                    text("Lisensi Engine:").size(BODY_SM).color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b)).width(Length::Fixed(160.0)),
+                    text("Engine License:").size(BODY_SM).color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b)).width(Length::Fixed(180.0)),
                     text("GNU General Public License v3 (GPLv3)").size(BODY_SM).color(iced::Color::from_rgb8(TEXT_PRIMARY.r, TEXT_PRIMARY.g, TEXT_PRIMARY.b)),
                 ].spacing(SPACE_2),
                 row![
-                    text("Kepemilikan Game:").size(BODY_SM).color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b)).width(Length::Fixed(160.0)),
-                    text("100% Hak Milik Kreator (Bebas komersial / gratis)").size(BODY_SM).color(iced::Color::from_rgb8(STATUS_SUCCESS.r, STATUS_SUCCESS.g, STATUS_SUCCESS.b)),
+                    text("Created Games Ownership:").size(BODY_SM).color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b)).width(Length::Fixed(180.0)),
+                    text("100% Creator-Owned (Commercial / Free to distribute)").size(BODY_SM).color(iced::Color::from_rgb8(STATUS_SUCCESS.r, STATUS_SUCCESS.g, STATUS_SUCCESS.b)),
                 ].spacing(SPACE_2),
                 row![
-                    text("Teknologi:").size(BODY_SM).color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b)).width(Length::Fixed(160.0)),
+                    text("Technology Stack:").size(BODY_SM).color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b)).width(Length::Fixed(180.0)),
                     text("Rust 2021, Iced GUI, wgpu hardware acceleration").size(BODY_SM).color(iced::Color::from_rgb8(TEXT_PRIMARY.r, TEXT_PRIMARY.g, TEXT_PRIMARY.b)),
                 ].spacing(SPACE_2),
                 row![
-                    text("Arsitektur Runtime:").size(BODY_SM).color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b)).width(Length::Fixed(160.0)),
+                    text("Runtime Architecture:").size(BODY_SM).color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b)).width(Length::Fixed(180.0)),
                     text("Dual-process (Child Process blanc_runtime.exe)").size(BODY_SM).color(iced::Color::from_rgb8(TEXT_PRIMARY.r, TEXT_PRIMARY.g, TEXT_PRIMARY.b)),
                 ].spacing(SPACE_2),
             ]

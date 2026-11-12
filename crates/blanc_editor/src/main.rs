@@ -1,4 +1,5 @@
 mod app;
+mod icons;
 mod screens;
 mod theme;
 

@@ -197,6 +197,37 @@ pub fn sidebar_button_style(is_active: bool) -> impl Fn(&iced::Theme, button::St
     }
 }
 
+pub fn icon_button_style(theme: &iced::Theme, status: button::Status) -> button::Style {
+    let _ = theme;
+    let base = button::Style {
+        background: Some(Background::Color(Color::TRANSPARENT)),
+        text_color: to_iced_color(TEXT_SECONDARY, 1.0),
+        border: Border {
+            radius: Radius::from(RADIUS_MD),
+            width: 0.0,
+            color: Color::TRANSPARENT,
+        },
+        shadow: Shadow::default(),
+    };
+
+    match status {
+        button::Status::Active => base,
+        button::Status::Hovered => button::Style {
+            background: Some(Background::Color(to_iced_color(SURFACE_HOVER, 1.0))),
+            text_color: to_iced_color(TEXT_PRIMARY, 1.0),
+            ..base
+        },
+        button::Status::Pressed => button::Style {
+            background: Some(Background::Color(to_iced_color(SURFACE_ELEVATED, 1.0))),
+            ..base
+        },
+        button::Status::Disabled => button::Style {
+            text_color: to_iced_color(TEXT_DISABLED, 1.0),
+            ..base
+        },
+    }
+}
+
 pub fn subtle_button_style(theme: &iced::Theme, status: button::Status) -> button::Style {
     let _ = theme;
     let base = button::Style {
