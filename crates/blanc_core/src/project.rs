@@ -18,6 +18,8 @@ pub enum ProjectError {
     NotFound(PathBuf),
     #[error("Invalid project file: {0}")]
     Invalid(String),
+    #[error("Unsupported asset format: {0}")]
+    UnsupportedFormat(String),
 }
 
 /// Project manifest model stored as `<ProjectName>.blanc`
@@ -118,5 +120,98 @@ impl Project {
         let content = serde_json::to_string_pretty(&self)?;
         fs::write(manifest_path, content)?;
         Ok(())
+    }
+
+    pub fn manifest_path_in_dir(project_dir: &Path, project_name: &str) -> PathBuf {
+        let filename = format!("{}.{}", project_name.replace(' ', "_"), Self::MANIFEST_EXTENSION);
+        project_dir.join(filename)
+    }
+
+    /// Imports an external file into the project's asset directory and registers it
+    pub fn import_asset(
+        &mut self,
+        project_dir: &Path,
+        source_path: &Path,
+        category: crate::asset::AssetCategory,
+    ) -> Result<crate::asset::Asset, ProjectError> {
+        if !source_path.exists() {
+            return Err(ProjectError::NotFound(source_path.to_path_buf()));
+        }
+
+        let extension = source_path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .map(|s| s.to_ascii_lowercase())
+            .unwrap_or_default();
+
+        if !AssetRegistry::is_supported_file_extension(source_path) {
+            return Err(ProjectError::UnsupportedFormat(format!(
+                "File format '.{}' is not supported in Blanc Engine.",
+                extension
+            )));
+        }
+
+        let file_stem = source_path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("asset");
+        let safe_name = file_stem.replace(' ', "_");
+        let filename = format!("{}.{}", safe_name, extension);
+
+        let target_folder = project_dir.join(category.subfolder());
+        fs::create_dir_all(&target_folder)?;
+
+        let mut target_path = target_folder.join(&filename);
+        let mut final_filename = filename.clone();
+        let mut counter = 1;
+        while target_path.exists() && target_path != source_path {
+            final_filename = format!("{}_{}.{}", safe_name, counter, extension);
+            target_path = target_folder.join(&final_filename);
+            counter += 1;
+        }
+
+        if source_path != target_path {
+            fs::copy(source_path, &target_path)?;
+        }
+
+        let file_size = fs::metadata(&target_path)?.len();
+        let relative_path = format!("{}/{}", category.subfolder(), final_filename);
+        let asset_id = format!("{}_{}", category.subfolder().replace('/', "_").to_lowercase(), final_filename.replace('.', "_"));
+
+        let asset = crate::asset::Asset::new(
+            asset_id,
+            safe_name,
+            category,
+            relative_path,
+            file_size,
+        );
+
+        self.assets.insert(asset.clone());
+        let manifest_path = Self::manifest_path_in_dir(project_dir, &self.name);
+        self.save_manifest(&manifest_path)?;
+
+        Ok(asset)
+    }
+
+    /// Removes an asset from registry and optionally deletes file from disk
+    pub fn delete_asset(
+        &mut self,
+        project_dir: &Path,
+        asset_id: &str,
+        delete_file: bool,
+    ) -> Result<Option<crate::asset::Asset>, ProjectError> {
+        if let Some(removed) = self.assets.remove(asset_id) {
+            if delete_file {
+                let file_path = project_dir.join(&removed.relative_path);
+                if file_path.exists() {
+                    let _ = fs::remove_file(file_path);
+                }
+            }
+            let manifest_path = Self::manifest_path_in_dir(project_dir, &self.name);
+            self.save_manifest(&manifest_path)?;
+            Ok(Some(removed))
+        } else {
+            Ok(None)
+        }
     }
 }

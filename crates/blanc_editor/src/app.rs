@@ -2,6 +2,7 @@ use std::path::PathBuf;
 use std::process::Command;
 use iced::{Element, Task};
 
+use blanc_core::asset::AssetCategory;
 use blanc_core::project::Project;
 use crate::screens::{DashboardMessage, DashboardState, WelcomeMessage, WelcomeState};
 
@@ -187,7 +188,7 @@ impl EditorApp {
 
     fn update_dashboard(&mut self, message: DashboardMessage) -> Task<AppMessage> {
         let CurrentScreen::Workspace {
-            project: _,
+            project,
             project_dir,
             dashboard,
         } = &mut self.screen
@@ -201,6 +202,90 @@ impl EditorApp {
             }
             DashboardMessage::SelectWorkflowTab(tab) => {
                 dashboard.active_tab = tab;
+                dashboard.status_message = None;
+            }
+            DashboardMessage::OpenProjectFolder => {
+                #[cfg(target_os = "windows")]
+                let _ = Command::new("explorer").arg(project_dir).spawn();
+                #[cfg(target_os = "macos")]
+                let _ = Command::new("open").arg(project_dir).spawn();
+                #[cfg(target_os = "linux")]
+                let _ = Command::new("xdg-open").arg(project_dir).spawn();
+            }
+            DashboardMessage::SelectAssetCategory(cat) => {
+                dashboard.selected_category = cat;
+                dashboard.status_message = None;
+            }
+            DashboardMessage::AssetSearchChanged(q) => {
+                dashboard.asset_search_query = q;
+            }
+            DashboardMessage::ImportAssetClicked(category) => {
+                let mut dialog = rfd::FileDialog::new();
+                match category {
+                    AssetCategory::Background => {
+                        dialog = dialog.add_filter("Images (*.png, *.jpg, *.webp)", &["png", "jpg", "jpeg", "webp"]);
+                    }
+                    AssetCategory::Character | AssetCategory::CharacterExpression => {
+                        dialog = dialog.add_filter("Character Sprites (*.png, *.webp)", &["png", "webp"]);
+                    }
+                    AssetCategory::Bgm => {
+                        dialog = dialog.add_filter("BGM Audio (*.ogg, *.mp3, *.wav)", &["ogg", "mp3", "wav"]);
+                    }
+                    AssetCategory::Sfx => {
+                        dialog = dialog.add_filter("SFX Audio (*.wav, *.ogg, *.mp3)", &["wav", "ogg", "mp3"]);
+                    }
+                    AssetCategory::Font => {
+                        dialog = dialog.add_filter("Fonts (*.ttf, *.otf)", &["ttf", "otf"]);
+                    }
+                    AssetCategory::Ui | AssetCategory::Other => {
+                        dialog = dialog.add_filter("Supported Assets", &["png", "jpg", "jpeg", "webp", "ogg", "wav", "mp3", "ttf", "otf"]);
+                    }
+                }
+
+                if let Some(picked_path) = dialog.pick_file() {
+                    match project.import_asset(project_dir, &picked_path, category) {
+                        Ok(asset) => {
+                            dashboard.status_message = Some(format!(
+                                "Imported '{}' to {}.",
+                                asset.name,
+                                asset.category.display_name()
+                            ));
+                        }
+                        Err(err) => {
+                            dashboard.status_message = Some(format!("Failed to import asset: {}", err));
+                        }
+                    }
+                }
+            }
+            DashboardMessage::DeleteAssetClicked(asset_id) => {
+                match project.delete_asset(project_dir, &asset_id, true) {
+                    Ok(_) => {
+                        dashboard.status_message = Some("Asset deleted successfully.".to_string());
+                    }
+                    Err(err) => {
+                        dashboard.status_message = Some(format!("Failed to delete asset: {}", err));
+                    }
+                }
+            }
+            DashboardMessage::OpenAssetFolder(category) => {
+                let cat_folder = project_dir.join(category.subfolder());
+                let _ = std::fs::create_dir_all(&cat_folder);
+                #[cfg(target_os = "windows")]
+                let _ = Command::new("explorer").arg(&cat_folder).spawn();
+                #[cfg(target_os = "macos")]
+                let _ = Command::new("open").arg(&cat_folder).spawn();
+                #[cfg(target_os = "linux")]
+                let _ = Command::new("xdg-open").arg(&cat_folder).spawn();
+            }
+            DashboardMessage::RevealAssetInExplorer(relative_path) => {
+                let full_path = project_dir.join(relative_path);
+                let folder = full_path.parent().unwrap_or(project_dir);
+                #[cfg(target_os = "windows")]
+                let _ = Command::new("explorer").arg(folder).spawn();
+                #[cfg(target_os = "macos")]
+                let _ = Command::new("open").arg(folder).spawn();
+                #[cfg(target_os = "linux")]
+                let _ = Command::new("xdg-open").arg(folder).spawn();
             }
             DashboardMessage::PlayPreview => {
                 // Launch blanc_runtime as child process
@@ -228,9 +313,9 @@ impl EditorApp {
             CurrentScreen::Welcome(w_state) => w_state.view().map(AppMessage::Welcome),
             CurrentScreen::Workspace {
                 project,
+                project_dir,
                 dashboard,
-                ..
-            } => dashboard.view(project).map(AppMessage::Dashboard),
+            } => dashboard.view(project, project_dir).map(AppMessage::Dashboard),
         }
     }
 }

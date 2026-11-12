@@ -37,6 +37,20 @@ const PALETTE_SVG: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0
 
 const KEYBOARD_SVG: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#94a3b8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="20" height="16" x="2" y="4" rx="2"/><path d="M6 8h.001M10 8h.001M14 8h.001M18 8h.001M8 12h.001M12 12h.001M16 12h.001M7 16h10"/></svg>"##;
 
+const IMAGE_SVG: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#94a3b8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2" ry="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21"/></svg>"##;
+
+const USER_SVG: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#94a3b8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>"##;
+
+const MUSIC_SVG: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#94a3b8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>"##;
+
+const VOLUME_SVG: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#94a3b8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/></svg>"##;
+
+const TYPE_SVG: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#94a3b8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 7 4 4 20 4 20 7"/><line x1="9" x2="15" y1="20" y2="20"/><line x1="12" x2="12" y1="4" y2="20"/></svg>"##;
+
+const TRASH_SVG: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#ef4444" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/><line x1="10" x2="10" y1="11" y2="17"/><line x1="14" x2="14" y1="11" y2="17"/></svg>"##;
+
+const PLAY_SVG: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="#22c55e"><polygon points="5 3 19 12 5 21 5 3"/></svg>"##;
+
 pub fn icon_folder<'a>() -> Svg<'a, iced::Theme> {
     Svg::new(Handle::from_memory(FOLDER_SVG.as_bytes()))
         .width(Length::Fixed(18.0))
@@ -137,4 +151,46 @@ pub fn icon_keyboard<'a>() -> Svg<'a, iced::Theme> {
     Svg::new(Handle::from_memory(KEYBOARD_SVG.as_bytes()))
         .width(Length::Fixed(16.0))
         .height(Length::Fixed(16.0))
+}
+
+pub fn icon_image<'a>() -> Svg<'a, iced::Theme> {
+    Svg::new(Handle::from_memory(IMAGE_SVG.as_bytes()))
+        .width(Length::Fixed(16.0))
+        .height(Length::Fixed(16.0))
+}
+
+pub fn icon_user<'a>() -> Svg<'a, iced::Theme> {
+    Svg::new(Handle::from_memory(USER_SVG.as_bytes()))
+        .width(Length::Fixed(16.0))
+        .height(Length::Fixed(16.0))
+}
+
+pub fn icon_music<'a>() -> Svg<'a, iced::Theme> {
+    Svg::new(Handle::from_memory(MUSIC_SVG.as_bytes()))
+        .width(Length::Fixed(16.0))
+        .height(Length::Fixed(16.0))
+}
+
+pub fn icon_volume<'a>() -> Svg<'a, iced::Theme> {
+    Svg::new(Handle::from_memory(VOLUME_SVG.as_bytes()))
+        .width(Length::Fixed(16.0))
+        .height(Length::Fixed(16.0))
+}
+
+pub fn icon_type<'a>() -> Svg<'a, iced::Theme> {
+    Svg::new(Handle::from_memory(TYPE_SVG.as_bytes()))
+        .width(Length::Fixed(16.0))
+        .height(Length::Fixed(16.0))
+}
+
+pub fn icon_trash<'a>() -> Svg<'a, iced::Theme> {
+    Svg::new(Handle::from_memory(TRASH_SVG.as_bytes()))
+        .width(Length::Fixed(14.0))
+        .height(Length::Fixed(14.0))
+}
+
+pub fn icon_play<'a>() -> Svg<'a, iced::Theme> {
+    Svg::new(Handle::from_memory(PLAY_SVG.as_bytes()))
+        .width(Length::Fixed(14.0))
+        .height(Length::Fixed(14.0))
 }
