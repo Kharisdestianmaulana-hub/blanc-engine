@@ -77,8 +77,41 @@ impl Project {
         // Initialize project manifest
         let mut project = Self::new(project_name, author);
 
-        // Create default initial scene
-        let initial_scene = Scene::new("Opening", "Chapter_01");
+        // Create default initial scene with starter action blocks
+        let mut initial_scene = Scene::new("01_opening", "Chapter_01");
+        initial_scene.add_block(crate::scene::ActionBlock::Background {
+            asset_id: "classroom_afternoon".to_string(),
+            transition: Some(crate::scene::TransitionType::Fade),
+        });
+        initial_scene.add_block(crate::scene::ActionBlock::Character {
+            character_id: "Alice".to_string(),
+            expression: "Happy".to_string(),
+            position: crate::scene::CharacterPosition::Center,
+            offset_x: 0.0,
+            offset_y: 0.0,
+            transition: Some(crate::scene::TransitionType::Fade),
+        });
+        initial_scene.add_block(crate::scene::ActionBlock::Dialogue {
+            speaker: "Alice".to_string(),
+            text: "Hello! Welcome to Blanc Engine's Visual Scene Editor.".to_string(),
+            voice_asset_id: None,
+        });
+        initial_scene.add_block(crate::scene::ActionBlock::Choice {
+            prompt: "What would you like to explore next?".to_string(),
+            position: crate::scene::ChoiceLayoutPosition::Center,
+            options: vec![
+                crate::scene::ChoiceOption {
+                    id: uuid::Uuid::new_v4().to_string(),
+                    text: "Explore Classroom".to_string(),
+                    target_scene_id: "Scene_Classroom".to_string(),
+                },
+                crate::scene::ChoiceOption {
+                    id: uuid::Uuid::new_v4().to_string(),
+                    text: "Head Outside to Courtyard".to_string(),
+                    target_scene_id: "Scene_Courtyard".to_string(),
+                },
+            ],
+        });
         project.starting_scene_id = Some(initial_scene.id.clone());
 
         let initial_scene_path = project_dir.join("Scenes/Chapter_01/01_opening.bscene");

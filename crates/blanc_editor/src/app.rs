@@ -6,7 +6,7 @@ use blanc_core::asset::AssetCategory;
 use blanc_core::project::Project;
 use blanc_core::scene::{ActionBlock, ChoiceOption as SceneChoiceOption, Scene};
 use blanc_core::story::{Chapter, Story, StoryElement};
-use crate::screens::{DashboardMessage, DashboardState, WelcomeMessage, WelcomeState, DEFAULT_SCRIPT_TEMPLATE};
+use crate::screens::{DashboardMessage, DashboardState, WelcomeMessage, WelcomeState, WorkflowTab, DEFAULT_SCRIPT_TEMPLATE};
 
 #[derive(Debug, Clone)]
 pub enum AppMessage {
@@ -115,8 +115,8 @@ impl EditorApp {
 
                         self.screen = CurrentScreen::Workspace {
                             project,
-                            project_dir: target_dir,
-                            dashboard: DashboardState::default(),
+                            project_dir: target_dir.clone(),
+                            dashboard: DashboardState::init_for_project(&target_dir),
                         };
                     }
                     Err(err) => {
@@ -135,8 +135,8 @@ impl EditorApp {
                             state.config.add_recent(&project.name, &project.author, file_path);
                             self.screen = CurrentScreen::Workspace {
                                 project,
-                                project_dir,
-                                dashboard: DashboardState::default(),
+                                project_dir: project_dir.clone(),
+                                dashboard: DashboardState::init_for_project(&project_dir),
                             };
                         }
                         Err(err) => {
@@ -152,8 +152,8 @@ impl EditorApp {
                         state.config.add_recent(&project.name, &project.author, path);
                         self.screen = CurrentScreen::Workspace {
                             project,
-                            project_dir,
-                            dashboard: DashboardState::default(),
+                            project_dir: project_dir.clone(),
+                            dashboard: DashboardState::init_for_project(&project_dir),
                         };
                     }
                     Err(err) => {
@@ -188,6 +188,18 @@ impl EditorApp {
         Task::none()
     }
 
+    fn auto_save_current_scene(dashboard: &DashboardState, project_dir: &std::path::Path) {
+        if let Some(scene) = &dashboard.current_scene {
+            if dashboard.selected_scene_index < dashboard.scenes_list.len() {
+                let scene_name = &dashboard.scenes_list[dashboard.selected_scene_index];
+                let chapter_dir = project_dir.join("Scenes").join(&dashboard.story_chapter_name);
+                let _ = std::fs::create_dir_all(&chapter_dir);
+                let scene_file = chapter_dir.join(format!("{}.bscene", scene_name));
+                let _ = scene.save_to_file(&scene_file);
+            }
+        }
+    }
+
     fn update_dashboard(&mut self, message: DashboardMessage) -> Task<AppMessage> {
         let CurrentScreen::Workspace {
             project,
@@ -200,12 +212,26 @@ impl EditorApp {
 
         match message {
             DashboardMessage::CloseProject => {
+                Self::auto_save_current_scene(dashboard, project_dir);
                 self.screen = CurrentScreen::Welcome(WelcomeState::new());
             }
             DashboardMessage::SelectWorkflowTab(tab) => {
+                Self::auto_save_current_scene(dashboard, project_dir);
                 dashboard.active_tab = tab;
                 dashboard.status_message = None;
                 dashboard.story_status_message = None;
+                if tab == WorkflowTab::SceneEditor {
+                    dashboard.refresh_scenes(project_dir);
+                    if let Some(scene_name) = dashboard.scenes_list.get(dashboard.selected_scene_index) {
+                        let scene_file = project_dir
+                            .join("Scenes")
+                            .join(&dashboard.story_chapter_name)
+                            .join(format!("{}.bscene", scene_name));
+                        if let Ok(loaded) = Scene::load_from_file(&scene_file) {
+                            dashboard.current_scene = Some(loaded);
+                        }
+                    }
+                }
             }
             DashboardMessage::OpenProjectFolder => {
                 #[cfg(target_os = "windows")]
@@ -426,6 +452,18 @@ impl EditorApp {
                     .join(format!("{}.{}", dashboard.story_chapter_name, Chapter::EXTENSION));
                 let _ = chapter.save_to_file(&story_path);
 
+                dashboard.refresh_scenes(project_dir);
+                dashboard.selected_scene_index = 0;
+                if let Some(first_scene) = dashboard.scenes_list.first() {
+                    let scene_file = project_dir
+                        .join("Scenes")
+                        .join(&dashboard.story_chapter_name)
+                        .join(format!("{}.bscene", first_scene));
+                    if let Ok(loaded) = Scene::load_from_file(&scene_file) {
+                        dashboard.current_scene = Some(loaded);
+                    }
+                }
+
                 dashboard.story_status_message = Some(format!(
                     "Successfully generated {} scene(s) into Scenes/{}/ and saved story chapter!",
                     scenes_count,
@@ -433,21 +471,27 @@ impl EditorApp {
                 ));
             }
             DashboardMessage::SelectScene(idx) => {
+                Self::auto_save_current_scene(dashboard, project_dir);
                 if idx < dashboard.scenes_list.len() {
                     dashboard.selected_scene_index = idx;
                     let scene_name = &dashboard.scenes_list[idx];
                     let scene_file = project_dir
                         .join("Scenes")
                         .join(&dashboard.story_chapter_name)
-                        .join(format!("{}.bscene", scene_name.replace(' ', "_")));
+                        .join(format!("{}.bscene", scene_name));
                     if let Ok(loaded) = Scene::load_from_file(&scene_file) {
                         dashboard.current_scene = Some(loaded);
                     }
                 }
             }
             DashboardMessage::CreateNewScene => {
-                let new_idx = dashboard.scenes_list.len() + 1;
-                let new_name = format!("scene_{:02}", new_idx);
+                Self::auto_save_current_scene(dashboard, project_dir);
+                let mut num = dashboard.scenes_list.len() + 1;
+                let mut new_name = format!("scene_{:02}", num);
+                while dashboard.scenes_list.iter().any(|s| s == &new_name) {
+                    num += 1;
+                    new_name = format!("scene_{:02}", num);
+                }
                 let new_scene = Scene::new(&new_name, &dashboard.story_chapter_name);
                 let scene_file = project_dir
                     .join("Scenes")
@@ -459,18 +503,49 @@ impl EditorApp {
                 dashboard.current_scene = Some(new_scene);
                 dashboard.scene_status_message = Some("Created new scene.".to_string());
             }
-            DashboardMessage::SaveCurrentScene => {
-                if let Some(scene) = &dashboard.current_scene {
+            DashboardMessage::DeleteScene(idx) => {
+                if dashboard.scenes_list.len() <= 1 {
+                    dashboard.scene_status_message = Some("Cannot delete the only scene. A chapter must have at least one scene.".to_string());
+                } else if idx < dashboard.scenes_list.len() {
+                    let scene_to_delete = dashboard.scenes_list.remove(idx);
                     let scene_file = project_dir
                         .join("Scenes")
                         .join(&dashboard.story_chapter_name)
-                        .join(format!("{}.bscene", scene.name.replace(' ', "_")));
-                    match scene.save_to_file(&scene_file) {
-                        Ok(_) => {
-                            dashboard.scene_status_message = Some(format!("Saved scene '{}'.", scene.name));
-                        }
-                        Err(err) => {
-                            dashboard.scene_status_message = Some(format!("Failed to save scene: {}", err));
+                        .join(format!("{}.bscene", scene_to_delete));
+                    let _ = std::fs::remove_file(scene_file);
+
+                    if dashboard.selected_scene_index >= dashboard.scenes_list.len() {
+                        dashboard.selected_scene_index = dashboard.scenes_list.len() - 1;
+                    } else if dashboard.selected_scene_index > idx {
+                        dashboard.selected_scene_index -= 1;
+                    }
+
+                    let new_scene_name = &dashboard.scenes_list[dashboard.selected_scene_index];
+                    let new_scene_file = project_dir
+                        .join("Scenes")
+                        .join(&dashboard.story_chapter_name)
+                        .join(format!("{}.bscene", new_scene_name));
+                    if let Ok(loaded) = Scene::load_from_file(&new_scene_file) {
+                        dashboard.current_scene = Some(loaded);
+                    }
+                    dashboard.scene_status_message = Some(format!("Deleted scene '{}'.", scene_to_delete));
+                }
+            }
+            DashboardMessage::SaveCurrentScene => {
+                if let Some(scene) = &dashboard.current_scene {
+                    if dashboard.selected_scene_index < dashboard.scenes_list.len() {
+                        let scene_name = &dashboard.scenes_list[dashboard.selected_scene_index];
+                        let scene_file = project_dir
+                            .join("Scenes")
+                            .join(&dashboard.story_chapter_name)
+                            .join(format!("{}.bscene", scene_name));
+                        match scene.save_to_file(&scene_file) {
+                            Ok(_) => {
+                                dashboard.scene_status_message = Some(format!("Saved scene '{}'.", scene_name));
+                            }
+                            Err(err) => {
+                                dashboard.scene_status_message = Some(format!("Failed to save scene: {}", err));
+                            }
                         }
                     }
                 }
@@ -489,21 +564,25 @@ impl EditorApp {
                 if let Some(scene) = &mut dashboard.current_scene {
                     scene.add_block(block);
                 }
+                Self::auto_save_current_scene(dashboard, project_dir);
             }
             DashboardMessage::RemoveBlockFromScene(idx) => {
                 if let Some(scene) = &mut dashboard.current_scene {
                     scene.remove_block(idx);
                 }
+                Self::auto_save_current_scene(dashboard, project_dir);
             }
             DashboardMessage::MoveBlockUp(idx) => {
                 if let Some(scene) = &mut dashboard.current_scene {
                     scene.move_block_up(idx);
                 }
+                Self::auto_save_current_scene(dashboard, project_dir);
             }
             DashboardMessage::MoveBlockDown(idx) => {
                 if let Some(scene) = &mut dashboard.current_scene {
                     scene.move_block_down(idx);
                 }
+                Self::auto_save_current_scene(dashboard, project_dir);
             }
             DashboardMessage::UpdateBlockCharacterPosition(idx, pos) => {
                 if let Some(scene) = &mut dashboard.current_scene {
@@ -511,6 +590,7 @@ impl EditorApp {
                         *position = pos;
                     }
                 }
+                Self::auto_save_current_scene(dashboard, project_dir);
             }
             DashboardMessage::UpdateBlockChoicePosition(idx, pos) => {
                 if let Some(scene) = &mut dashboard.current_scene {
@@ -518,6 +598,7 @@ impl EditorApp {
                         *position = pos;
                     }
                 }
+                Self::auto_save_current_scene(dashboard, project_dir);
             }
             DashboardMessage::UpdateSpeakerName(idx, spk) => {
                 if let Some(scene) = &mut dashboard.current_scene {

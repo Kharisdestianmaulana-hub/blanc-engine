@@ -13,9 +13,9 @@ use blanc_core::theme::typography::*;
 use crate::icons::*;
 use crate::theme::{
     badge_container_style, callout_container_style, card_container_style, code_container_style,
-    icon_button_style, input_field_style, primary_button_style, project_card_style,
-    secondary_button_style, sidebar_button_style, sidebar_container_style, subtle_button_style,
-    text_editor_style,
+    danger_icon_button_style, icon_button_style, input_field_style, primary_button_style,
+    project_card_style, secondary_button_style, sidebar_button_style, sidebar_container_style,
+    subtle_button_style, text_editor_style,
 };
 
 pub const DEFAULT_SCRIPT_TEMPLATE: &str = r#"// Blanc Engine Screenplay Script
@@ -62,6 +62,7 @@ pub enum DashboardMessage {
     // Scene Editor messages
     SelectScene(usize),
     CreateNewScene,
+    DeleteScene(usize),
     SaveCurrentScene,
     OpenScenesFolder,
     AddBlockToScene(ActionBlock),
@@ -117,12 +118,8 @@ pub struct DashboardState {
     pub scene_status_message: Option<String>,
 }
 
-impl Default for DashboardState {
-    fn default() -> Self {
-        let initial_script = DEFAULT_SCRIPT_TEMPLATE.to_string();
-        let parsed = Story::parse_script(&initial_script);
-
-        // Initial default scene
+impl DashboardState {
+    pub fn create_starter_scene() -> Scene {
         let mut opening_scene = Scene::new("01_opening", "Chapter_01");
         opening_scene.add_block(ActionBlock::Background {
             asset_id: "classroom_afternoon".to_string(),
@@ -157,6 +154,116 @@ impl Default for DashboardState {
                 },
             ],
         });
+        opening_scene
+    }
+
+    pub fn init_for_project(project_dir: &std::path::Path) -> Self {
+        let story_chapter_name = "Chapter_01".to_string();
+        let scenes_dir = project_dir.join("Scenes").join(&story_chapter_name);
+        let _ = std::fs::create_dir_all(&scenes_dir);
+
+        let mut scenes = Vec::new();
+        if let Ok(entries) = std::fs::read_dir(&scenes_dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_file() && path.extension().and_then(|s| s.to_str()) == Some("bscene") {
+                    if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+                        scenes.push(stem.to_string());
+                    }
+                }
+            }
+        }
+        scenes.sort();
+
+        let current_scene = if scenes.is_empty() {
+            let starter = Self::create_starter_scene();
+            let _ = starter.save_to_file(&scenes_dir.join("01_opening.bscene"));
+            scenes.push("01_opening".to_string());
+            Some(starter)
+        } else {
+            let first_scene_path = scenes_dir.join(format!("{}.bscene", scenes[0]));
+            if let Ok(loaded) = Scene::load_from_file(&first_scene_path) {
+                if loaded.blocks.is_empty() && scenes[0] == "01_opening" {
+                    let starter = Self::create_starter_scene();
+                    let _ = starter.save_to_file(&first_scene_path);
+                    Some(starter)
+                } else {
+                    Some(loaded)
+                }
+            } else {
+                let starter = Self::create_starter_scene();
+                Some(starter)
+            }
+        };
+
+        // Check if Story chapter exists
+        let story_path = project_dir.join("Story/Chapters").join(format!("{}.bstory", story_chapter_name));
+        let (script_content, parsed_elements) = if story_path.exists() {
+            if let Ok(chapter) = blanc_core::story::Chapter::load_from_file(&story_path) {
+                (
+                    text_editor::Content::with_text(&chapter.raw_script),
+                    chapter.elements,
+                )
+            } else {
+                (
+                    text_editor::Content::with_text(DEFAULT_SCRIPT_TEMPLATE),
+                    Story::parse_script(DEFAULT_SCRIPT_TEMPLATE),
+                )
+            }
+        } else {
+            (
+                text_editor::Content::with_text(DEFAULT_SCRIPT_TEMPLATE),
+                Story::parse_script(DEFAULT_SCRIPT_TEMPLATE),
+            )
+        };
+
+        Self {
+            active_tab: WorkflowTab::Dashboard,
+            selected_category: Some(AssetCategory::Background),
+            asset_search_query: String::new(),
+            status_message: None,
+
+            script_content,
+            parsed_story_elements: parsed_elements,
+            story_chapter_name,
+            story_status_message: None,
+
+            scenes_list: scenes,
+            selected_scene_index: 0,
+            current_scene,
+            scene_status_message: None,
+        }
+    }
+
+    pub fn refresh_scenes(&mut self, project_dir: &std::path::Path) {
+        let scenes_dir = project_dir.join("Scenes").join(&self.story_chapter_name);
+        let _ = std::fs::create_dir_all(&scenes_dir);
+        let mut scenes = Vec::new();
+        if let Ok(entries) = std::fs::read_dir(&scenes_dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_file() && path.extension().and_then(|s| s.to_str()) == Some("bscene") {
+                    if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+                        scenes.push(stem.to_string());
+                    }
+                }
+            }
+        }
+        scenes.sort();
+        if scenes.is_empty() {
+            scenes.push("01_opening".to_string());
+        }
+        self.scenes_list = scenes;
+        if self.selected_scene_index >= self.scenes_list.len() {
+            self.selected_scene_index = 0;
+        }
+    }
+}
+
+impl Default for DashboardState {
+    fn default() -> Self {
+        let initial_script = DEFAULT_SCRIPT_TEMPLATE.to_string();
+        let parsed = Story::parse_script(&initial_script);
 
         Self {
             active_tab: WorkflowTab::Dashboard,
@@ -171,7 +278,7 @@ impl Default for DashboardState {
 
             scenes_list: vec!["01_opening".to_string()],
             selected_scene_index: 0,
-            current_scene: Some(opening_scene),
+            current_scene: Some(Self::create_starter_scene()),
             scene_status_message: None,
         }
     }
@@ -1072,7 +1179,23 @@ impl DashboardState {
             .style(sidebar_button_style(is_selected))
             .on_press(DashboardMessage::SelectScene(idx));
 
-            scenes_col = scenes_col.push(btn_scene);
+            let can_delete = self.scenes_list.len() > 1;
+            let item_row: Element<'a, DashboardMessage> = if can_delete {
+                let btn_delete = button(icon_close())
+                    .padding([SPACE_1, SPACE_2])
+                    .style(danger_icon_button_style)
+                    .on_press(DashboardMessage::DeleteScene(idx));
+
+                row![btn_scene, btn_delete]
+                    .spacing(SPACE_1)
+                    .align_y(Alignment::Center)
+                    .width(Length::Fill)
+                    .into()
+            } else {
+                btn_scene.into()
+            };
+
+            scenes_col = scenes_col.push(item_row);
         }
 
         let btn_new_scene = button(

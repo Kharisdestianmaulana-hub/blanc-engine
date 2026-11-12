@@ -302,6 +302,38 @@ pub fn subtle_button_style(theme: &iced::Theme, status: button::Status) -> butto
     }
 }
 
+pub fn danger_icon_button_style(theme: &iced::Theme, status: button::Status) -> button::Style {
+    let _ = theme;
+    let base = button::Style {
+        background: Some(Background::Color(Color::TRANSPARENT)),
+        text_color: to_iced_color(TEXT_MUTED, 1.0),
+        border: Border {
+            radius: Radius::from(RADIUS_SM),
+            width: 0.0,
+            color: Color::TRANSPARENT,
+        },
+        shadow: Shadow::default(),
+    };
+
+    match status {
+        button::Status::Active => base,
+        button::Status::Hovered => button::Style {
+            background: Some(Background::Color(to_iced_color(STATUS_ERROR, 0.2))),
+            text_color: to_iced_color(STATUS_ERROR, 1.0),
+            ..base
+        },
+        button::Status::Pressed => button::Style {
+            background: Some(Background::Color(to_iced_color(STATUS_ERROR, 0.35))),
+            text_color: to_iced_color(STATUS_ERROR, 1.0),
+            ..base
+        },
+        button::Status::Disabled => button::Style {
+            text_color: to_iced_color(TEXT_DISABLED, 1.0),
+            ..base
+        },
+    }
+}
+
 pub fn badge_container_style(theme: &iced::Theme) -> container::Style {
     let _ = theme;
     container::Style {
