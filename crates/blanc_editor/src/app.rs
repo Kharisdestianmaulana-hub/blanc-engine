@@ -4,7 +4,9 @@ use iced::{Element, Task};
 
 use blanc_core::asset::AssetCategory;
 use blanc_core::project::Project;
-use crate::screens::{DashboardMessage, DashboardState, WelcomeMessage, WelcomeState};
+use blanc_core::scene::{ActionBlock, ChoiceOption as SceneChoiceOption, Scene};
+use blanc_core::story::{Chapter, Story, StoryElement};
+use crate::screens::{DashboardMessage, DashboardState, WelcomeMessage, WelcomeState, DEFAULT_SCRIPT_TEMPLATE};
 
 #[derive(Debug, Clone)]
 pub enum AppMessage {
@@ -203,6 +205,7 @@ impl EditorApp {
             DashboardMessage::SelectWorkflowTab(tab) => {
                 dashboard.active_tab = tab;
                 dashboard.status_message = None;
+                dashboard.story_status_message = None;
             }
             DashboardMessage::OpenProjectFolder => {
                 #[cfg(target_os = "windows")]
@@ -286,6 +289,147 @@ impl EditorApp {
                 let _ = Command::new("open").arg(folder).spawn();
                 #[cfg(target_os = "linux")]
                 let _ = Command::new("xdg-open").arg(folder).spawn();
+            }
+            DashboardMessage::ScriptEditorAction(action) => {
+                dashboard.script_content.perform(action);
+                dashboard.parsed_story_elements = Story::parse_script(&dashboard.script_content.text());
+            }
+            DashboardMessage::LoadScriptTemplate => {
+                dashboard.script_content = iced::widget::text_editor::Content::with_text(DEFAULT_SCRIPT_TEMPLATE);
+                dashboard.parsed_story_elements = Story::parse_script(DEFAULT_SCRIPT_TEMPLATE);
+                dashboard.story_status_message = Some("Loaded sample screenplay template.".to_string());
+            }
+            DashboardMessage::ImportScriptFileClicked => {
+                if let Some(picked_path) = rfd::FileDialog::new()
+                    .add_filter("Screenplay (*.txt, *.md, *.fountain)", &["txt", "md", "fountain"])
+                    .pick_file()
+                {
+                    match std::fs::read_to_string(&picked_path) {
+                        Ok(content) => {
+                            dashboard.script_content = iced::widget::text_editor::Content::with_text(&content);
+                            dashboard.parsed_story_elements = Story::parse_script(&content);
+                            dashboard.story_status_message = Some(format!(
+                                "Imported screenplay from '{}' ({} parsed elements).",
+                                picked_path.file_name().unwrap_or_default().to_string_lossy(),
+                                dashboard.parsed_story_elements.len()
+                            ));
+                        }
+                        Err(err) => {
+                            dashboard.story_status_message = Some(format!("Failed to read file: {}", err));
+                        }
+                    }
+                }
+            }
+            DashboardMessage::SaveStoryChapterClicked => {
+                let mut chapter = Chapter::new(&dashboard.story_chapter_name);
+                chapter.raw_script = dashboard.script_content.text();
+                chapter.elements = dashboard.parsed_story_elements.clone();
+
+                let target_path = project_dir
+                    .join("Story/Chapters")
+                    .join(format!("{}.{}", dashboard.story_chapter_name, Chapter::EXTENSION));
+
+                match chapter.save_to_file(&target_path) {
+                    Ok(_) => {
+                        dashboard.story_status_message = Some(format!(
+                            "Saved chapter to Story/Chapters/{}.{} ({} elements).",
+                            dashboard.story_chapter_name,
+                            Chapter::EXTENSION,
+                            chapter.elements.len()
+                        ));
+                    }
+                    Err(err) => {
+                        dashboard.story_status_message = Some(format!("Failed to save story file: {}", err));
+                    }
+                }
+            }
+            DashboardMessage::ConvertScriptToScenesClicked => {
+                let elements = &dashboard.parsed_story_elements;
+                if elements.is_empty() {
+                    dashboard.story_status_message = Some("Script is empty. Please enter story dialogue first.".to_string());
+                    return Task::none();
+                }
+
+                let target_scenes_dir = project_dir.join("Scenes").join(&dashboard.story_chapter_name);
+                let _ = std::fs::create_dir_all(&target_scenes_dir);
+
+                let mut scenes_count = 0;
+                let mut current_scene_name = "01_opening".to_string();
+                let mut current_scene = Scene::new(&current_scene_name, &dashboard.story_chapter_name);
+
+                for elem in elements {
+                    match elem {
+                        StoryElement::Scene(s) => {
+                            if !current_scene.blocks.is_empty() {
+                                let filename = format!("{}.bscene", current_scene.name.replace(' ', "_"));
+                                let scene_json = serde_json::to_string_pretty(&current_scene).unwrap_or_default();
+                                let _ = std::fs::write(target_scenes_dir.join(filename), scene_json);
+                                scenes_count += 1;
+                            }
+                            current_scene_name = s.scene_name.clone();
+                            current_scene = Scene::new(&current_scene_name, &dashboard.story_chapter_name);
+                        }
+                        StoryElement::Dialogue(d) => {
+                            current_scene.add_block(ActionBlock::Dialogue {
+                                speaker: d.speaker.clone(),
+                                text: d.text.clone(),
+                                voice_asset_id: None,
+                            });
+                        }
+                        StoryElement::Narration(n) => {
+                            current_scene.add_block(ActionBlock::Narration {
+                                text: n.text.clone(),
+                            });
+                        }
+                        StoryElement::Audio(a) => {
+                            if a.is_bgm {
+                                current_scene.add_block(ActionBlock::PlayBgm {
+                                    asset_id: a.track_name.clone(),
+                                    volume: 1.0,
+                                    looping: true,
+                                });
+                            } else {
+                                current_scene.add_block(ActionBlock::PlaySfx {
+                                    asset_id: a.track_name.clone(),
+                                    volume: 1.0,
+                                });
+                            }
+                        }
+                        StoryElement::Choice(c) => {
+                            current_scene.add_block(ActionBlock::Choice {
+                                prompt: c.prompt.clone().unwrap_or_else(|| "Make a choice".to_string()),
+                                options: c.options.iter().map(|opt| SceneChoiceOption {
+                                    id: uuid::Uuid::new_v4().to_string(),
+                                    text: opt.text.clone(),
+                                    target_scene_id: opt.target_scene.clone(),
+                                }).collect(),
+                            });
+                        }
+                    }
+                }
+
+                // Save final scene
+                if !current_scene.blocks.is_empty() || scenes_count == 0 {
+                    let filename = format!("{}.bscene", current_scene.name.replace(' ', "_"));
+                    let scene_json = serde_json::to_string_pretty(&current_scene).unwrap_or_default();
+                    let _ = std::fs::write(target_scenes_dir.join(filename), scene_json);
+                    scenes_count += 1;
+                }
+
+                // Save the story file as well
+                let mut chapter = Chapter::new(&dashboard.story_chapter_name);
+                chapter.raw_script = dashboard.script_content.text();
+                chapter.elements = dashboard.parsed_story_elements.clone();
+                let story_path = project_dir
+                    .join("Story/Chapters")
+                    .join(format!("{}.{}", dashboard.story_chapter_name, Chapter::EXTENSION));
+                let _ = chapter.save_to_file(&story_path);
+
+                dashboard.story_status_message = Some(format!(
+                    "Successfully generated {} scene(s) into Scenes/{}/ and saved story chapter!",
+                    scenes_count,
+                    dashboard.story_chapter_name
+                ));
             }
             DashboardMessage::PlayPreview => {
                 // Launch blanc_runtime as child process

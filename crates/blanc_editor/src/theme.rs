@@ -137,6 +137,45 @@ pub fn input_field_style(theme: &iced::Theme, status: text_input::Status) -> tex
     }
 }
 
+pub fn text_editor_style(theme: &iced::Theme, status: iced::widget::text_editor::Status) -> iced::widget::text_editor::Style {
+    let _ = theme;
+    let base = iced::widget::text_editor::Style {
+        background: Background::Color(to_iced_color(BACKGROUND_PRIMARY, 1.0)),
+        border: Border {
+            radius: Radius::from(RADIUS_MD),
+            width: 1.0,
+            color: to_iced_color(BORDER_DEFAULT, 1.0),
+        },
+        icon: to_iced_color(TEXT_MUTED, 1.0),
+        placeholder: to_iced_color(TEXT_MUTED, 1.0),
+        value: to_iced_color(TEXT_PRIMARY, 1.0),
+        selection: to_iced_color(ACCENT_SUBTLE, 1.0),
+    };
+
+    match status {
+        iced::widget::text_editor::Status::Active => base,
+        iced::widget::text_editor::Status::Hovered => iced::widget::text_editor::Style {
+            border: Border {
+                color: to_iced_color(TEXT_SECONDARY, 0.8),
+                ..base.border
+            },
+            ..base
+        },
+        iced::widget::text_editor::Status::Focused => iced::widget::text_editor::Style {
+            border: Border {
+                color: to_iced_color(ACCENT_PRIMARY, 1.0),
+                width: 1.5,
+                ..base.border
+            },
+            ..base
+        },
+        iced::widget::text_editor::Status::Disabled => iced::widget::text_editor::Style {
+            value: to_iced_color(TEXT_DISABLED, 1.0),
+            ..base
+        },
+    }
+}
+
 pub fn sidebar_container_style(theme: &iced::Theme) -> container::Style {
     let _ = theme;
     container::Style {

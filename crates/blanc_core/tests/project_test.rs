@@ -59,3 +59,43 @@ fn test_story_script_parsing() {
         _ => panic!("Expected dialogue"),
     }
 }
+
+#[test]
+fn test_advanced_script_parsing() {
+    let script = r#"
+        [Scene: Classroom]
+        [BGM: peaceful_afternoon]
+        Alice: "Ready?"
+        [Choice: What to do?
+          - "Study" -> Scene_Library
+          - "Play" -> Scene_Courtyard
+        ]
+    "#;
+
+    let elements = Story::parse_script(script);
+    assert_eq!(elements.len(), 4);
+
+    match &elements[0] {
+        blanc_core::story::StoryElement::Scene(s) => assert_eq!(s.scene_name, "Classroom"),
+        _ => panic!("Expected scene marker"),
+    }
+
+    match &elements[1] {
+        blanc_core::story::StoryElement::Audio(a) => {
+            assert!(a.is_bgm);
+            assert_eq!(a.track_name, "peaceful_afternoon");
+        }
+        _ => panic!("Expected audio marker"),
+    }
+
+    match &elements[3] {
+        blanc_core::story::StoryElement::Choice(c) => {
+            assert_eq!(c.options.len(), 2);
+            assert_eq!(c.options[0].text, "Study");
+            assert_eq!(c.options[0].target_scene, "Scene_Library");
+            assert_eq!(c.options[1].text, "Play");
+            assert_eq!(c.options[1].target_scene, "Scene_Courtyard");
+        }
+        _ => panic!("Expected choice branch"),
+    }
+}

@@ -1,19 +1,39 @@
 use std::path::PathBuf;
-use iced::widget::{button, column, container, row, scrollable, text, text_input, Space};
+use iced::widget::{button, column, container, row, scrollable, text, text_editor, text_input, Space};
 use iced::{Alignment, Element, Length};
 
 use blanc_core::asset::{Asset, AssetCategory};
 use blanc_core::project::Project;
+use blanc_core::story::{Story, StoryElement};
 use blanc_core::theme::colors::*;
 use blanc_core::theme::spacing::*;
 use blanc_core::theme::typography::*;
 
 use crate::icons::*;
 use crate::theme::{
-    badge_container_style, callout_container_style, card_container_style, input_field_style,
-    primary_button_style, project_card_style, secondary_button_style, sidebar_button_style,
-    sidebar_container_style, subtle_button_style,
+    badge_container_style, callout_container_style, card_container_style, code_container_style,
+    input_field_style, primary_button_style, project_card_style, secondary_button_style,
+    sidebar_button_style, sidebar_container_style, subtle_button_style, text_editor_style,
 };
+
+pub const DEFAULT_SCRIPT_TEMPLATE: &str = r#"// Blanc Engine Screenplay Script
+// Syntax: Speaker (Emotion): "Dialogue" | [Scene: Name] | [BGM: Track] | [Choice: ...]
+
+[Scene: Classroom_Afternoon]
+[BGM: peaceful_afternoon]
+
+Alice (Happy): "Good afternoon! Are you ready for the cultural festival?"
+Bob (Thinking): "Almost done. Just need to finalize our club's presentation booth."
+
+The golden afternoon light poured through the tall windows, casting long shadows across the empty desks.
+
+Alice: "The weather is so lovely today. Would you like to take a quick walk in the courtyard?"
+
+[Choice: How will Bob respond?
+  - "Take a walk with Alice" -> Scene_Courtyard
+  - "Stay and finish preparations" -> Scene_Classroom_Work
+]
+"#;
 
 #[derive(Debug, Clone)]
 pub enum DashboardMessage {
@@ -29,6 +49,13 @@ pub enum DashboardMessage {
     DeleteAssetClicked(String),
     OpenAssetFolder(AssetCategory),
     RevealAssetInExplorer(String),
+
+    // Story Setup messages
+    ScriptEditorAction(text_editor::Action),
+    LoadScriptTemplate,
+    ImportScriptFileClicked,
+    SaveStoryChapterClicked,
+    ConvertScriptToScenesClicked,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -54,18 +81,34 @@ impl WorkflowTab {
 
 pub struct DashboardState {
     pub active_tab: WorkflowTab,
+
+    // Asset Manager state
     pub selected_category: Option<AssetCategory>,
     pub asset_search_query: String,
     pub status_message: Option<String>,
+
+    // Story Setup state
+    pub script_content: text_editor::Content,
+    pub parsed_story_elements: Vec<StoryElement>,
+    pub story_chapter_name: String,
+    pub story_status_message: Option<String>,
 }
 
 impl Default for DashboardState {
     fn default() -> Self {
+        let initial_script = DEFAULT_SCRIPT_TEMPLATE.to_string();
+        let parsed = Story::parse_script(&initial_script);
+
         Self {
             active_tab: WorkflowTab::Dashboard,
             selected_category: Some(AssetCategory::Background),
             asset_search_query: String::new(),
             status_message: None,
+
+            script_content: text_editor::Content::with_text(&initial_script),
+            parsed_story_elements: parsed,
+            story_chapter_name: "Chapter_01".to_string(),
+            story_status_message: None,
         }
     }
 }
@@ -78,7 +121,7 @@ impl DashboardState {
         let main_content = match self.active_tab {
             WorkflowTab::Dashboard => self.view_overview_content(project, project_dir),
             WorkflowTab::Assets => self.view_assets_content(project, project_dir),
-            WorkflowTab::Story => self.view_placeholder_content("Story Setup & Screenplay Importer", "Script editor (.bstory) and Fountain/Markdown importer are ready for Phase 3."),
+            WorkflowTab::Story => self.view_story_content(project, project_dir),
             WorkflowTab::SceneEditor => self.view_placeholder_content("Block-Based Scene Editor", "Action block timeline and branching dialogue visual graph are coming in Phase 4."),
             WorkflowTab::Settings => self.view_placeholder_content("Project & System Screen Settings", "Runtime UI configurations (Main Menu, Save/Load, In-Game Pause) coming in Phase 5."),
         };
@@ -232,19 +275,19 @@ impl DashboardState {
 
         let next_step_box = container(
             column![
-                text("Step 2: Manage and Import Project Assets").size(HEADING_SM).color(iced::Color::from_rgb8(ACCENT_PRIMARY.r, ACCENT_PRIMARY.g, ACCENT_PRIMARY.b)),
-                text("Head over to the 'Asset Manager' tab to import background illustrations, character sprites, BGM tracks, and sound effects.")
+                text("Step 3: Setup Story Scripts & Screenplay").size(HEADING_SM).color(iced::Color::from_rgb8(ACCENT_PRIMARY.r, ACCENT_PRIMARY.g, ACCENT_PRIMARY.b)),
+                text("Switch to the 'Story Setup' tab to type or import screenplays (.txt, .md, .fountain) and automatically parse dialogues into visual scene blocks.")
                     .size(BODY_SM)
                     .color(iced::Color::from_rgb8(TEXT_SECONDARY.r, TEXT_SECONDARY.g, TEXT_SECONDARY.b)),
                 Space::with_height(SPACE_2),
                 button(
-                    row![icon_image(), text("Open Asset Manager").size(BODY_SM)]
+                    row![icon_edit(), text("Open Story Setup").size(BODY_SM)]
                         .spacing(SPACE_2)
                         .align_y(Alignment::Center),
                 )
                 .padding([SPACE_2, SPACE_4])
                 .style(primary_button_style)
-                .on_press(DashboardMessage::SelectWorkflowTab(WorkflowTab::Assets)),
+                .on_press(DashboardMessage::SelectWorkflowTab(WorkflowTab::Story)),
             ]
             .spacing(SPACE_3),
         )
@@ -583,6 +626,327 @@ impl DashboardState {
             .width(Length::Fill)
             .style(project_card_style)
             .into()
+    }
+
+    // ==========================================
+    // TAB 3: STORY SETUP & SCREENPLAY IMPORTER
+    // ==========================================
+    fn view_story_content<'a>(&'a self, _project: &'a Project, _project_dir: &'a PathBuf) -> Element<'a, DashboardMessage> {
+        let title_col = column![
+            text("Story Setup & Screenplay Importer")
+                .size(HEADING_LG)
+                .color(iced::Color::from_rgb8(TEXT_PRIMARY.r, TEXT_PRIMARY.g, TEXT_PRIMARY.b)),
+            text("Draft or import screenplays (.txt, .md, .fountain) and parse them into visual story scenes")
+                .size(BODY_SM)
+                .color(iced::Color::from_rgb8(TEXT_SECONDARY.r, TEXT_SECONDARY.g, TEXT_SECONDARY.b)),
+        ]
+        .spacing(SPACE_1);
+
+        let btn_template = button(
+            row![icon_file_text(), text("Load Template").size(LABEL_MD)]
+                .spacing(SPACE_2)
+                .align_y(Alignment::Center),
+        )
+        .padding([SPACE_2, SPACE_3])
+        .style(secondary_button_style)
+        .on_press(DashboardMessage::LoadScriptTemplate);
+
+        let btn_import = button(
+            row![icon_download(), text("Import File...").size(LABEL_MD)]
+                .spacing(SPACE_2)
+                .align_y(Alignment::Center),
+        )
+        .padding([SPACE_2, SPACE_3])
+        .style(secondary_button_style)
+        .on_press(DashboardMessage::ImportScriptFileClicked);
+
+        let btn_save = button(
+            row![icon_save(), text("Save (.bstory)").size(LABEL_MD)]
+                .spacing(SPACE_2)
+                .align_y(Alignment::Center),
+        )
+        .padding([SPACE_2, SPACE_3])
+        .style(secondary_button_style)
+        .on_press(DashboardMessage::SaveStoryChapterClicked);
+
+        let btn_convert = button(
+            row![icon_zap(), text("Convert to Scenes").size(LABEL_MD)]
+                .spacing(SPACE_2)
+                .align_y(Alignment::Center),
+        )
+        .padding([SPACE_2, SPACE_4])
+        .style(primary_button_style)
+        .on_press(DashboardMessage::ConvertScriptToScenesClicked);
+
+        let action_bar = row![
+            title_col,
+            Space::with_width(Length::Fill),
+            btn_template,
+            btn_import,
+            btn_save,
+            btn_convert,
+        ]
+        .spacing(SPACE_3)
+        .align_y(Alignment::Center);
+
+        // Split Panes: Left = Text Editor, Right = Live Parsed Stream
+        let left_editor_pane = self.view_script_editor_pane();
+        let right_preview_pane = self.view_script_parsed_preview_pane();
+
+        let split_view = row![
+            left_editor_pane,
+            Space::with_width(SPACE_4),
+            right_preview_pane,
+        ]
+        .width(Length::Fill)
+        .height(Length::Fill);
+
+        let mut pane = column![action_bar, Space::with_height(SPACE_4), split_view]
+            .spacing(SPACE_2)
+            .padding(SPACE_6)
+            .width(Length::Fill)
+            .height(Length::Fill);
+
+        if let Some(msg) = &self.story_status_message {
+            let status_banner = container(
+                text(msg)
+                    .size(BODY_SM)
+                    .color(iced::Color::from_rgb8(STATUS_SUCCESS.r, STATUS_SUCCESS.g, STATUS_SUCCESS.b)),
+            )
+            .padding(SPACE_3)
+            .style(callout_container_style);
+            pane = pane.push(status_banner);
+        }
+
+        pane.into()
+    }
+
+    fn view_script_editor_pane(&self) -> Element<'_, DashboardMessage> {
+        let pane_title = row![
+            icon_edit(),
+            text("SCRIPT EDITOR")
+                .size(LABEL_SM)
+                .color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b)),
+            Space::with_width(Length::Fill),
+            text("Format: Speaker (Emotion): \"Text\"")
+                .size(LABEL_SM)
+                .color(iced::Color::from_rgb8(ACCENT_PRIMARY.r, ACCENT_PRIMARY.g, ACCENT_PRIMARY.b)),
+        ]
+        .spacing(SPACE_2)
+        .align_y(Alignment::Center);
+
+        let editor = text_editor(&self.script_content)
+            .on_action(DashboardMessage::ScriptEditorAction)
+            .padding(SPACE_3)
+            .style(text_editor_style);
+
+        let line_count = self.script_content.line_count();
+        let stats_row = row![
+            text(format!("{} lines", line_count))
+                .size(LABEL_SM)
+                .color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b)),
+            text("•").size(LABEL_SM).color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b)),
+            text(format!("{} parsed elements", self.parsed_story_elements.len()))
+                .size(LABEL_SM)
+                .color(iced::Color::from_rgb8(STATUS_SUCCESS.r, STATUS_SUCCESS.g, STATUS_SUCCESS.b)),
+        ]
+        .spacing(SPACE_2)
+        .align_y(Alignment::Center);
+
+        let layout = column![
+            pane_title,
+            Space::with_height(SPACE_2),
+            container(editor).width(Length::Fill).height(Length::Fill),
+            Space::with_height(SPACE_2),
+            stats_row,
+        ]
+        .width(Length::FillPortion(1))
+        .height(Length::Fill);
+
+        container(layout)
+            .padding(SPACE_4)
+            .width(Length::FillPortion(1))
+            .height(Length::Fill)
+            .style(card_container_style)
+            .into()
+    }
+
+    fn view_script_parsed_preview_pane(&self) -> Element<'_, DashboardMessage> {
+        let pane_title = row![
+            icon_film(),
+            text("LIVE SCENE & DIALOGUE STREAM")
+                .size(LABEL_SM)
+                .color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b)),
+            Space::with_width(Length::Fill),
+            text(format!("{} Elements", self.parsed_story_elements.len()))
+                .size(LABEL_SM)
+                .color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b)),
+        ]
+        .spacing(SPACE_2)
+        .align_y(Alignment::Center);
+
+        let content: Element<'_, DashboardMessage> = if self.parsed_story_elements.is_empty() {
+            let empty = column![
+                icon_file_text(),
+                text("No Parsed Script Elements")
+                    .size(HEADING_SM)
+                    .color(iced::Color::from_rgb8(TEXT_PRIMARY.r, TEXT_PRIMARY.g, TEXT_PRIMARY.b)),
+                text("Type dialogue on the left editor or load the sample template.")
+                    .size(BODY_SM)
+                    .color(iced::Color::from_rgb8(TEXT_SECONDARY.r, TEXT_SECONDARY.g, TEXT_SECONDARY.b)),
+            ]
+            .spacing(SPACE_2)
+            .align_x(Alignment::Center);
+
+            container(empty)
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .center_x(Length::Fill)
+                .center_y(Length::Fill)
+                .into()
+        } else {
+            let mut stream_col = column![].spacing(SPACE_3).width(Length::Fill);
+
+            for elem in &self.parsed_story_elements {
+                let card = self.view_parsed_element_card(elem);
+                stream_col = stream_col.push(card);
+            }
+
+            scrollable(stream_col).width(Length::Fill).height(Length::Fill).into()
+        };
+
+        let layout = column![
+            pane_title,
+            Space::with_height(SPACE_2),
+            container(content).width(Length::Fill).height(Length::Fill),
+        ]
+        .width(Length::FillPortion(1))
+        .height(Length::Fill);
+
+        container(layout)
+            .padding(SPACE_4)
+            .width(Length::FillPortion(1))
+            .height(Length::Fill)
+            .style(card_container_style)
+            .into()
+    }
+
+    fn view_parsed_element_card<'a>(&'a self, elem: &'a StoryElement) -> Element<'a, DashboardMessage> {
+        match elem {
+            StoryElement::Scene(s) => {
+                let banner = row![
+                    icon_film(),
+                    text(format!("SCENE: {}", s.scene_name))
+                        .size(LABEL_MD)
+                        .color(iced::Color::from_rgb8(ACCENT_PRIMARY.r, ACCENT_PRIMARY.g, ACCENT_PRIMARY.b)),
+                ]
+                .spacing(SPACE_2)
+                .align_y(Alignment::Center);
+
+                container(banner)
+                    .padding([SPACE_2, SPACE_4])
+                    .width(Length::Fill)
+                    .style(callout_container_style)
+                    .into()
+            }
+            StoryElement::Audio(a) => {
+                let badge_label = if a.is_bgm { "BGM" } else { "SFX" };
+                let audio_row = row![
+                    if a.is_bgm { icon_music() } else { icon_volume() },
+                    text(format!("[{}] {}", badge_label, a.track_name))
+                        .size(BODY_SM)
+                        .color(iced::Color::from_rgb8(STATUS_SUCCESS.r, STATUS_SUCCESS.g, STATUS_SUCCESS.b)),
+                ]
+                .spacing(SPACE_2)
+                .align_y(Alignment::Center);
+
+                container(audio_row)
+                    .padding([SPACE_2, SPACE_3])
+                    .width(Length::Fill)
+                    .style(code_container_style)
+                    .into()
+            }
+            StoryElement::Dialogue(d) => {
+                let mut speaker_row = row![
+                    icon_message(),
+                    text(&d.speaker)
+                        .size(LABEL_MD)
+                        .color(iced::Color::from_rgb8(TEXT_PRIMARY.r, TEXT_PRIMARY.g, TEXT_PRIMARY.b)),
+                ]
+                .spacing(SPACE_2)
+                .align_y(Alignment::Center);
+
+                if let Some(expr) = &d.expression {
+                    let expr_badge = container(
+                        text(expr)
+                            .size(LABEL_SM)
+                            .color(iced::Color::from_rgb8(ACCENT_PRIMARY.r, ACCENT_PRIMARY.g, ACCENT_PRIMARY.b)),
+                    )
+                    .padding([1.0, 6.0])
+                    .style(badge_container_style);
+                    speaker_row = speaker_row.push(expr_badge);
+                }
+
+                let speech_text = text(format!("\"{}\"", d.text))
+                    .size(BODY_SM)
+                    .color(iced::Color::from_rgb8(TEXT_PRIMARY.r, TEXT_PRIMARY.g, TEXT_PRIMARY.b));
+
+                let card_col = column![speaker_row, speech_text].spacing(SPACE_2);
+
+                container(card_col)
+                    .padding(SPACE_3)
+                    .width(Length::Fill)
+                    .style(project_card_style)
+                    .into()
+            }
+            StoryElement::Narration(n) => {
+                let narrative_text = text(&n.text)
+                    .size(BODY_SM)
+                    .color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b));
+
+                container(narrative_text)
+                    .padding(SPACE_3)
+                    .width(Length::Fill)
+                    .style(card_container_style)
+                    .into()
+            }
+            StoryElement::Choice(c) => {
+                let prompt_text = c.prompt.as_deref().unwrap_or("Branching Decision");
+                let mut choice_col = column![
+                    row![
+                        icon_branch(),
+                        text(prompt_text)
+                            .size(LABEL_MD)
+                            .color(iced::Color::from_rgb8(STATUS_WARNING.r, STATUS_WARNING.g, STATUS_WARNING.b)),
+                    ]
+                    .spacing(SPACE_2)
+                    .align_y(Alignment::Center),
+                ]
+                .spacing(SPACE_2);
+
+                for (idx, opt) in c.options.iter().enumerate() {
+                    let opt_row = row![
+                        text(format!("{}. \"{}\"", idx + 1, opt.text))
+                            .size(BODY_SM)
+                            .color(iced::Color::from_rgb8(TEXT_PRIMARY.r, TEXT_PRIMARY.g, TEXT_PRIMARY.b)),
+                        Space::with_width(Length::Fill),
+                        text(format!("➔ {}", opt.target_scene))
+                            .size(LABEL_SM)
+                            .color(iced::Color::from_rgb8(ACCENT_PRIMARY.r, ACCENT_PRIMARY.g, ACCENT_PRIMARY.b)),
+                    ]
+                    .spacing(SPACE_2)
+                    .align_y(Alignment::Center);
+
+                    choice_col = choice_col.push(container(opt_row).padding(SPACE_2).style(code_container_style));
+                }
+
+                container(choice_col)
+                    .padding(SPACE_3)
+                    .width(Length::Fill)
+                    .style(project_card_style)
+                    .into()
+            }
+        }
     }
 
     // ==========================================
