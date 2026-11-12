@@ -1,0 +1,15 @@
+[package]
+name = "blanc_editor"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+blanc_core = { path = "../blanc_core" }
+iced.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+rfd.workspace = true
+image.workspace = true
+thiserror.workspace = true

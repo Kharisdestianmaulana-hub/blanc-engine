@@ -1,0 +1,33 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/blanc_core",
+    "crates/blanc_editor",
+    "crates/blanc_runtime",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["Blanc Engine Contributors"]
+license = "GPL-3.0-or-later"
+
+[workspace.dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+uuid = { version = "1.10", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
+rfd = "0.15"
+rodio = "0.19"
+iced = { version = "0.13", features = ["image", "svg", "canvas", "tokio"] }
+thiserror = "1.0"
+
+[profile.dev]
+debug = 1
+incremental = true
+
+[profile.dev.package."*"]
+opt-level = 2
+debug = 0
+
