@@ -69,6 +69,10 @@ const SAVE_SVG: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 
 
 const ZAP_SVG: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="#6366f1"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>"##;
 
+const CHECK_SVG: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#22c55e" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>"##;
+
+const INFO_SVG: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#6366f1" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" x2="12" y1="16" y2="12"/><line x1="12" x2="12.01" y1="8" y2="8"/></svg>"##;
+
 pub fn icon_folder<'a>() -> Svg<'a, iced::Theme> {
     Svg::new(Handle::from_memory(FOLDER_SVG.as_bytes()))
         .width(Length::Fixed(18.0))
@@ -263,6 +267,18 @@ pub fn icon_save<'a>() -> Svg<'a, iced::Theme> {
 
 pub fn icon_zap<'a>() -> Svg<'a, iced::Theme> {
     Svg::new(Handle::from_memory(ZAP_SVG.as_bytes()))
+        .width(Length::Fixed(16.0))
+        .height(Length::Fixed(16.0))
+}
+
+pub fn icon_check<'a>() -> Svg<'a, iced::Theme> {
+    Svg::new(Handle::from_memory(CHECK_SVG.as_bytes()))
+        .width(Length::Fixed(14.0))
+        .height(Length::Fixed(14.0))
+}
+
+pub fn icon_info<'a>() -> Svg<'a, iced::Theme> {
+    Svg::new(Handle::from_memory(INFO_SVG.as_bytes()))
         .width(Length::Fixed(16.0))
         .height(Length::Fixed(16.0))
 }

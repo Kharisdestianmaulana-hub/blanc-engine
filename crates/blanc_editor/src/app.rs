@@ -7,7 +7,7 @@ use blanc_core::project::Project;
 use blanc_core::scene::{ActionBlock, CharacterPosition, ChoiceOption as SceneChoiceOption, Scene};
 use blanc_core::story::{Chapter, Story, StoryElement};
 use crate::screens::{
-    AssetPickerModalState, DashboardMessage, DashboardState, WelcomeMessage, WelcomeState,
+    AssetPickerModalState, AssetPickerTarget, DashboardMessage, DashboardState, WelcomeMessage, WelcomeState,
     WorkflowTab, DEFAULT_SCRIPT_TEMPLATE,
 };
 
@@ -491,6 +491,10 @@ impl EditorApp {
                     "Converted screenplay to {} scene(s)! Showing first scene.",
                     scenes_count
                 ));
+                return Task::perform(
+                    tokio::time::sleep(std::time::Duration::from_secs(3)),
+                    |_| AppMessage::Dashboard(DashboardMessage::DismissSceneStatusMessage),
+                );
             }
             DashboardMessage::SelectScene(idx) => {
                 Self::auto_save_current_scene(dashboard, project_dir);
@@ -524,10 +528,18 @@ impl EditorApp {
                 dashboard.selected_scene_index = dashboard.scenes_list.len() - 1;
                 dashboard.current_scene = Some(new_scene);
                 dashboard.scene_status_message = Some("Created new scene.".to_string());
+                return Task::perform(
+                    tokio::time::sleep(std::time::Duration::from_secs(3)),
+                    |_| AppMessage::Dashboard(DashboardMessage::DismissSceneStatusMessage),
+                );
             }
             DashboardMessage::DeleteScene(idx) => {
                 if dashboard.scenes_list.len() <= 1 {
                     dashboard.scene_status_message = Some("Cannot delete the only scene. A chapter must have at least one scene.".to_string());
+                    return Task::perform(
+                        tokio::time::sleep(std::time::Duration::from_secs(3)),
+                        |_| AppMessage::Dashboard(DashboardMessage::DismissSceneStatusMessage),
+                    );
                 } else if idx < dashboard.scenes_list.len() {
                     let scene_to_delete = dashboard.scenes_list.remove(idx);
                     let scene_file = project_dir
@@ -551,6 +563,10 @@ impl EditorApp {
                         dashboard.current_scene = Some(loaded);
                     }
                     dashboard.scene_status_message = Some(format!("Deleted scene '{}'.", scene_to_delete));
+                    return Task::perform(
+                        tokio::time::sleep(std::time::Duration::from_secs(3)),
+                        |_| AppMessage::Dashboard(DashboardMessage::DismissSceneStatusMessage),
+                    );
                 }
             }
             DashboardMessage::SaveCurrentScene => {
@@ -564,6 +580,10 @@ impl EditorApp {
                         match scene.save_to_file(&scene_file) {
                             Ok(_) => {
                                 dashboard.scene_status_message = Some(format!("Saved scene '{}'.", scene_name));
+                                return Task::perform(
+                                    tokio::time::sleep(std::time::Duration::from_secs(3)),
+                                    |_| AppMessage::Dashboard(DashboardMessage::DismissSceneStatusMessage),
+                                );
                             }
                             Err(err) => {
                                 dashboard.scene_status_message = Some(format!("Failed to save scene: {}", err));
@@ -645,20 +665,30 @@ impl EditorApp {
                     }
                 }
             }
-            DashboardMessage::OpenAssetPickerModal { block_index, category } => {
-                let initial_selected = if let Some(scene) = &dashboard.current_scene {
-                    match scene.blocks.get(block_index) {
-                        Some(ActionBlock::Background { asset_id, .. }) => Some(asset_id.clone()),
-                        Some(ActionBlock::Character { character_id, .. }) => Some(character_id.clone()),
-                        Some(ActionBlock::PlayBgm { asset_id, .. }) => Some(asset_id.clone()),
-                        Some(ActionBlock::PlaySfx { asset_id, .. }) => Some(asset_id.clone()),
-                        _ => None,
+            DashboardMessage::OpenAssetPickerModal { target, category } => {
+                let initial_selected = match &target {
+                    AssetPickerTarget::Block(block_index) => {
+                        if let Some(scene) = &dashboard.current_scene {
+                            match scene.blocks.get(*block_index) {
+                                Some(ActionBlock::Background { asset_id, .. }) => Some(asset_id.clone()),
+                                Some(ActionBlock::Character { character_id, .. }) => Some(character_id.clone()),
+                                Some(ActionBlock::PlayBgm { asset_id, .. }) => Some(asset_id.clone()),
+                                Some(ActionBlock::PlaySfx { asset_id, .. }) => Some(asset_id.clone()),
+                                _ => None,
+                            }
+                        } else {
+                            None
+                        }
                     }
-                } else {
-                    None
+                    AssetPickerTarget::TitleBackground => {
+                        dashboard.system_screens_config.title_background_asset_id.clone()
+                    }
+                    AssetPickerTarget::TitleBgm => {
+                        dashboard.system_screens_config.title_bgm_asset_id.clone()
+                    }
                 };
                 dashboard.asset_picker_modal = Some(AssetPickerModalState {
-                    block_index,
+                    target,
                     category,
                     search_query: String::new(),
                     selected_asset_id: initial_selected,
@@ -681,25 +711,34 @@ impl EditorApp {
                 if let Some(modal) = &dashboard.asset_picker_modal {
                     if let Some(sel_id) = &modal.selected_asset_id {
                         let asset_id_val = sel_id.clone();
-                        let b_idx = modal.block_index;
-                        if let Some(scene) = &mut dashboard.current_scene {
-                            match scene.blocks.get_mut(b_idx) {
-                                Some(ActionBlock::Background { asset_id, .. }) => {
-                                    *asset_id = asset_id_val;
+                        match modal.target {
+                            AssetPickerTarget::Block(b_idx) => {
+                                if let Some(scene) = &mut dashboard.current_scene {
+                                    match scene.blocks.get_mut(b_idx) {
+                                        Some(ActionBlock::Background { asset_id, .. }) => {
+                                            *asset_id = asset_id_val;
+                                        }
+                                        Some(ActionBlock::Character { character_id, .. }) => {
+                                            *character_id = asset_id_val;
+                                        }
+                                        Some(ActionBlock::PlayBgm { asset_id, .. }) => {
+                                            *asset_id = asset_id_val;
+                                        }
+                                        Some(ActionBlock::PlaySfx { asset_id, .. }) => {
+                                            *asset_id = asset_id_val;
+                                        }
+                                        _ => {}
+                                    }
                                 }
-                                Some(ActionBlock::Character { character_id, .. }) => {
-                                    *character_id = asset_id_val;
-                                }
-                                Some(ActionBlock::PlayBgm { asset_id, .. }) => {
-                                    *asset_id = asset_id_val;
-                                }
-                                Some(ActionBlock::PlaySfx { asset_id, .. }) => {
-                                    *asset_id = asset_id_val;
-                                }
-                                _ => {}
+                                Self::auto_save_current_scene(dashboard, project_dir);
+                            }
+                            AssetPickerTarget::TitleBackground => {
+                                dashboard.system_screens_config.title_background_asset_id = Some(asset_id_val);
+                            }
+                            AssetPickerTarget::TitleBgm => {
+                                dashboard.system_screens_config.title_bgm_asset_id = Some(asset_id_val);
                             }
                         }
-                        Self::auto_save_current_scene(dashboard, project_dir);
                     }
                 }
                 dashboard.asset_picker_modal = None;
@@ -738,10 +777,68 @@ impl EditorApp {
                                 asset.name,
                                 asset.category.display_name()
                             ));
+                            return Task::perform(
+                                tokio::time::sleep(std::time::Duration::from_secs(3)),
+                                |_| AppMessage::Dashboard(DashboardMessage::DismissSceneStatusMessage),
+                            );
                         }
                         Err(err) => {
                             dashboard.scene_status_message = Some(format!("Failed to import asset: {}", err));
                         }
+                    }
+                }
+            }
+            DashboardMessage::DismissSceneStatusMessage => {
+                dashboard.scene_status_message = None;
+            }
+            DashboardMessage::DismissSettingsStatusMessage => {
+                dashboard.settings_status_message = None;
+            }
+            DashboardMessage::UpdateTitleText(text) => {
+                dashboard.system_screens_config.title_text = text;
+            }
+            DashboardMessage::UpdateStartingScene(scene) => {
+                dashboard.system_screens_config.starting_scene_id = if scene.is_empty() { None } else { Some(scene) };
+            }
+            DashboardMessage::UpdateAspectScalingMode(mode) => {
+                dashboard.system_screens_config.aspect_scaling_mode = mode;
+            }
+            DashboardMessage::UpdateFullscreenDefault(fs) => {
+                dashboard.system_screens_config.fullscreen_default = fs;
+            }
+            DashboardMessage::UpdateDefaultResolution(w, h) => {
+                dashboard.system_screens_config.default_resolution_width = w;
+                dashboard.system_screens_config.default_resolution_height = h;
+            }
+            DashboardMessage::UpdateMasterVolume(v) => {
+                dashboard.system_screens_config.master_volume = v;
+            }
+            DashboardMessage::UpdateBgmVolume(v) => {
+                dashboard.system_screens_config.bgm_volume = v;
+            }
+            DashboardMessage::UpdateSfxVolume(v) => {
+                dashboard.system_screens_config.sfx_volume = v;
+            }
+            DashboardMessage::UpdateTextSpeed(s) => {
+                dashboard.system_screens_config.text_speed = s;
+            }
+            DashboardMessage::UpdateAutoForwardDelay(d) => {
+                dashboard.system_screens_config.auto_forward_delay = d;
+            }
+            DashboardMessage::SaveSystemSettings => {
+                let config_dir = project_dir.join("Settings");
+                let _ = std::fs::create_dir_all(&config_dir);
+                let config_path = config_dir.join("system_screens.bconfig");
+                match dashboard.system_screens_config.save_to_file(&config_path) {
+                    Ok(_) => {
+                        dashboard.settings_status_message = Some("System screen settings saved successfully.".to_string());
+                        return Task::perform(
+                            tokio::time::sleep(std::time::Duration::from_secs(3)),
+                            |_| AppMessage::Dashboard(DashboardMessage::DismissSettingsStatusMessage),
+                        );
+                    }
+                    Err(err) => {
+                        dashboard.settings_status_message = Some(format!("Failed to save settings: {}", err));
                     }
                 }
             }

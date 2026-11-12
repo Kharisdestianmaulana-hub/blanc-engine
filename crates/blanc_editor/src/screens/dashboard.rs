@@ -3,6 +3,7 @@ use iced::widget::{button, column, container, image, row, scrollable, stack, tex
 use iced::{Alignment, Element, Length};
 
 use blanc_core::asset::{Asset, AssetCategory};
+use blanc_core::config::{AspectScalingMode, SystemScreensConfig};
 use blanc_core::project::Project;
 use blanc_core::scene::{ActionBlock, CharacterPosition, ChoiceLayoutPosition, ChoiceOption as SceneChoiceOption, Scene};
 use blanc_core::story::{Story, StoryElement};
@@ -37,9 +38,16 @@ Alice: "The weather is so lovely today. Would you like to take a quick walk in t
 ]
 "#;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AssetPickerTarget {
+    Block(usize),
+    TitleBackground,
+    TitleBgm,
+}
+
 #[derive(Debug, Clone)]
 pub struct AssetPickerModalState {
-    pub block_index: usize,
+    pub target: AssetPickerTarget,
     pub category: AssetCategory,
     pub search_query: String,
     pub selected_asset_id: Option<String>,
@@ -51,6 +59,10 @@ pub enum DashboardMessage {
     CloseProject,
     SelectWorkflowTab(WorkflowTab),
     OpenProjectFolder,
+
+    // Status message dismiss
+    DismissSceneStatusMessage,
+    DismissSettingsStatusMessage,
 
     // Asset Manager messages
     SelectAssetCategory(Option<AssetCategory>),
@@ -84,12 +96,25 @@ pub enum DashboardMessage {
     UpdateChoicePrompt(usize, String),
 
     // Custom Modal Asset Picker messages
-    OpenAssetPickerModal { block_index: usize, category: AssetCategory },
+    OpenAssetPickerModal { target: AssetPickerTarget, category: AssetCategory },
     CloseAssetPickerModal,
     AssetPickerSearchChanged(String),
     SelectAssetInModal(String),
     ConfirmAssetPickerSelection,
     ImportAssetFromModal(AssetCategory),
+
+    // Project & System Screen Settings messages
+    UpdateTitleText(String),
+    UpdateStartingScene(String),
+    UpdateAspectScalingMode(AspectScalingMode),
+    UpdateFullscreenDefault(bool),
+    UpdateDefaultResolution(u32, u32),
+    UpdateMasterVolume(f32),
+    UpdateBgmVolume(f32),
+    UpdateSfxVolume(f32),
+    UpdateTextSpeed(f32),
+    UpdateAutoForwardDelay(f32),
+    SaveSystemSettings,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -135,6 +160,10 @@ pub struct DashboardState {
 
     // Custom Modal Asset Picker state
     pub asset_picker_modal: Option<AssetPickerModalState>,
+
+    // Settings state
+    pub system_screens_config: SystemScreensConfig,
+    pub settings_status_message: Option<String>,
 }
 
 impl DashboardState {
@@ -236,6 +265,10 @@ impl DashboardState {
             )
         };
 
+        let config_path = project_dir.join("Settings/system_screens.bconfig");
+        let system_screens_config = SystemScreensConfig::load_from_file(&config_path)
+            .unwrap_or_default();
+
         Self {
             active_tab: WorkflowTab::Dashboard,
             selected_category: Some(AssetCategory::Background),
@@ -253,6 +286,8 @@ impl DashboardState {
             scene_status_message: None,
 
             asset_picker_modal: None,
+            system_screens_config,
+            settings_status_message: None,
         }
     }
 
@@ -303,6 +338,8 @@ impl Default for DashboardState {
             scene_status_message: None,
 
             asset_picker_modal: None,
+            system_screens_config: SystemScreensConfig::default(),
+            settings_status_message: None,
         }
     }
 }
@@ -317,7 +354,7 @@ impl DashboardState {
             WorkflowTab::Assets => self.view_assets_content(project, project_dir),
             WorkflowTab::Story => self.view_story_content(project, project_dir),
             WorkflowTab::SceneEditor => self.view_scene_editor_content(project, project_dir),
-            WorkflowTab::Settings => self.view_placeholder_content("Project & System Screen Settings", "Runtime UI configurations (Main Menu, Save/Load, In-Game Pause) coming in Phase 5."),
+            WorkflowTab::Settings => self.view_settings_content(project, project_dir),
         };
 
         let layout = column![top_bar, workflow_bar, main_content]
@@ -1423,13 +1460,25 @@ impl DashboardState {
         .height(Length::Fill);
 
         if let Some(msg) = &self.scene_status_message {
-            let status_banner = container(
+            let dismiss_btn = button(icon_close())
+                .padding([2.0, 6.0])
+                .style(danger_icon_button_style)
+                .on_press(DashboardMessage::DismissSceneStatusMessage);
+
+            let status_content = row![
+                icon_check(),
                 text(msg)
                     .size(BODY_SM)
                     .color(iced::Color::from_rgb8(STATUS_SUCCESS.r, STATUS_SUCCESS.g, STATUS_SUCCESS.b)),
-            )
-            .padding(SPACE_3)
-            .style(callout_container_style);
+                Space::with_width(Length::Fill),
+                dismiss_btn,
+            ]
+            .spacing(SPACE_2)
+            .align_y(Alignment::Center);
+
+            let status_banner = container(status_content)
+                .padding([SPACE_2, SPACE_4])
+                .style(callout_container_style);
             pane = pane.push(status_banner);
         }
 
@@ -1474,7 +1523,7 @@ impl DashboardState {
                 .padding([SPACE_1, SPACE_3])
                 .style(primary_button_style)
                 .on_press(DashboardMessage::OpenAssetPickerModal {
-                    block_index: idx,
+                    target: AssetPickerTarget::Block(idx),
                     category: AssetCategory::Character,
                 });
 
@@ -1532,7 +1581,7 @@ impl DashboardState {
                 .padding([SPACE_1, SPACE_3])
                 .style(primary_button_style)
                 .on_press(DashboardMessage::OpenAssetPickerModal {
-                    block_index: idx,
+                    target: AssetPickerTarget::Block(idx),
                     category: AssetCategory::Background,
                 });
 
@@ -1612,7 +1661,7 @@ impl DashboardState {
                 .padding([SPACE_1, SPACE_3])
                 .style(primary_button_style)
                 .on_press(DashboardMessage::OpenAssetPickerModal {
-                    block_index: idx,
+                    target: AssetPickerTarget::Block(idx),
                     category: AssetCategory::Bgm,
                 });
 
@@ -1643,7 +1692,7 @@ impl DashboardState {
                 .padding([SPACE_1, SPACE_3])
                 .style(primary_button_style)
                 .on_press(DashboardMessage::OpenAssetPickerModal {
-                    block_index: idx,
+                    target: AssetPickerTarget::Block(idx),
                     category: AssetCategory::Sfx,
                 });
 
@@ -2003,8 +2052,386 @@ impl DashboardState {
     }
 
     // ==========================================
+    // TAB 5: PROJECT & SYSTEM SCREEN SETTINGS
+    // ==========================================
+    fn view_settings_content<'a>(&'a self, project: &'a Project, _project_dir: &'a PathBuf) -> Element<'a, DashboardMessage> {
+        let title_col = column![
+            text("Project & System Screen Settings")
+                .size(HEADING_LG)
+                .color(iced::Color::from_rgb8(TEXT_PRIMARY.r, TEXT_PRIMARY.g, TEXT_PRIMARY.b)),
+            text("Configure runtime title screen visuals, aspect ratio scaling, audio defaults, and gameplay parameters.")
+                .size(BODY_SM)
+                .color(iced::Color::from_rgb8(TEXT_SECONDARY.r, TEXT_SECONDARY.g, TEXT_SECONDARY.b)),
+        ]
+        .spacing(SPACE_1);
+
+        let btn_save = button(
+            row![icon_save(), text("Save System Settings").size(LABEL_MD)]
+                .spacing(SPACE_2)
+                .align_y(Alignment::Center),
+        )
+        .padding([SPACE_2, SPACE_4])
+        .style(primary_button_style)
+        .on_press(DashboardMessage::SaveSystemSettings);
+
+        let header_row = row![title_col, Space::with_width(Length::Fill), btn_save]
+            .spacing(SPACE_3)
+            .align_y(Alignment::Center);
+
+        // --- Card 1: Title Screen Visuals & Navigation ---
+        let card1_title = row![icon_sparkle(), text("Title Screen & Navigation").size(HEADING_SM)]
+            .spacing(SPACE_2)
+            .align_y(Alignment::Center);
+
+        let title_text_label = text("Game Title Text (Displayed on Main Menu):")
+            .size(LABEL_SM)
+            .color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b));
+        let title_text_input = text_input("e.g. Echoes of Memories", &self.system_screens_config.title_text)
+            .on_input(DashboardMessage::UpdateTitleText)
+            .padding([SPACE_2, SPACE_3])
+            .style(input_field_style);
+
+        // Starting Scene selection
+        let starting_scene_label = text("Starting Scene (New Game Target):")
+            .size(LABEL_SM)
+            .color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b));
+        let current_start_scene = self.system_screens_config.starting_scene_id.as_deref().unwrap_or(
+            self.scenes_list.first().map(|s| s.as_str()).unwrap_or("01_opening")
+        );
+
+        let mut scenes_row = row![].spacing(SPACE_2).align_y(Alignment::Center);
+        for scene_name in &self.scenes_list {
+            let is_selected = scene_name == current_start_scene;
+            let btn_scene = button(
+                row![
+                    icon_film(),
+                    text(scene_name).size(LABEL_SM),
+                ]
+                .spacing(SPACE_1)
+                .align_y(Alignment::Center)
+            )
+            .padding([SPACE_1, SPACE_3])
+            .style(if is_selected { primary_button_style } else { subtle_button_style })
+            .on_press(DashboardMessage::UpdateStartingScene(scene_name.clone()));
+            scenes_row = scenes_row.push(btn_scene);
+        }
+
+        // Title Background & BGM Pickers
+        let bg_display = self.system_screens_config.title_background_asset_id.as_deref().unwrap_or("Default / None");
+        let btn_choose_bg = button(
+            row![icon_image(), text("Choose Background...").size(LABEL_SM)]
+                .spacing(SPACE_2)
+                .align_y(Alignment::Center),
+        )
+        .padding([SPACE_1, SPACE_3])
+        .style(secondary_button_style)
+        .on_press(DashboardMessage::OpenAssetPickerModal {
+            target: AssetPickerTarget::TitleBackground,
+            category: AssetCategory::Background,
+        });
+
+        let bg_row = row![
+            text(format!("Title Background: {}", bg_display)).size(BODY_SM).color(iced::Color::from_rgb8(TEXT_PRIMARY.r, TEXT_PRIMARY.g, TEXT_PRIMARY.b)),
+            Space::with_width(Length::Fill),
+            btn_choose_bg,
+        ]
+        .spacing(SPACE_2)
+        .align_y(Alignment::Center);
+
+        let bgm_display = self.system_screens_config.title_bgm_asset_id.as_deref().unwrap_or("Default / None");
+        let btn_choose_bgm = button(
+            row![icon_music(), text("Choose BGM...").size(LABEL_SM)]
+                .spacing(SPACE_2)
+                .align_y(Alignment::Center),
+        )
+        .padding([SPACE_1, SPACE_3])
+        .style(secondary_button_style)
+        .on_press(DashboardMessage::OpenAssetPickerModal {
+            target: AssetPickerTarget::TitleBgm,
+            category: AssetCategory::Bgm,
+        });
+
+        let bgm_row = row![
+            text(format!("Title BGM: {}", bgm_display)).size(BODY_SM).color(iced::Color::from_rgb8(TEXT_PRIMARY.r, TEXT_PRIMARY.g, TEXT_PRIMARY.b)),
+            Space::with_width(Length::Fill),
+            btn_choose_bgm,
+        ]
+        .spacing(SPACE_2)
+        .align_y(Alignment::Center);
+
+        let card1 = container(
+            column![
+                card1_title,
+                title_text_label,
+                title_text_input,
+                starting_scene_label,
+                scenes_row,
+                bg_row,
+                bgm_row,
+            ]
+            .spacing(SPACE_3),
+        )
+        .padding(SPACE_5)
+        .width(Length::Fill)
+        .style(card_container_style);
+
+        // --- Card 2: Display & Aspect Ratio Scaling ---
+        let card2_title = row![icon_image(), text("Display & Aspect Ratio Adaptation").size(HEADING_SM)]
+            .spacing(SPACE_2)
+            .align_y(Alignment::Center);
+
+        let scaling_desc = text("Configure how visuals adapt across 16:9, 16:10, and ultrawide screens without stretching or distortion.")
+            .size(BODY_SM)
+            .color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b));
+
+        let current_mode = self.system_screens_config.aspect_scaling_mode;
+        let btn_mode_cover = button(
+            column![
+                text("Smart Cover (Aspect Fill)").size(LABEL_MD),
+                text("No black bars • 100% full screen • 1:1 proportional (Recommended)").size(LABEL_SM),
+            ]
+            .spacing(SPACE_1),
+        )
+        .padding([SPACE_2, SPACE_3])
+        .style(if current_mode == AspectScalingMode::Cover { primary_button_style } else { subtle_button_style })
+        .on_press(DashboardMessage::UpdateAspectScalingMode(AspectScalingMode::Cover));
+
+        let btn_mode_blur = button(
+            column![
+                text("Ambient Blur Extension").size(LABEL_MD),
+                text("Centered 16:9 art • Dynamic blurred wings on ultrawide").size(LABEL_SM),
+            ]
+            .spacing(SPACE_1),
+        )
+        .padding([SPACE_2, SPACE_3])
+        .style(if current_mode == AspectScalingMode::AmbientBlur { primary_button_style } else { subtle_button_style })
+        .on_press(DashboardMessage::UpdateAspectScalingMode(AspectScalingMode::AmbientBlur));
+
+        let btn_mode_fit = button(
+            column![
+                text("Fixed Ratio (Letterbox)").size(LABEL_MD),
+                text("Strict 16:9 frame with classic cinema black bars").size(LABEL_SM),
+            ]
+            .spacing(SPACE_1),
+        )
+        .padding([SPACE_2, SPACE_3])
+        .style(if current_mode == AspectScalingMode::Fit { primary_button_style } else { subtle_button_style })
+        .on_press(DashboardMessage::UpdateAspectScalingMode(AspectScalingMode::Fit));
+
+        let modes_row = row![btn_mode_cover, btn_mode_blur, btn_mode_fit].spacing(SPACE_3);
+
+        // Resolution & Window Mode
+        let res_label = text("Default Target Resolution:")
+            .size(LABEL_SM)
+            .color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b));
+
+        let cur_w = self.system_screens_config.default_resolution_width;
+        let cur_h = self.system_screens_config.default_resolution_height;
+
+        let res_1080p = button(text("1920×1080 (Full HD)").size(LABEL_SM))
+            .padding([SPACE_1, SPACE_3])
+            .style(if cur_w == 1920 && cur_h == 1080 { primary_button_style } else { subtle_button_style })
+            .on_press(DashboardMessage::UpdateDefaultResolution(1920, 1080));
+
+        let res_1440p = button(text("2560×1440 (2K QHD)").size(LABEL_SM))
+            .padding([SPACE_1, SPACE_3])
+            .style(if cur_w == 2560 && cur_h == 1440 { primary_button_style } else { subtle_button_style })
+            .on_press(DashboardMessage::UpdateDefaultResolution(2560, 1440));
+
+        let res_720p = button(text("1280×720 (HD)").size(LABEL_SM))
+            .padding([SPACE_1, SPACE_3])
+            .style(if cur_w == 1280 && cur_h == 720 { primary_button_style } else { subtle_button_style })
+            .on_press(DashboardMessage::UpdateDefaultResolution(1280, 720));
+
+        let res_row = row![res_label, res_1080p, res_1440p, res_720p].spacing(SPACE_2).align_y(Alignment::Center);
+
+        let is_fullscreen = self.system_screens_config.fullscreen_default;
+        let btn_windowed = button(text("Windowed Mode").size(LABEL_SM))
+            .padding([SPACE_1, SPACE_3])
+            .style(if !is_fullscreen { primary_button_style } else { subtle_button_style })
+            .on_press(DashboardMessage::UpdateFullscreenDefault(false));
+
+        let btn_fullscreen = button(text("Fullscreen Mode").size(LABEL_SM))
+            .padding([SPACE_1, SPACE_3])
+            .style(if is_fullscreen { primary_button_style } else { subtle_button_style })
+            .on_press(DashboardMessage::UpdateFullscreenDefault(true));
+
+        let win_row = row![
+            text("Window Launch Mode:").size(LABEL_SM).color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b)),
+            btn_windowed,
+            btn_fullscreen,
+        ]
+        .spacing(SPACE_2)
+        .align_y(Alignment::Center);
+
+        let card2 = container(
+            column![
+                card2_title,
+                scaling_desc,
+                modes_row,
+                res_row,
+                win_row,
+            ]
+            .spacing(SPACE_3),
+        )
+        .padding(SPACE_5)
+        .width(Length::Fill)
+        .style(card_container_style);
+
+        // --- Card 3: Audio Defaults ---
+        let card3_title = row![icon_music(), text("Default Audio Volumes").size(HEADING_SM)]
+            .spacing(SPACE_2)
+            .align_y(Alignment::Center);
+
+        let master_row = row![
+            text("Master Volume:").size(LABEL_SM).color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b)),
+            text(format!("{:.0}%", self.system_screens_config.master_volume * 100.0)).size(BODY_SM),
+            button(text("100%").size(LABEL_SM)).padding([2.0, 6.0]).style(subtle_button_style).on_press(DashboardMessage::UpdateMasterVolume(1.0)),
+            button(text("80%").size(LABEL_SM)).padding([2.0, 6.0]).style(subtle_button_style).on_press(DashboardMessage::UpdateMasterVolume(0.8)),
+            button(text("50%").size(LABEL_SM)).padding([2.0, 6.0]).style(subtle_button_style).on_press(DashboardMessage::UpdateMasterVolume(0.5)),
+            button(text("Mute").size(LABEL_SM)).padding([2.0, 6.0]).style(subtle_button_style).on_press(DashboardMessage::UpdateMasterVolume(0.0)),
+        ]
+        .spacing(SPACE_2)
+        .align_y(Alignment::Center);
+
+        let bgm_vol_row = row![
+            text("BGM Music Volume:").size(LABEL_SM).color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b)),
+            text(format!("{:.0}%", self.system_screens_config.bgm_volume * 100.0)).size(BODY_SM),
+            button(text("100%").size(LABEL_SM)).padding([2.0, 6.0]).style(subtle_button_style).on_press(DashboardMessage::UpdateBgmVolume(1.0)),
+            button(text("80%").size(LABEL_SM)).padding([2.0, 6.0]).style(subtle_button_style).on_press(DashboardMessage::UpdateBgmVolume(0.8)),
+            button(text("50%").size(LABEL_SM)).padding([2.0, 6.0]).style(subtle_button_style).on_press(DashboardMessage::UpdateBgmVolume(0.5)),
+            button(text("Mute").size(LABEL_SM)).padding([2.0, 6.0]).style(subtle_button_style).on_press(DashboardMessage::UpdateBgmVolume(0.0)),
+        ]
+        .spacing(SPACE_2)
+        .align_y(Alignment::Center);
+
+        let sfx_vol_row = row![
+            text("SFX Effect Volume:").size(LABEL_SM).color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b)),
+            text(format!("{:.0}%", self.system_screens_config.sfx_volume * 100.0)).size(BODY_SM),
+            button(text("100%").size(LABEL_SM)).padding([2.0, 6.0]).style(subtle_button_style).on_press(DashboardMessage::UpdateSfxVolume(1.0)),
+            button(text("80%").size(LABEL_SM)).padding([2.0, 6.0]).style(subtle_button_style).on_press(DashboardMessage::UpdateSfxVolume(0.8)),
+            button(text("50%").size(LABEL_SM)).padding([2.0, 6.0]).style(subtle_button_style).on_press(DashboardMessage::UpdateSfxVolume(0.5)),
+            button(text("Mute").size(LABEL_SM)).padding([2.0, 6.0]).style(subtle_button_style).on_press(DashboardMessage::UpdateSfxVolume(0.0)),
+        ]
+        .spacing(SPACE_2)
+        .align_y(Alignment::Center);
+
+        let card3 = container(
+            column![
+                card3_title,
+                master_row,
+                bgm_vol_row,
+                sfx_vol_row,
+            ]
+            .spacing(SPACE_3),
+        )
+        .padding(SPACE_5)
+        .width(Length::Fill)
+        .style(card_container_style);
+
+        // --- Card 4: Gameplay & Text Speed ---
+        let card4_title = row![icon_file_text(), text("Text & Dialogue Playback").size(HEADING_SM)]
+            .spacing(SPACE_2)
+            .align_y(Alignment::Center);
+
+        let cur_speed = self.system_screens_config.text_speed;
+        let speed_row = row![
+            text("Text Speed:").size(LABEL_SM).color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b)),
+            button(text("Slow (0.5x)").size(LABEL_SM)).padding([2.0, 6.0]).style(if (cur_speed - 0.5).abs() < 0.01 { primary_button_style } else { subtle_button_style }).on_press(DashboardMessage::UpdateTextSpeed(0.5)),
+            button(text("Normal (1.0x)").size(LABEL_SM)).padding([2.0, 6.0]).style(if (cur_speed - 1.0).abs() < 0.01 { primary_button_style } else { subtle_button_style }).on_press(DashboardMessage::UpdateTextSpeed(1.0)),
+            button(text("Fast (1.5x)").size(LABEL_SM)).padding([2.0, 6.0]).style(if (cur_speed - 1.5).abs() < 0.01 { primary_button_style } else { subtle_button_style }).on_press(DashboardMessage::UpdateTextSpeed(1.5)),
+            button(text("Instant (2.0x)").size(LABEL_SM)).padding([2.0, 6.0]).style(if (cur_speed - 2.0).abs() < 0.01 { primary_button_style } else { subtle_button_style }).on_press(DashboardMessage::UpdateTextSpeed(2.0)),
+        ]
+        .spacing(SPACE_2)
+        .align_y(Alignment::Center);
+
+        let cur_delay = self.system_screens_config.auto_forward_delay;
+        let delay_row = row![
+            text("Auto-Forward Delay:").size(LABEL_SM).color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b)),
+            button(text("Fast (1.5s)").size(LABEL_SM)).padding([2.0, 6.0]).style(if (cur_delay - 1.5).abs() < 0.01 { primary_button_style } else { subtle_button_style }).on_press(DashboardMessage::UpdateAutoForwardDelay(1.5)),
+            button(text("Normal (3.0s)").size(LABEL_SM)).padding([2.0, 6.0]).style(if (cur_delay - 3.0).abs() < 0.01 { primary_button_style } else { subtle_button_style }).on_press(DashboardMessage::UpdateAutoForwardDelay(3.0)),
+            button(text("Relaxed (5.0s)").size(LABEL_SM)).padding([2.0, 6.0]).style(if (cur_delay - 5.0).abs() < 0.01 { primary_button_style } else { subtle_button_style }).on_press(DashboardMessage::UpdateAutoForwardDelay(5.0)),
+        ]
+        .spacing(SPACE_2)
+        .align_y(Alignment::Center);
+
+        let card4 = container(
+            column![
+                card4_title,
+                speed_row,
+                delay_row,
+            ]
+            .spacing(SPACE_3),
+        )
+        .padding(SPACE_5)
+        .width(Length::Fill)
+        .style(card_container_style);
+
+        // --- Card 5: Project & License Info ---
+        let card5 = container(
+            column![
+                row![icon_info(), text("Project & Engine Specifications").size(HEADING_SM)].spacing(SPACE_2).align_y(Alignment::Center),
+                row![
+                    text("Project Name:").size(LABEL_SM).color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b)),
+                    text(&project.name).size(BODY_SM),
+                    Space::with_width(SPACE_4),
+                    text("Author:").size(LABEL_SM).color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b)),
+                    text(&project.author).size(BODY_SM),
+                    Space::with_width(SPACE_4),
+                    text("License:").size(LABEL_SM).color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b)),
+                    text("GNU GPLv3 (100% Creator Ownership)").size(BODY_SM).color(iced::Color::from_rgb8(STATUS_SUCCESS.r, STATUS_SUCCESS.g, STATUS_SUCCESS.b)),
+                ]
+                .align_y(Alignment::Center),
+            ]
+            .spacing(SPACE_2),
+        )
+        .padding(SPACE_4)
+        .width(Length::Fill)
+        .style(code_container_style);
+
+        let mut content_col = column![
+            header_row,
+            card1,
+            card2,
+            card3,
+            card4,
+            card5,
+        ]
+        .spacing(SPACE_4)
+        .width(Length::Fill);
+
+        if let Some(msg) = &self.settings_status_message {
+            let dismiss_btn = button(icon_close())
+                .padding([2.0, 6.0])
+                .style(danger_icon_button_style)
+                .on_press(DashboardMessage::DismissSettingsStatusMessage);
+
+            let banner = container(
+                row![
+                    icon_check(),
+                    text(msg).size(BODY_SM).color(iced::Color::from_rgb8(STATUS_SUCCESS.r, STATUS_SUCCESS.g, STATUS_SUCCESS.b)),
+                    Space::with_width(Length::Fill),
+                    dismiss_btn,
+                ]
+                .spacing(SPACE_2)
+                .align_y(Alignment::Center)
+            )
+            .padding([SPACE_2, SPACE_4])
+            .style(callout_container_style);
+
+            content_col = content_col.push(banner);
+        }
+
+        scrollable(content_col.padding(SPACE_6))
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .into()
+    }
+
+    // ==========================================
     // PLACEHOLDER FOR UPCOMING PHASES
     // ==========================================
+    #[allow(dead_code)]
     fn view_placeholder_content<'a>(&'a self, title: &'a str, desc: &'a str) -> Element<'a, DashboardMessage> {
         let content = container(
             column![
