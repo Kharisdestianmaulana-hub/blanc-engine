@@ -1,41 +1,34 @@
-use iced::widget::{column, container, text};
-use iced::{Element, Length, Task};
+mod app;
+mod screens;
+mod theme;
 
-#[derive(Default)]
-struct EditorApp {
-    #[allow(dead_code)]
-    project: Option<blanc_core::Project>,
-}
-
-#[derive(Debug, Clone)]
-enum Message {
-    #[allow(dead_code)]
-    NoOp,
-}
-
-impl EditorApp {
-    fn update(&mut self, _message: Message) -> Task<Message> {
-        Task::none()
-    }
-
-    fn view(&self) -> Element<'_, Message> {
-        let content = column![
-            text("Blanc Engine").size(24),
-            text("No-Code Visual Novel Creation Engine").size(14),
-            text("Welcome Screen - Initializing...").size(12),
-        ]
-        .spacing(12);
-
-        container(content)
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .center_x(Length::Fill)
-            .center_y(Length::Fill)
-            .into()
-    }
-}
+use app::EditorApp;
+use blanc_core::theme::colors::BACKGROUND_PRIMARY;
 
 fn main() -> iced::Result {
-    iced::application("Blanc Engine", EditorApp::update, EditorApp::view)
+    let title = "Blanc Engine — Visual Novel Creation";
+
+    iced::application(title, EditorApp::update, EditorApp::view)
+        .theme(|_state| {
+            iced::Theme::custom(
+                "BlancDark".to_string(),
+                iced::theme::Palette {
+                    background: iced::Color::from_rgb8(
+                        BACKGROUND_PRIMARY.r,
+                        BACKGROUND_PRIMARY.g,
+                        BACKGROUND_PRIMARY.b,
+                    ),
+                    text: iced::Color::from_rgb8(230, 233, 237),
+                    primary: iced::Color::from_rgb8(124, 140, 255),
+                    success: iced::Color::from_rgb8(85, 184, 138),
+                    danger: iced::Color::from_rgb8(225, 111, 120),
+                },
+            )
+        })
+        .window(iced::window::Settings {
+            min_size: Some(iced::Size::new(960.0, 600.0)),
+            size: iced::Size::new(1280.0, 800.0),
+            ..Default::default()
+        })
         .run()
 }
