@@ -85,6 +85,10 @@ fn test_story_flow_system_nodes() {
     graph.connect_pins("system_pause_menu", "settings", "system_settings", "in");
     assert!(graph.connections.iter().any(|c| c.from_node_id == "system_pause_menu" && c.to_node_id == "system_settings"));
 
+    // Connect return to title loopback to main menu
+    graph.connect_pins("system_pause_menu", "title", "system_main_menu", "in");
+    assert!(graph.connections.iter().any(|c| c.from_node_id == "system_pause_menu" && c.to_node_id == "system_main_menu" && c.to_pin_id == "in"));
+
     // Remove settings node
     assert!(graph.remove_node("system_settings"));
     assert!(!graph.nodes.iter().any(|n| n.id == "system_settings"));

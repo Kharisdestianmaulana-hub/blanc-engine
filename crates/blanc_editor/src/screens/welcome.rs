@@ -29,6 +29,7 @@ pub enum DocsTopic {
     QuickStart,
     StoryScript,
     ActionBlocks,
+    StoryFlow,
     AssetGuidelines,
     RuntimeControls,
 }
@@ -759,6 +760,16 @@ impl WelcomeState {
         .style(sidebar_button_style(self.active_docs_topic == DocsTopic::ActionBlocks))
         .on_press(WelcomeMessage::SelectDocsTopic(DocsTopic::ActionBlocks));
 
+        let topic_flow = button(
+            row![icon_branch(), text("Story Flow & Nodes").size(LABEL_MD)]
+                .spacing(SPACE_2)
+                .align_y(Alignment::Center),
+        )
+        .padding([SPACE_2, SPACE_3])
+        .width(Length::Fill)
+        .style(sidebar_button_style(self.active_docs_topic == DocsTopic::StoryFlow))
+        .on_press(WelcomeMessage::SelectDocsTopic(DocsTopic::StoryFlow));
+
         let topic_assets = button(
             row![icon_palette(), text("Asset Guidelines").size(LABEL_MD)]
                 .spacing(SPACE_2)
@@ -784,6 +795,7 @@ impl WelcomeState {
             topic_quick,
             topic_script,
             topic_blocks,
+            topic_flow,
             topic_assets,
             topic_controls,
         ]
@@ -794,6 +806,7 @@ impl WelcomeState {
             DocsTopic::QuickStart => self.doc_quick_start(),
             DocsTopic::StoryScript => self.doc_story_script(),
             DocsTopic::ActionBlocks => self.doc_action_blocks(),
+            DocsTopic::StoryFlow => self.doc_story_flow(),
             DocsTopic::AssetGuidelines => self.doc_asset_guidelines(),
             DocsTopic::RuntimeControls => self.doc_runtime_controls(),
         };
@@ -920,6 +933,41 @@ Alice: "In that case, let's head to the cafeteria together!"
             self.create_step_card(
                 "4. Character & Camera Block",
                 "Manages character sprite placement across presets (Left, Center, Right), appearance animations, and scene background transitions (Fade to Black, Cross Dissolve)."
+            ),
+        ]
+        .spacing(SPACE_4)
+        .into()
+    }
+
+    fn doc_story_flow(&self) -> Element<'_, WelcomeMessage> {
+        column![
+            text("Story Flow & Visual Narrative Graph")
+                .size(HEADING_MD)
+                .color(iced::Color::from_rgb8(TEXT_PRIMARY.r, TEXT_PRIMARY.g, TEXT_PRIMARY.b)),
+            text("Orchestrate the entire narrative journey, branching choices, and game system screens with an intuitive node-based graph.")
+                .size(BODY_MD)
+                .color(iced::Color::from_rgb8(TEXT_SECONDARY.r, TEXT_SECONDARY.g, TEXT_SECONDARY.b)),
+            Space::with_height(SPACE_3),
+
+            self.create_step_card(
+                "1. Visual Narrative Mapping",
+                "Story Flow provides a high-level bird's-eye view of your game's narrative structure. Instead of keeping complex branch logic in your head or in scripts, nodes and connecting wires visually define scene progression."
+            ),
+            self.create_step_card(
+                "2. Dynamic Choice Branching Pins",
+                "When a scene contains interactive Choice action blocks, the node dynamically reveals distinct colored output pins for each option. Connect each choice pin to a different branch scene to guide player outcomes."
+            ),
+            self.create_step_card(
+                "3. System Nodes Library",
+                "Standard game systems are ready to use from the sidebar:\n• Main Menu (Title): Root entry point and loop destination\n• In-Game Pause Menu: ESC menu for saving, options, or returning to title\n• In-Game Settings: Live player audio/video configuration\n• Save & Load Screen: Multi-slot player state persistence\n• Return to Title & Game Over: Dedicated arc conclusion screens"
+            ),
+            self.create_step_card(
+                "4. Canvas Toolbar & Interaction Modes",
+                "Use the docked canvas toolbar or fast keyboard shortcuts to switch modes:\n• Select & Move [V]: Pan canvas, drag and arrange node positions\n• Connect Wire [C]: Click source pin then target pin, or drag between pins\n• Cut Wire [X]: One-click removal of wire connections or pin links\n• Zoom Controls: Zoom In (+), Zoom Out (-), Reset View (0), Focus All (F)\n• Auto Align [A]: Automatically organize nodes into clean chronological columns\n• Grid Snap [S]: Toggle snap-to-grid for crisp alignment"
+            ),
+            self.create_step_card(
+                "5. Narrative Loops & Return to Title",
+                "Storylines can easily loop back. Connect the 'To Title Screen ->' output pin of Return to Title or any arc ending directly into the Main Menu's 'In / Loop' pin so players can replay your game smoothly."
             ),
         ]
         .spacing(SPACE_4)

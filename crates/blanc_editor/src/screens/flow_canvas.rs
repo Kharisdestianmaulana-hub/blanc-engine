@@ -463,34 +463,39 @@ impl<'a> Program<FlowCanvasAction, Theme, Renderer> for FlowCanvasWidget<'a> {
                     self.get_pin_screen_pos(&conn.from_node_id, &conn.from_pin_id, true),
                     self.get_pin_screen_pos(&conn.to_node_id, &conn.to_pin_id, false),
                 ) {
-                    let dx = ((to_pos.x - from_pos.x).abs() * 0.55).max(40.0 * zoom);
-                    let cp1 = Point::new(from_pos.x + dx, from_pos.y);
-                    let cp2 = Point::new(to_pos.x - dx, to_pos.y);
+                    let (cp1, cp2) = if to_pos.x >= from_pos.x {
+                        let dist_x = to_pos.x - from_pos.x;
+                        let dx = (dist_x * 0.45).clamp(12.0 * zoom, 180.0 * zoom).min(dist_x * 0.48);
+                        (
+                            Point::new(from_pos.x + dx, from_pos.y),
+                            Point::new(to_pos.x - dx, to_pos.y),
+                        )
+                    } else {
+                        // Backward loop (e.g. Return to Title back to Main Menu)
+                        let loop_x = 60.0 * zoom;
+                        let dip_y = ((from_pos.x - to_pos.x).abs() * 0.12).clamp(70.0 * zoom, 140.0 * zoom);
+                        (
+                            Point::new(from_pos.x + loop_x, from_pos.y + dip_y),
+                            Point::new(to_pos.x - loop_x, to_pos.y + dip_y),
+                        )
+                    };
 
                     let path = Path::new(|builder| {
                         builder.move_to(from_pos);
                         builder.bezier_curve_to(cp1, cp2, to_pos);
                     });
 
-                    // Ambient Glow
+                    // Crisp, sharp high-contrast wire
                     frame.stroke(
                         &path,
                         Stroke::default()
-                            .with_color(Color::from_rgba8(99, 102, 241, 0.3))
-                            .with_width(6.0 * zoom),
-                    );
-
-                    // Solid Core
-                    frame.stroke(
-                        &path,
-                        Stroke::default()
-                            .with_color(Color::from_rgb8(129, 140, 248))
-                            .with_width(2.5 * zoom),
+                            .with_color(Color::from_rgb8(140, 155, 255))
+                            .with_width(3.0 * zoom),
                     );
 
                     // Destination circle dot
                     let dest_dot = Path::circle(to_pos, 4.0 * zoom);
-                    frame.fill(&dest_dot, Color::from_rgb8(165, 180, 252));
+                    frame.fill(&dest_dot, Color::from_rgb8(195, 205, 255));
                 }
             }
 
@@ -500,9 +505,21 @@ impl<'a> Program<FlowCanvasAction, Theme, Renderer> for FlowCanvasWidget<'a> {
                     self.get_pin_screen_pos(from_node, from_pin, true),
                     state.current_mouse_pos,
                 ) {
-                    let dx = ((mouse_pos.x - from_pos.x).abs() * 0.55).max(30.0 * zoom);
-                    let cp1 = Point::new(from_pos.x + dx, from_pos.y);
-                    let cp2 = Point::new(mouse_pos.x - dx, mouse_pos.y);
+                    let (cp1, cp2) = if mouse_pos.x >= from_pos.x {
+                        let dist_x = mouse_pos.x - from_pos.x;
+                        let dx = (dist_x * 0.45).clamp(12.0 * zoom, 180.0 * zoom).min(dist_x * 0.48);
+                        (
+                            Point::new(from_pos.x + dx, from_pos.y),
+                            Point::new(mouse_pos.x - dx, mouse_pos.y),
+                        )
+                    } else {
+                        let loop_x = 60.0 * zoom;
+                        let dip_y = ((from_pos.x - mouse_pos.x).abs() * 0.12).clamp(70.0 * zoom, 140.0 * zoom);
+                        (
+                            Point::new(from_pos.x + loop_x, from_pos.y + dip_y),
+                            Point::new(mouse_pos.x - loop_x, mouse_pos.y + dip_y),
+                        )
+                    };
 
                     let path = Path::new(|builder| {
                         builder.move_to(from_pos);
@@ -657,8 +674,14 @@ impl<'a> Program<FlowCanvasAction, Theme, Renderer> for FlowCanvasWidget<'a> {
                             .with_width(2.0 * zoom),
                     );
 
+                    let in_label = if node.id == "system_main_menu" {
+                        "In / Loop"
+                    } else {
+                        "In"
+                    };
+
                     frame.fill_text(Text {
-                        content: "In".to_string(),
+                        content: in_label.to_string(),
                         position: Point::new(nx + 14.0 * zoom, pin_y - 7.0 * zoom),
                         color: Color::from_rgb8(148, 163, 184),
                         size: (11.0 * zoom).max(8.0).into(),
@@ -771,8 +794,8 @@ impl<'a> Program<FlowCanvasAction, Theme, Renderer> for FlowCanvasWidget<'a> {
 }
 
 impl<'a> FlowCanvasWidget<'a> {
-    fn node_has_input_pin(&self, node: &FlowNode) -> bool {
-        node.id != "system_main_menu"
+    fn node_has_input_pin(&self, _node: &FlowNode) -> bool {
+        true
     }
 
     fn get_node_width(&self, node: &FlowNode) -> f32 {
