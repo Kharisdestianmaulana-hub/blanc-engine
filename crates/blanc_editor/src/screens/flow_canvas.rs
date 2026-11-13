@@ -86,31 +86,31 @@ impl<'a> Program<FlowCanvasAction, Theme, Renderer> for FlowCanvasWidget<'a> {
                 let pan_x = self.graph.pan_x;
                 let pan_y = self.graph.pan_y;
 
-                // 1. Check if clicked on a Pin
+                // 1. Check if clicked on an Output Pin
                 for node in &self.graph.nodes {
                     let nx = node.x * zoom + pan_x;
                     let ny = node.y * zoom + pan_y;
-                    let nw = node.width * zoom;
+                    let nw = self.get_node_width(node) * zoom;
+                    let pin_start_y = ny + 85.0 * zoom;
 
-                    // Output pin(s)
                     let output_pins = self.get_node_output_pins(node);
                     for (p_idx, (pin_id, _label)) in output_pins.iter().enumerate() {
                         let pin_x = nx + nw;
-                        let pin_y = ny + (45.0 + p_idx as f32 * 26.0) * zoom;
+                        let pin_y = pin_start_y + (p_idx as f32 * 30.0) * zoom;
                         let dist = ((cursor_position.x - pin_x).powi(2) + (cursor_position.y - pin_y).powi(2)).sqrt();
-                        if dist <= 12.0 * zoom {
+                        if dist <= 14.0 * zoom {
                             state.connecting_pin = Some((node.id.clone(), pin_id.clone()));
                             state.cache.clear();
                             return (canvas::event::Status::Captured, None);
                         }
                     }
 
-                    // Input pin
+                    // Input pin click
                     if self.node_has_input_pin(node) {
                         let pin_x = nx;
-                        let pin_y = ny + 45.0 * zoom;
+                        let pin_y = pin_start_y;
                         let dist = ((cursor_position.x - pin_x).powi(2) + (cursor_position.y - pin_y).powi(2)).sqrt();
-                        if dist <= 12.0 * zoom {
+                        if dist <= 14.0 * zoom {
                             if let Some((from_node, from_pin)) = state.connecting_pin.take() {
                                 if from_node != node.id {
                                     state.cache.clear();
@@ -129,14 +129,14 @@ impl<'a> Program<FlowCanvasAction, Theme, Renderer> for FlowCanvasWidget<'a> {
                     }
                 }
 
-                // 2. Check if clicked on Delete button of a node
+                // 2. Check if clicked on Delete Button [X] of a node
                 for node in &self.graph.nodes {
                     if node.id != "system_main_menu" {
                         let nx = node.x * zoom + pan_x;
                         let ny = node.y * zoom + pan_y;
-                        let nw = node.width * zoom;
-                        let del_btn_x = nx + nw - 20.0 * zoom;
-                        let del_btn_y = ny + 16.0 * zoom;
+                        let nw = self.get_node_width(node) * zoom;
+                        let del_btn_x = nx + nw - 18.0 * zoom;
+                        let del_btn_y = ny + 17.0 * zoom;
                         let dist = ((cursor_position.x - del_btn_x).powi(2) + (cursor_position.y - del_btn_y).powi(2)).sqrt();
                         if dist <= 14.0 * zoom {
                             state.cache.clear();
@@ -152,7 +152,7 @@ impl<'a> Program<FlowCanvasAction, Theme, Renderer> for FlowCanvasWidget<'a> {
                 for node in self.graph.nodes.iter().rev() {
                     let nx = node.x * zoom + pan_x;
                     let ny = node.y * zoom + pan_y;
-                    let nw = node.width * zoom;
+                    let nw = self.get_node_width(node) * zoom;
                     let nh = self.get_node_height(node) * zoom;
 
                     if cursor_position.x >= nx
@@ -247,9 +247,9 @@ impl<'a> Program<FlowCanvasAction, Theme, Renderer> for FlowCanvasWidget<'a> {
                     for node in &self.graph.nodes {
                         if self.node_has_input_pin(node) && node.id != from_node {
                             let pin_x = node.x * zoom + pan_x;
-                            let pin_y = (node.y + 45.0) * zoom + pan_y;
+                            let pin_y = (node.y + 85.0) * zoom + pan_y;
                             let dist = ((cursor_position.x - pin_x).powi(2) + (cursor_position.y - pin_y).powi(2)).sqrt();
-                            if dist <= 20.0 * zoom {
+                            if dist <= 22.0 * zoom {
                                 action = Some(FlowCanvasAction::ConnectPins {
                                     from_node: from_node.clone(),
                                     from_pin: from_pin.clone(),
@@ -299,15 +299,15 @@ impl<'a> Program<FlowCanvasAction, Theme, Renderer> for FlowCanvasWidget<'a> {
             let pan_x = self.graph.pan_x;
             let pan_y = self.graph.pan_y;
 
-            // 1. Background
+            // 1. Background Canvas
             frame.fill_rectangle(
                 Point::ORIGIN,
                 bounds.size(),
                 Color::from_rgb8(15, 23, 42),
             );
 
-            // 2. Grid dots
-            let grid_step = (40.0 * zoom).max(15.0);
+            // 2. Dot Grid
+            let grid_step = (36.0 * zoom).max(18.0);
             let start_x = (pan_x % grid_step) - grid_step;
             let start_y = (pan_y % grid_step) - grid_step;
             let mut gx = start_x;
@@ -324,7 +324,7 @@ impl<'a> Program<FlowCanvasAction, Theme, Renderer> for FlowCanvasWidget<'a> {
                 gx += grid_step;
             }
 
-            // 3. Draw Connections (Bézier Splines)
+            // 3. Draw Connections (Bézier Curves)
             for conn in &self.graph.connections {
                 if let (Some(from_pos), Some(to_pos)) = (
                     self.get_pin_screen_pos(&conn.from_node_id, &conn.from_pin_id, true),
@@ -339,15 +339,15 @@ impl<'a> Program<FlowCanvasAction, Theme, Renderer> for FlowCanvasWidget<'a> {
                         builder.bezier_curve_to(cp1, cp2, to_pos);
                     });
 
-                    // Glow line
+                    // Ambient Glow
                     frame.stroke(
                         &path,
                         Stroke::default()
-                            .with_color(Color::from_rgba8(99, 102, 241, 0.35))
+                            .with_color(Color::from_rgba8(99, 102, 241, 0.3))
                             .with_width(6.0 * zoom),
                     );
 
-                    // Core line
+                    // Solid Core
                     frame.stroke(
                         &path,
                         Stroke::default()
@@ -355,16 +355,13 @@ impl<'a> Program<FlowCanvasAction, Theme, Renderer> for FlowCanvasWidget<'a> {
                             .with_width(2.5 * zoom),
                     );
 
-                    // Destination arrow dot
-                    frame.fill_rectangle(
-                        Point::new(to_pos.x - 3.0, to_pos.y - 3.0),
-                        Size::new(6.0, 6.0),
-                        Color::from_rgb8(165, 180, 252),
-                    );
+                    // Destination circle dot
+                    let dest_dot = Path::circle(to_pos, 4.0 * zoom);
+                    frame.fill(&dest_dot, Color::from_rgb8(165, 180, 252));
                 }
             }
 
-            // 4. In-flight Wire (during drag)
+            // 4. In-Flight Wire (interactive drag)
             if let Some((from_node, from_pin)) = &state.connecting_pin {
                 if let (Some(from_pos), Some(mouse_pos)) = (
                     self.get_pin_screen_pos(from_node, from_pin, true),
@@ -392,7 +389,7 @@ impl<'a> Program<FlowCanvasAction, Theme, Renderer> for FlowCanvasWidget<'a> {
             for node in &self.graph.nodes {
                 let nx = node.x * zoom + pan_x;
                 let ny = node.y * zoom + pan_y;
-                let nw = node.width * zoom;
+                let nw = self.get_node_width(node) * zoom;
                 let nh = self.get_node_height(node) * zoom;
                 let is_selected = self.selected_node_id == Some(node.id.as_str());
 
@@ -404,15 +401,15 @@ impl<'a> Program<FlowCanvasAction, Theme, Renderer> for FlowCanvasWidget<'a> {
                 );
 
                 // Node Header Background
-                let header_h = 32.0 * zoom;
+                let header_h = 34.0 * zoom;
                 let header_color = match &node.node_type {
                     FlowNodeType::MainMenu => Color::from_rgb8(16, 185, 129), // Emerald
                     FlowNodeType::Ending { .. } => Color::from_rgb8(244, 63, 94), // Rose
                     FlowNodeType::Scene { scene_name } => {
                         if self.scene_has_choice(scene_name) {
-                            Color::from_rgb8(245, 158, 11) // Amber for choices
+                            Color::from_rgb8(245, 158, 11) // Amber
                         } else {
-                            Color::from_rgb8(99, 102, 241) // Indigo for standard
+                            Color::from_rgb8(99, 102, 241) // Indigo
                         }
                     }
                 };
@@ -439,76 +436,122 @@ impl<'a> Program<FlowCanvasAction, Theme, Renderer> for FlowCanvasWidget<'a> {
                         .with_width(border_width),
                 );
 
-                // Title Text
+                // Header Title Text
                 frame.fill_text(Text {
                     content: node.title.clone(),
-                    position: Point::new(nx + 10.0 * zoom, ny + 8.0 * zoom),
+                    position: Point::new(nx + 12.0 * zoom, ny + 9.0 * zoom),
                     color: Color::WHITE,
                     size: (13.0 * zoom).max(9.0).into(),
                     ..Default::default()
                 });
 
-                // Delete Button [x] (except Main Menu)
+                // Vector Delete Button [X] in header (Immune to font glyph issues)
                 if node.id != "system_main_menu" {
-                    frame.fill_text(Text {
-                        content: "✕".to_string(),
-                        position: Point::new(nx + nw - 18.0 * zoom, ny + 8.0 * zoom),
-                        color: Color::from_rgb8(254, 202, 202),
-                        size: (12.0 * zoom).max(8.0).into(),
-                        ..Default::default()
+                    let cx = nx + nw - 18.0 * zoom;
+                    let cy = ny + 17.0 * zoom;
+                    let arm = 4.5 * zoom;
+                    let x_path = Path::new(|b| {
+                        b.move_to(Point::new(cx - arm, cy - arm));
+                        b.line_to(Point::new(cx + arm, cy + arm));
+                        b.move_to(Point::new(cx + arm, cy - arm));
+                        b.line_to(Point::new(cx - arm, cy + arm));
                     });
+                    frame.stroke(
+                        &x_path,
+                        Stroke::default()
+                            .with_color(Color::from_rgb8(254, 202, 202))
+                            .with_width(1.8 * zoom),
+                    );
                 }
 
-                // Subtitle / Info Text
+                // Subtitle / Info Tag (Dedicated area between header and divider)
                 let info_text = match &node.node_type {
                     FlowNodeType::MainMenu => "Entry Screen (Starts New Game)".to_string(),
                     FlowNodeType::Ending { ending_name } => format!("Arc End: {}", ending_name),
                     FlowNodeType::Scene { scene_name } => {
                         let block_count = self.get_scene_block_count(scene_name);
                         if self.scene_has_choice(scene_name) {
-                            format!("{} block(s) · Branching Choices", block_count)
+                            format!("{} blocks · Branching Choices", block_count)
                         } else {
-                            format!("{} block(s) · Sequential Flow", block_count)
+                            format!("{} blocks · Sequential Flow", block_count)
                         }
                     }
                 };
 
+                let pill_rect = Path::rectangle(
+                    Point::new(nx + 10.0 * zoom, ny + 42.0 * zoom),
+                    Size::new(nw - 20.0 * zoom, 22.0 * zoom),
+                );
+                frame.fill(&pill_rect, Color::from_rgba8(30, 41, 59, 0.7));
+
                 frame.fill_text(Text {
                     content: info_text,
-                    position: Point::new(nx + 10.0 * zoom, ny + 38.0 * zoom),
+                    position: Point::new(nx + 16.0 * zoom, ny + 47.0 * zoom),
                     color: Color::from_rgb8(148, 163, 184),
                     size: (11.0 * zoom).max(8.0).into(),
                     ..Default::default()
                 });
 
-                // Input Pin (Left Edge)
+                // Subtle Divider line between info pill and pins
+                let div_path = Path::new(|b| {
+                    b.move_to(Point::new(nx + 10.0 * zoom, ny + 72.0 * zoom));
+                    b.line_to(Point::new(nx + nw - 10.0 * zoom, ny + 72.0 * zoom));
+                });
+                frame.stroke(
+                    &div_path,
+                    Stroke::default()
+                        .with_color(Color::from_rgba8(51, 65, 85, 0.5))
+                        .with_width(1.0 * zoom),
+                );
+
+                // --- Input Pin (Left Edge) ---
+                let pin_start_y = ny + 85.0 * zoom;
                 if self.node_has_input_pin(node) {
                     let pin_x = nx;
-                    let pin_y = ny + 45.0 * zoom;
-                    frame.fill_rectangle(
-                        Point::new(pin_x - 5.0 * zoom, pin_y - 5.0 * zoom),
-                        Size::new(10.0 * zoom, 10.0 * zoom),
-                        Color::from_rgb8(52, 211, 153),
+                    let pin_y = pin_start_y;
+                    let circle = Path::circle(Point::new(pin_x, pin_y), 6.0 * zoom);
+                    frame.fill(&circle, Color::from_rgb8(52, 211, 153)); // Emerald
+                    frame.stroke(
+                        &circle,
+                        Stroke::default()
+                            .with_color(Color::from_rgb8(15, 23, 42))
+                            .with_width(2.0 * zoom),
                     );
+
+                    frame.fill_text(Text {
+                        content: "In".to_string(),
+                        position: Point::new(nx + 14.0 * zoom, pin_y - 7.0 * zoom),
+                        color: Color::from_rgb8(148, 163, 184),
+                        size: (11.0 * zoom).max(8.0).into(),
+                        ..Default::default()
+                    });
                 }
 
-                // Output Pins (Right Edge)
+                // --- Output Pins (Right Edge) ---
                 let output_pins = self.get_node_output_pins(node);
                 for (p_idx, (_pin_id, label)) in output_pins.iter().enumerate() {
                     let pin_x = nx + nw;
-                    let pin_y = ny + (45.0 + p_idx as f32 * 26.0) * zoom;
+                    let pin_y = pin_start_y + (p_idx as f32 * 30.0) * zoom;
+                    let pin_color = if self.scene_has_choice(node.scene_name().unwrap_or("")) {
+                        Color::from_rgb8(245, 158, 11) // Amber for choices
+                    } else {
+                        Color::from_rgb8(129, 140, 248) // Indigo
+                    };
 
-                    frame.fill_rectangle(
-                        Point::new(pin_x - 5.0 * zoom, pin_y - 5.0 * zoom),
-                        Size::new(10.0 * zoom, 10.0 * zoom),
-                        Color::from_rgb8(129, 140, 248),
+                    let circle = Path::circle(Point::new(pin_x, pin_y), 6.0 * zoom);
+                    frame.fill(&circle, pin_color);
+                    frame.stroke(
+                        &circle,
+                        Stroke::default()
+                            .with_color(Color::from_rgb8(15, 23, 42))
+                            .with_width(2.0 * zoom),
                     );
 
-                    // Pin Label inside node
+                    // Pin Label inside node (right-aligned)
                     let text_w = label.len() as f32 * 6.5 * zoom;
                     frame.fill_text(Text {
                         content: label.clone(),
-                        position: Point::new(pin_x - text_w - 12.0 * zoom, pin_y - 6.0 * zoom),
+                        position: Point::new(pin_x - text_w - 14.0 * zoom, pin_y - 7.0 * zoom),
                         color: Color::from_rgb8(226, 232, 240),
                         size: (11.0 * zoom).max(8.0).into(),
                         ..Default::default()
@@ -520,8 +563,8 @@ impl<'a> Program<FlowCanvasAction, Theme, Renderer> for FlowCanvasWidget<'a> {
                     let is_connected = self.graph.connections.iter().any(|c| c.from_node_id == node.id);
                     if !is_connected {
                         frame.fill_text(Text {
-                            content: "⚠ Unconnected".to_string(),
-                            position: Point::new(nx + 10.0 * zoom, ny + nh - 18.0 * zoom),
+                            content: "! Unconnected".to_string(),
+                            position: Point::new(nx + 14.0 * zoom, ny + nh - 14.0 * zoom),
                             color: Color::from_rgb8(251, 191, 36),
                             size: (10.0 * zoom).max(7.0).into(),
                             ..Default::default()
@@ -555,23 +598,24 @@ impl<'a> Program<FlowCanvasAction, Theme, Renderer> for FlowCanvasWidget<'a> {
             for node in &self.graph.nodes {
                 let nx = node.x * zoom + pan_x;
                 let ny = node.y * zoom + pan_y;
-                let nw = node.width * zoom;
+                let nw = self.get_node_width(node) * zoom;
+                let pin_start_y = ny + 85.0 * zoom;
 
                 let output_pins = self.get_node_output_pins(node);
                 for (p_idx, _) in output_pins.iter().enumerate() {
                     let pin_x = nx + nw;
-                    let pin_y = ny + (45.0 + p_idx as f32 * 26.0) * zoom;
+                    let pin_y = pin_start_y + (p_idx as f32 * 30.0) * zoom;
                     let dist = ((pos.x - pin_x).powi(2) + (pos.y - pin_y).powi(2)).sqrt();
-                    if dist <= 12.0 * zoom {
+                    if dist <= 14.0 * zoom {
                         return mouse::Interaction::Crosshair;
                     }
                 }
 
                 if self.node_has_input_pin(node) {
                     let pin_x = nx;
-                    let pin_y = ny + 45.0 * zoom;
+                    let pin_y = pin_start_y;
                     let dist = ((pos.x - pin_x).powi(2) + (pos.y - pin_y).powi(2)).sqrt();
-                    if dist <= 12.0 * zoom {
+                    if dist <= 14.0 * zoom {
                         return mouse::Interaction::Crosshair;
                     }
                 }
@@ -586,15 +630,20 @@ impl<'a> FlowCanvasWidget<'a> {
         node.id != "system_main_menu"
     }
 
+    fn get_node_width(&self, node: &FlowNode) -> f32 {
+        let max_label_len = self.get_node_output_pins(node).iter().map(|(_, l)| l.len()).max().unwrap_or(10);
+        (max_label_len as f32 * 8.0 + 80.0).max(280.0).min(440.0)
+    }
+
     fn get_node_height(&self, node: &FlowNode) -> f32 {
         let pin_count = self.get_node_output_pins(node).len().max(1);
-        70.0 + pin_count as f32 * 26.0
+        82.0 + pin_count as f32 * 30.0
     }
 
     fn get_node_output_pins(&self, node: &FlowNode) -> Vec<(String, String)> {
         match &node.node_type {
             FlowNodeType::MainMenu => {
-                vec![("new_game".to_string(), "New Game ▶".to_string())]
+                vec![("new_game".to_string(), "New Game ->".to_string())]
             }
             FlowNodeType::Ending { .. } => Vec::new(),
             FlowNodeType::Scene { scene_name } => {
@@ -607,14 +656,14 @@ impl<'a> FlowCanvasWidget<'a> {
                                     .iter()
                                     .enumerate()
                                     .map(|(idx, opt)| {
-                                        (format!("choice_{}", idx), format!("{} ▶", opt.text))
+                                        (format!("choice_{}", idx), format!("{} ->", opt.text))
                                     })
                                     .collect();
                             }
                         }
                     }
                 }
-                vec![("next".to_string(), "Next Scene ▶".to_string())]
+                vec![("next".to_string(), "Next Scene ->".to_string())]
             }
         }
     }
@@ -626,14 +675,15 @@ impl<'a> FlowCanvasWidget<'a> {
         let pan_y = self.graph.pan_y;
         let nx = node.x * zoom + pan_x;
         let ny = node.y * zoom + pan_y;
-        let nw = node.width * zoom;
+        let nw = self.get_node_width(node) * zoom;
+        let pin_start_y = ny + 85.0 * zoom;
 
         if is_output {
             let pins = self.get_node_output_pins(node);
             let idx = pins.iter().position(|(p, _)| p == pin_id)?;
-            Some(Point::new(nx + nw, ny + (45.0 + idx as f32 * 26.0) * zoom))
+            Some(Point::new(nx + nw, pin_start_y + (idx as f32 * 30.0) * zoom))
         } else {
-            Some(Point::new(nx, ny + 45.0 * zoom))
+            Some(Point::new(nx, pin_start_y))
         }
     }
 

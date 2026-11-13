@@ -2134,44 +2134,35 @@ impl DashboardState {
         .align_y(Alignment::Center);
 
         // Toolbar
-        let btn_zoom_in = button(text("+").size(LABEL_MD))
-            .padding([SPACE_1, SPACE_3])
-            .style(subtle_button_style)
-            .on_press(DashboardMessage::FlowZoomIn);
-
-        let btn_zoom_out = button(text("-").size(LABEL_MD))
-            .padding([SPACE_1, SPACE_3])
-            .style(subtle_button_style)
-            .on_press(DashboardMessage::FlowZoomOut);
-
-        let btn_reset_view = button(text("Reset View").size(LABEL_SM))
-            .padding([SPACE_1, SPACE_3])
-            .style(subtle_button_style)
-            .on_press(DashboardMessage::FlowResetView);
-
-        let btn_auto_layout = button(text("Auto Align").size(LABEL_SM))
-            .padding([SPACE_1, SPACE_3])
-            .style(subtle_button_style)
-            .on_press(DashboardMessage::FlowAutoLayout);
-
         let btn_save = button(
-            row![icon_save(), text("Save Flow").size(LABEL_SM)]
-                .spacing(SPACE_1)
+            row![icon_save(), text("Save Story Flow").size(LABEL_MD)]
+                .spacing(SPACE_2)
                 .align_y(Alignment::Center),
         )
-        .padding([SPACE_1, SPACE_3])
+        .padding([SPACE_2, SPACE_4])
+        .width(Length::Fill)
         .style(primary_button_style)
         .on_press(DashboardMessage::SaveStoryFlow);
 
-        let controls_row = row![
-            btn_zoom_in,
-            btn_zoom_out,
-            btn_reset_view,
-            btn_auto_layout,
-            Space::with_width(Length::Fill),
-            btn_save,
+        let toolbar_row = row![
+            button(text("Zoom -").size(LABEL_SM))
+                .padding([SPACE_1, SPACE_2])
+                .style(subtle_button_style)
+                .on_press(DashboardMessage::FlowZoomOut),
+            button(text("Zoom +").size(LABEL_SM))
+                .padding([SPACE_1, SPACE_2])
+                .style(subtle_button_style)
+                .on_press(DashboardMessage::FlowZoomIn),
+            button(text("Reset").size(LABEL_SM))
+                .padding([SPACE_1, SPACE_2])
+                .style(subtle_button_style)
+                .on_press(DashboardMessage::FlowResetView),
+            button(text("Auto Align").size(LABEL_SM))
+                .padding([SPACE_1, SPACE_2])
+                .style(subtle_button_style)
+                .on_press(DashboardMessage::FlowAutoLayout),
         ]
-        .spacing(SPACE_2)
+        .spacing(SPACE_1)
         .align_y(Alignment::Center);
 
         // Summary Card
@@ -2265,7 +2256,7 @@ impl DashboardState {
                     icon_film(),
                     text(scene_name).size(BODY_SM),
                     Space::with_width(Length::Fill),
-                    button(text("✕").size(LABEL_SM))
+                    button(icon_close())
                         .padding([2.0, 6.0])
                         .style(danger_icon_button_style)
                         .on_press(DashboardMessage::FlowRemoveNode(node_id)),
@@ -2357,7 +2348,8 @@ impl DashboardState {
 
         let mut sidebar = column![
             title_row,
-            controls_row,
+            btn_save,
+            toolbar_row,
             summary_card,
             text("Available Scenes:")
                 .size(LABEL_SM)
