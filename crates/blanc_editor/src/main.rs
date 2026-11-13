@@ -6,6 +6,13 @@ mod theme;
 use app::EditorApp;
 use blanc_core::theme::colors::BACKGROUND_PRIMARY;
 
+fn load_window_icon() -> Option<iced::window::Icon> {
+    let img = image::load_from_memory(include_bytes!("../../../assets/icons/icon_64.png")).ok()?;
+    let rgba = img.to_rgba8();
+    let (width, height) = rgba.dimensions();
+    iced::window::icon::from_rgba(rgba.into_raw(), width, height).ok()
+}
+
 fn main() -> iced::Result {
     let title = "Blanc Engine — Visual Novel Creation";
 
@@ -29,6 +36,7 @@ fn main() -> iced::Result {
         .window(iced::window::Settings {
             min_size: Some(iced::Size::new(960.0, 600.0)),
             size: iced::Size::new(1280.0, 800.0),
+            icon: load_window_icon(),
             ..Default::default()
         })
         .run()

@@ -493,11 +493,20 @@ impl DashboardState {
             .style(secondary_button_style)
             .on_press(DashboardMessage::CloseProject);
 
+        let brand_logo = engine_logo(28.0);
+
+        let brand_and_info = row![
+            brand_logo,
+            info_col,
+        ]
+        .spacing(SPACE_3)
+        .align_y(Alignment::Center);
+
         let actions = row![btn_folder, btn_play, btn_close]
             .spacing(SPACE_3)
             .align_y(Alignment::Center);
 
-        let bar_content = row![info_col, Space::with_width(Length::Fill), actions]
+        let bar_content = row![brand_and_info, Space::with_width(Length::Fill), actions]
             .padding([SPACE_3, SPACE_5])
             .align_y(Alignment::Center)
             .width(Length::Fill);
@@ -3152,7 +3161,10 @@ impl DashboardState {
         .spacing(SPACE_2)
         .align_y(Alignment::Center);
 
-        let card5 = container(
+        let engine_badge_logo = engine_logo_squircle(40.0);
+
+        let card5_content = row![
+            engine_badge_logo,
             column![
                 row![icon_info(), text("Project & Engine Specifications").size(HEADING_SM)]
                     .spacing(SPACE_2)
@@ -3160,10 +3172,14 @@ impl DashboardState {
                 meta_row,
             ]
             .spacing(SPACE_2),
-        )
-        .padding(SPACE_4)
-        .width(Length::Fill)
-        .style(code_container_style);
+        ]
+        .spacing(SPACE_4)
+        .align_y(Alignment::Center);
+
+        let card5 = container(card5_content)
+            .padding(SPACE_4)
+            .width(Length::Fill)
+            .style(code_container_style);
 
         let mut content_col = column![
             header_row,

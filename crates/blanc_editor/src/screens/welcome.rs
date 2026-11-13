@@ -202,7 +202,7 @@ impl WelcomeState {
 
     fn view_expanded_sidebar(&self) -> Element<'_, WelcomeMessage> {
         // Brand header with collapse button
-        let brand_icon = icon_sparkle();
+        let brand_icon = engine_logo(28.0);
 
         let brand_title = text("BLANC ENGINE")
             .size(HEADING_SM)
@@ -344,7 +344,7 @@ impl WelcomeState {
             Space::with_height(SPACE_6),
             nav_icons,
             Space::with_height(Length::Fill),
-            icon_sparkle(),
+            engine_logo(24.0),
         ]
         .spacing(SPACE_2)
         .align_x(Alignment::Center)

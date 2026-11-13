@@ -282,3 +282,17 @@ pub fn icon_info<'a>() -> Svg<'a, iced::Theme> {
         .width(Length::Fixed(16.0))
         .height(Length::Fixed(16.0))
 }
+
+pub fn engine_logo(size: f32) -> iced::widget::Image<iced::widget::image::Handle> {
+    static BYTES: &[u8] = include_bytes!("../../../assets/icons/icon_transparent_128.png");
+    iced::widget::image(iced::widget::image::Handle::from_bytes(BYTES))
+        .width(size)
+        .height(size)
+}
+
+pub fn engine_logo_squircle(size: f32) -> iced::widget::Image<iced::widget::image::Handle> {
+    static BYTES: &[u8] = include_bytes!("../../../assets/icons/icon_squircle_128.png");
+    iced::widget::image(iced::widget::image::Handle::from_bytes(BYTES))
+        .width(size)
+        .height(size)
+}
