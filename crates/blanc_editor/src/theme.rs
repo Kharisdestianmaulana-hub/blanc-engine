@@ -465,3 +465,29 @@ pub fn canvas_container_style(theme: &iced::Theme) -> container::Style {
         ..Default::default()
     }
 }
+
+pub fn meter_bg_style(theme: &iced::Theme) -> container::Style {
+    let _ = theme;
+    container::Style {
+        background: Some(Background::Color(to_iced_color(BACKGROUND_PRIMARY, 1.0))),
+        border: Border {
+            radius: Radius::from(RADIUS_FULL),
+            width: 1.0,
+            color: to_iced_color(BORDER_DEFAULT, 0.8),
+        },
+        ..Default::default()
+    }
+}
+
+pub fn meter_fill_style(theme: &iced::Theme) -> container::Style {
+    let _ = theme;
+    container::Style {
+        background: Some(Background::Color(to_iced_color(ACCENT_PRIMARY, 1.0))),
+        border: Border {
+            radius: Radius::from(RADIUS_FULL),
+            width: 0.0,
+            color: Color::TRANSPARENT,
+        },
+        ..Default::default()
+    }
+}

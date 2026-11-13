@@ -17,7 +17,7 @@ use crate::screens::flow_canvas::{FlowCanvasAction, FlowCanvasState, FlowCanvasW
 use crate::theme::{
     asset_card_button_style, badge_container_style, callout_container_style, canvas_container_style, card_container_style,
     code_container_style, danger_icon_button_style, icon_button_style, input_field_style,
-    modal_backdrop_style, primary_button_style, project_card_style, secondary_button_style,
+    meter_bg_style, meter_fill_style, modal_backdrop_style, primary_button_style, project_card_style, secondary_button_style,
     sidebar_button_style, sidebar_container_style, subtle_button_style, text_editor_style,
 };
 
@@ -2448,10 +2448,18 @@ impl DashboardState {
             .align_y(Alignment::Center);
 
         // --- Card 1: Title Screen Visuals & Navigation ---
-        let card1_title = row![icon_sparkle(), text("Title Screen & Navigation").size(HEADING_SM)]
-            .spacing(SPACE_2)
-            .align_y(Alignment::Center);
+        let card1_title = row![
+            icon_sparkle(),
+            text("Title Screen & Navigation").size(HEADING_SM),
+            Space::with_width(SPACE_2),
+            container(text("RUNTIME STARTUP").size(LABEL_SM).color(iced::Color::from_rgb8(ACCENT_PRIMARY.r, ACCENT_PRIMARY.g, ACCENT_PRIMARY.b)))
+                .padding([2.0, 6.0])
+                .style(badge_container_style),
+        ]
+        .spacing(SPACE_2)
+        .align_y(Alignment::Center);
 
+        // Left Column: Identity & Starting Scene
         let title_text_label = text("Game Title Text (Displayed on Main Menu):")
             .size(LABEL_SM)
             .color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b));
@@ -2460,7 +2468,6 @@ impl DashboardState {
             .padding([SPACE_2, SPACE_3])
             .style(input_field_style);
 
-        // Starting Scene selection
         let starting_scene_label = text("Starting Scene (New Game Target):")
             .size(LABEL_SM)
             .color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b));
@@ -2476,17 +2483,28 @@ impl DashboardState {
                     icon_film(),
                     text(scene_name).size(LABEL_SM),
                 ]
-                .spacing(SPACE_1)
+                .spacing(SPACE_2)
                 .align_y(Alignment::Center)
             )
-            .padding([SPACE_1, SPACE_3])
-            .style(if is_selected { primary_button_style } else { subtle_button_style })
+            .padding([SPACE_2, SPACE_3])
+            .style(if is_selected { primary_button_style } else { secondary_button_style })
             .on_press(DashboardMessage::UpdateStartingScene(scene_name.clone()));
             scenes_row = scenes_row.push(btn_scene);
         }
 
-        // Title Background & BGM Pickers
+        let left_col = column![
+            title_text_label,
+            title_text_input,
+            Space::with_height(SPACE_1),
+            starting_scene_label,
+            scenes_row,
+        ]
+        .spacing(SPACE_2)
+        .width(Length::FillPortion(1));
+
+        // Right Column: Title Screen Assets (Background & BGM)
         let bg_display = self.system_screens_config.title_background_asset_id.as_deref().unwrap_or("Default / None");
+        let is_bg_custom = self.system_screens_config.title_background_asset_id.is_some();
         let btn_choose_bg = button(
             row![icon_image(), text("Choose Background...").size(LABEL_SM)]
                 .spacing(SPACE_2)
@@ -2499,15 +2517,27 @@ impl DashboardState {
             category: AssetCategory::Background,
         });
 
-        let bg_row = row![
-            text(format!("Title Background: {}", bg_display)).size(BODY_SM).color(iced::Color::from_rgb8(TEXT_PRIMARY.r, TEXT_PRIMARY.g, TEXT_PRIMARY.b)),
-            Space::with_width(Length::Fill),
-            btn_choose_bg,
-        ]
-        .spacing(SPACE_2)
-        .align_y(Alignment::Center);
+        let bg_box = container(
+            row![
+                column![
+                    text("Title Screen Artwork").size(LABEL_SM).color(iced::Color::from_rgb8(TEXT_PRIMARY.r, TEXT_PRIMARY.g, TEXT_PRIMARY.b)),
+                    row![
+                        text("Asset: ").size(LABEL_SM).color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b)),
+                        text(bg_display).size(BODY_SM).color(if is_bg_custom { iced::Color::from_rgb8(ACCENT_PRIMARY.r, ACCENT_PRIMARY.g, ACCENT_PRIMARY.b) } else { iced::Color::from_rgb8(TEXT_SECONDARY.r, TEXT_SECONDARY.g, TEXT_SECONDARY.b) }),
+                    ].align_y(Alignment::Center),
+                ].spacing(SPACE_1),
+                Space::with_width(Length::Fill),
+                btn_choose_bg,
+            ]
+            .spacing(SPACE_3)
+            .align_y(Alignment::Center),
+        )
+        .padding(SPACE_3)
+        .width(Length::Fill)
+        .style(code_container_style);
 
         let bgm_display = self.system_screens_config.title_bgm_asset_id.as_deref().unwrap_or("Default / None");
+        let is_bgm_custom = self.system_screens_config.title_bgm_asset_id.is_some();
         let btn_choose_bgm = button(
             row![icon_music(), text("Choose BGM...").size(LABEL_SM)]
                 .spacing(SPACE_2)
@@ -2520,23 +2550,38 @@ impl DashboardState {
             category: AssetCategory::Bgm,
         });
 
-        let bgm_row = row![
-            text(format!("Title BGM: {}", bgm_display)).size(BODY_SM).color(iced::Color::from_rgb8(TEXT_PRIMARY.r, TEXT_PRIMARY.g, TEXT_PRIMARY.b)),
-            Space::with_width(Length::Fill),
-            btn_choose_bgm,
+        let bgm_box = container(
+            row![
+                column![
+                    text("Main Menu Music (BGM)").size(LABEL_SM).color(iced::Color::from_rgb8(TEXT_PRIMARY.r, TEXT_PRIMARY.g, TEXT_PRIMARY.b)),
+                    row![
+                        text("Track: ").size(LABEL_SM).color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b)),
+                        text(bgm_display).size(BODY_SM).color(if is_bgm_custom { iced::Color::from_rgb8(ACCENT_PRIMARY.r, ACCENT_PRIMARY.g, ACCENT_PRIMARY.b) } else { iced::Color::from_rgb8(TEXT_SECONDARY.r, TEXT_SECONDARY.g, TEXT_SECONDARY.b) }),
+                    ].align_y(Alignment::Center),
+                ].spacing(SPACE_1),
+                Space::with_width(Length::Fill),
+                btn_choose_bgm,
+            ]
+            .spacing(SPACE_3)
+            .align_y(Alignment::Center),
+        )
+        .padding(SPACE_3)
+        .width(Length::Fill)
+        .style(code_container_style);
+
+        let right_col = column![
+            bg_box,
+            bgm_box,
         ]
         .spacing(SPACE_2)
-        .align_y(Alignment::Center);
+        .width(Length::FillPortion(1));
+
+        let card1_body = row![left_col, right_col].spacing(SPACE_4);
 
         let card1 = container(
             column![
                 card1_title,
-                title_text_label,
-                title_text_input,
-                starting_scene_label,
-                scenes_row,
-                bg_row,
-                bgm_row,
+                card1_body,
             ]
             .spacing(SPACE_3),
         )
@@ -2554,90 +2599,127 @@ impl DashboardState {
             .color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b));
 
         let current_mode = self.system_screens_config.aspect_scaling_mode;
+        let is_cover = current_mode == AspectScalingMode::Cover;
         let btn_mode_cover = button(
             column![
-                text("Smart Cover (Aspect Fill)").size(LABEL_MD),
-                text("No black bars • 100% full screen • 1:1 proportional (Recommended)").size(LABEL_SM),
+                row![
+                    text("Smart Cover").size(LABEL_MD).color(iced::Color::from_rgb8(TEXT_PRIMARY.r, TEXT_PRIMARY.g, TEXT_PRIMARY.b)),
+                    Space::with_width(Length::Fill),
+                    container(text("RECOMMENDED").size(LABEL_SM).color(iced::Color::from_rgb8(ACCENT_PRIMARY.r, ACCENT_PRIMARY.g, ACCENT_PRIMARY.b)))
+                        .padding([2.0, 6.0])
+                        .style(badge_container_style),
+                ]
+                .align_y(Alignment::Center),
+                text("Aspect Fill (100% Full Screen)").size(LABEL_SM).color(iced::Color::from_rgb8(TEXT_SECONDARY.r, TEXT_SECONDARY.g, TEXT_SECONDARY.b)),
+                text("No black bars. Scales symmetrically to fill the screen while preserving 1:1 pixel aspect ratios.")
+                    .size(LABEL_SM)
+                    .color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b)),
             ]
-            .spacing(SPACE_1),
+            .spacing(SPACE_2),
         )
-        .padding([SPACE_2, SPACE_3])
-        .style(if current_mode == AspectScalingMode::Cover { primary_button_style } else { subtle_button_style })
+        .padding(SPACE_3)
+        .width(Length::FillPortion(1))
+        .style(asset_card_button_style(is_cover))
         .on_press(DashboardMessage::UpdateAspectScalingMode(AspectScalingMode::Cover));
 
+        let is_blur = current_mode == AspectScalingMode::AmbientBlur;
         let btn_mode_blur = button(
             column![
-                text("Ambient Blur Extension").size(LABEL_MD),
-                text("Centered 16:9 art • Dynamic blurred wings on ultrawide").size(LABEL_SM),
+                row![
+                    text("Ambient Blur").size(LABEL_MD).color(iced::Color::from_rgb8(TEXT_PRIMARY.r, TEXT_PRIMARY.g, TEXT_PRIMARY.b)),
+                    Space::with_width(Length::Fill),
+                    container(text("ULTRAWIDE").size(LABEL_SM).color(iced::Color::from_rgb8(ACCENT_PRIMARY.r, ACCENT_PRIMARY.g, ACCENT_PRIMARY.b)))
+                        .padding([2.0, 6.0])
+                        .style(badge_container_style),
+                ]
+                .align_y(Alignment::Center),
+                text("Dynamic Blur Wings (21:9)").size(LABEL_SM).color(iced::Color::from_rgb8(TEXT_SECONDARY.r, TEXT_SECONDARY.g, TEXT_SECONDARY.b)),
+                text("Keeps crisp 16:9 art centered while softly blurring and tinting side wings on ultrawide monitors.")
+                    .size(LABEL_SM)
+                    .color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b)),
             ]
-            .spacing(SPACE_1),
+            .spacing(SPACE_2),
         )
-        .padding([SPACE_2, SPACE_3])
-        .style(if current_mode == AspectScalingMode::AmbientBlur { primary_button_style } else { subtle_button_style })
+        .padding(SPACE_3)
+        .width(Length::FillPortion(1))
+        .style(asset_card_button_style(is_blur))
         .on_press(DashboardMessage::UpdateAspectScalingMode(AspectScalingMode::AmbientBlur));
 
+        let is_fit = current_mode == AspectScalingMode::Fit;
         let btn_mode_fit = button(
             column![
-                text("Fixed Ratio (Letterbox)").size(LABEL_MD),
-                text("Strict 16:9 frame with classic cinema black bars").size(LABEL_SM),
+                row![
+                    text("Fixed Ratio").size(LABEL_MD).color(iced::Color::from_rgb8(TEXT_PRIMARY.r, TEXT_PRIMARY.g, TEXT_PRIMARY.b)),
+                    Space::with_width(Length::Fill),
+                    container(text("CINEMATIC").size(LABEL_SM).color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b)))
+                        .padding([2.0, 6.0])
+                        .style(code_container_style),
+                ]
+                .align_y(Alignment::Center),
+                text("Letterbox & Pillarbox").size(LABEL_SM).color(iced::Color::from_rgb8(TEXT_SECONDARY.r, TEXT_SECONDARY.g, TEXT_SECONDARY.b)),
+                text("Strict 16:9 canvas with solid cinema black borders for pixel-perfect composition on any monitor.")
+                    .size(LABEL_SM)
+                    .color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b)),
             ]
-            .spacing(SPACE_1),
+            .spacing(SPACE_2),
         )
-        .padding([SPACE_2, SPACE_3])
-        .style(if current_mode == AspectScalingMode::Fit { primary_button_style } else { subtle_button_style })
+        .padding(SPACE_3)
+        .width(Length::FillPortion(1))
+        .style(asset_card_button_style(is_fit))
         .on_press(DashboardMessage::UpdateAspectScalingMode(AspectScalingMode::Fit));
 
         let modes_row = row![btn_mode_cover, btn_mode_blur, btn_mode_fit].spacing(SPACE_3);
 
         // Resolution & Window Mode
-        let res_label = text("Default Target Resolution:")
-            .size(LABEL_SM)
-            .color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b));
+        let res_label = container(
+            text("Default Target Resolution:").size(LABEL_SM).color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b))
+        )
+        .width(170);
 
         let cur_w = self.system_screens_config.default_resolution_width;
         let cur_h = self.system_screens_config.default_resolution_height;
 
         let res_1080p = button(text("1920×1080 (Full HD)").size(LABEL_SM))
             .padding([SPACE_1, SPACE_3])
-            .style(if cur_w == 1920 && cur_h == 1080 { primary_button_style } else { subtle_button_style })
+            .style(if cur_w == 1920 && cur_h == 1080 { primary_button_style } else { secondary_button_style })
             .on_press(DashboardMessage::UpdateDefaultResolution(1920, 1080));
 
         let res_1440p = button(text("2560×1440 (2K QHD)").size(LABEL_SM))
             .padding([SPACE_1, SPACE_3])
-            .style(if cur_w == 2560 && cur_h == 1440 { primary_button_style } else { subtle_button_style })
+            .style(if cur_w == 2560 && cur_h == 1440 { primary_button_style } else { secondary_button_style })
             .on_press(DashboardMessage::UpdateDefaultResolution(2560, 1440));
 
         let res_720p = button(text("1280×720 (HD)").size(LABEL_SM))
             .padding([SPACE_1, SPACE_3])
-            .style(if cur_w == 1280 && cur_h == 720 { primary_button_style } else { subtle_button_style })
+            .style(if cur_w == 1280 && cur_h == 720 { primary_button_style } else { secondary_button_style })
             .on_press(DashboardMessage::UpdateDefaultResolution(1280, 720));
 
         let res_row = row![res_label, res_1080p, res_1440p, res_720p].spacing(SPACE_2).align_y(Alignment::Center);
 
         let is_fullscreen = self.system_screens_config.fullscreen_default;
+        let win_label = container(
+            text("Window Launch Mode:").size(LABEL_SM).color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b))
+        )
+        .width(170);
+
         let btn_windowed = button(text("Windowed Mode").size(LABEL_SM))
             .padding([SPACE_1, SPACE_3])
-            .style(if !is_fullscreen { primary_button_style } else { subtle_button_style })
+            .style(if !is_fullscreen { primary_button_style } else { secondary_button_style })
             .on_press(DashboardMessage::UpdateFullscreenDefault(false));
 
         let btn_fullscreen = button(text("Fullscreen Mode").size(LABEL_SM))
             .padding([SPACE_1, SPACE_3])
-            .style(if is_fullscreen { primary_button_style } else { subtle_button_style })
+            .style(if is_fullscreen { primary_button_style } else { secondary_button_style })
             .on_press(DashboardMessage::UpdateFullscreenDefault(true));
 
-        let win_row = row![
-            text("Window Launch Mode:").size(LABEL_SM).color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b)),
-            btn_windowed,
-            btn_fullscreen,
-        ]
-        .spacing(SPACE_2)
-        .align_y(Alignment::Center);
+        let win_row = row![win_label, btn_windowed, btn_fullscreen].spacing(SPACE_2).align_y(Alignment::Center);
 
         let card2 = container(
             column![
                 card2_title,
                 scaling_desc,
                 modes_row,
+                Space::with_height(SPACE_1),
                 res_row,
                 win_row,
             ]
@@ -2648,39 +2730,130 @@ impl DashboardState {
         .style(card_container_style);
 
         // --- Card 3: Audio Defaults ---
-        let card3_title = row![icon_music(), text("Default Audio Volumes").size(HEADING_SM)]
+        let card3_title = row![icon_volume(), text("Default Audio Volumes").size(HEADING_SM)]
             .spacing(SPACE_2)
             .align_y(Alignment::Center);
 
+        let audio_desc = text("Configure initial sound levels for players when starting a new game or resetting preferences.")
+            .size(BODY_SM)
+            .color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b));
+
+        // Master Volume Row
+        let master_vol = self.system_screens_config.master_volume;
+        let master_fill = (master_vol.clamp(0.0, 1.0) * 140.0) as f32;
+        let master_bar = container(
+            row![
+                container(Space::with_width(Length::Fixed(master_fill)))
+                    .height(Length::Fixed(6.0))
+                    .style(meter_fill_style)
+            ]
+        )
+        .width(Length::Fixed(140.0))
+        .height(Length::Fixed(6.0))
+        .style(meter_bg_style);
+
+        let master_badge = container(
+            text(format!("{:.0}%", master_vol * 100.0))
+                .size(LABEL_SM)
+                .color(if master_vol == 0.0 { iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b) } else { iced::Color::from_rgb8(ACCENT_PRIMARY.r, ACCENT_PRIMARY.g, ACCENT_PRIMARY.b) })
+        )
+        .width(48)
+        .align_x(Alignment::Center);
+
+        let is_m_100 = (master_vol - 1.0).abs() < 0.01;
+        let is_m_80 = (master_vol - 0.8).abs() < 0.01;
+        let is_m_50 = (master_vol - 0.5).abs() < 0.01;
+        let is_m_0 = master_vol == 0.0;
+
         let master_row = row![
-            text("Master Volume:").size(LABEL_SM).color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b)),
-            text(format!("{:.0}%", self.system_screens_config.master_volume * 100.0)).size(BODY_SM),
-            button(text("100%").size(LABEL_SM)).padding([2.0, 6.0]).style(subtle_button_style).on_press(DashboardMessage::UpdateMasterVolume(1.0)),
-            button(text("80%").size(LABEL_SM)).padding([2.0, 6.0]).style(subtle_button_style).on_press(DashboardMessage::UpdateMasterVolume(0.8)),
-            button(text("50%").size(LABEL_SM)).padding([2.0, 6.0]).style(subtle_button_style).on_press(DashboardMessage::UpdateMasterVolume(0.5)),
-            button(text("Mute").size(LABEL_SM)).padding([2.0, 6.0]).style(subtle_button_style).on_press(DashboardMessage::UpdateMasterVolume(0.0)),
+            container(row![icon_volume(), text("Master Volume").size(LABEL_SM)].spacing(SPACE_2).align_y(Alignment::Center)).width(170),
+            master_bar,
+            master_badge,
+            Space::with_width(SPACE_2),
+            button(text("100%").size(LABEL_SM)).padding([SPACE_1, SPACE_3]).style(if is_m_100 { primary_button_style } else { secondary_button_style }).on_press(DashboardMessage::UpdateMasterVolume(1.0)),
+            button(text("80%").size(LABEL_SM)).padding([SPACE_1, SPACE_3]).style(if is_m_80 { primary_button_style } else { secondary_button_style }).on_press(DashboardMessage::UpdateMasterVolume(0.8)),
+            button(text("50%").size(LABEL_SM)).padding([SPACE_1, SPACE_3]).style(if is_m_50 { primary_button_style } else { secondary_button_style }).on_press(DashboardMessage::UpdateMasterVolume(0.5)),
+            button(text("Mute").size(LABEL_SM)).padding([SPACE_1, SPACE_3]).style(if is_m_0 { primary_button_style } else { secondary_button_style }).on_press(DashboardMessage::UpdateMasterVolume(0.0)),
         ]
         .spacing(SPACE_2)
         .align_y(Alignment::Center);
+
+        // BGM Volume Row
+        let bgm_vol = self.system_screens_config.bgm_volume;
+        let bgm_fill = (bgm_vol.clamp(0.0, 1.0) * 140.0) as f32;
+        let bgm_bar = container(
+            row![
+                container(Space::with_width(Length::Fixed(bgm_fill)))
+                    .height(Length::Fixed(6.0))
+                    .style(meter_fill_style)
+            ]
+        )
+        .width(Length::Fixed(140.0))
+        .height(Length::Fixed(6.0))
+        .style(meter_bg_style);
+
+        let bgm_badge = container(
+            text(format!("{:.0}%", bgm_vol * 100.0))
+                .size(LABEL_SM)
+                .color(if bgm_vol == 0.0 { iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b) } else { iced::Color::from_rgb8(ACCENT_PRIMARY.r, ACCENT_PRIMARY.g, ACCENT_PRIMARY.b) })
+        )
+        .width(48)
+        .align_x(Alignment::Center);
+
+        let is_b_100 = (bgm_vol - 1.0).abs() < 0.01;
+        let is_b_80 = (bgm_vol - 0.8).abs() < 0.01;
+        let is_b_50 = (bgm_vol - 0.5).abs() < 0.01;
+        let is_b_0 = bgm_vol == 0.0;
 
         let bgm_vol_row = row![
-            text("BGM Music Volume:").size(LABEL_SM).color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b)),
-            text(format!("{:.0}%", self.system_screens_config.bgm_volume * 100.0)).size(BODY_SM),
-            button(text("100%").size(LABEL_SM)).padding([2.0, 6.0]).style(subtle_button_style).on_press(DashboardMessage::UpdateBgmVolume(1.0)),
-            button(text("80%").size(LABEL_SM)).padding([2.0, 6.0]).style(subtle_button_style).on_press(DashboardMessage::UpdateBgmVolume(0.8)),
-            button(text("50%").size(LABEL_SM)).padding([2.0, 6.0]).style(subtle_button_style).on_press(DashboardMessage::UpdateBgmVolume(0.5)),
-            button(text("Mute").size(LABEL_SM)).padding([2.0, 6.0]).style(subtle_button_style).on_press(DashboardMessage::UpdateBgmVolume(0.0)),
+            container(row![icon_music(), text("BGM Music").size(LABEL_SM)].spacing(SPACE_2).align_y(Alignment::Center)).width(170),
+            bgm_bar,
+            bgm_badge,
+            Space::with_width(SPACE_2),
+            button(text("100%").size(LABEL_SM)).padding([SPACE_1, SPACE_3]).style(if is_b_100 { primary_button_style } else { secondary_button_style }).on_press(DashboardMessage::UpdateBgmVolume(1.0)),
+            button(text("80%").size(LABEL_SM)).padding([SPACE_1, SPACE_3]).style(if is_b_80 { primary_button_style } else { secondary_button_style }).on_press(DashboardMessage::UpdateBgmVolume(0.8)),
+            button(text("50%").size(LABEL_SM)).padding([SPACE_1, SPACE_3]).style(if is_b_50 { primary_button_style } else { secondary_button_style }).on_press(DashboardMessage::UpdateBgmVolume(0.5)),
+            button(text("Mute").size(LABEL_SM)).padding([SPACE_1, SPACE_3]).style(if is_b_0 { primary_button_style } else { secondary_button_style }).on_press(DashboardMessage::UpdateBgmVolume(0.0)),
         ]
         .spacing(SPACE_2)
         .align_y(Alignment::Center);
 
+        // SFX Volume Row
+        let sfx_vol = self.system_screens_config.sfx_volume;
+        let sfx_fill = (sfx_vol.clamp(0.0, 1.0) * 140.0) as f32;
+        let sfx_bar = container(
+            row![
+                container(Space::with_width(Length::Fixed(sfx_fill)))
+                    .height(Length::Fixed(6.0))
+                    .style(meter_fill_style)
+            ]
+        )
+        .width(Length::Fixed(140.0))
+        .height(Length::Fixed(6.0))
+        .style(meter_bg_style);
+
+        let sfx_badge = container(
+            text(format!("{:.0}%", sfx_vol * 100.0))
+                .size(LABEL_SM)
+                .color(if sfx_vol == 0.0 { iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b) } else { iced::Color::from_rgb8(ACCENT_PRIMARY.r, ACCENT_PRIMARY.g, ACCENT_PRIMARY.b) })
+        )
+        .width(48)
+        .align_x(Alignment::Center);
+
+        let is_s_100 = (sfx_vol - 1.0).abs() < 0.01;
+        let is_s_80 = (sfx_vol - 0.8).abs() < 0.01;
+        let is_s_50 = (sfx_vol - 0.5).abs() < 0.01;
+        let is_s_0 = sfx_vol == 0.0;
+
         let sfx_vol_row = row![
-            text("SFX Effect Volume:").size(LABEL_SM).color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b)),
-            text(format!("{:.0}%", self.system_screens_config.sfx_volume * 100.0)).size(BODY_SM),
-            button(text("100%").size(LABEL_SM)).padding([2.0, 6.0]).style(subtle_button_style).on_press(DashboardMessage::UpdateSfxVolume(1.0)),
-            button(text("80%").size(LABEL_SM)).padding([2.0, 6.0]).style(subtle_button_style).on_press(DashboardMessage::UpdateSfxVolume(0.8)),
-            button(text("50%").size(LABEL_SM)).padding([2.0, 6.0]).style(subtle_button_style).on_press(DashboardMessage::UpdateSfxVolume(0.5)),
-            button(text("Mute").size(LABEL_SM)).padding([2.0, 6.0]).style(subtle_button_style).on_press(DashboardMessage::UpdateSfxVolume(0.0)),
+            container(row![icon_zap(), text("Sound Effects (SFX)").size(LABEL_SM)].spacing(SPACE_2).align_y(Alignment::Center)).width(170),
+            sfx_bar,
+            sfx_badge,
+            Space::with_width(SPACE_2),
+            button(text("100%").size(LABEL_SM)).padding([SPACE_1, SPACE_3]).style(if is_s_100 { primary_button_style } else { secondary_button_style }).on_press(DashboardMessage::UpdateSfxVolume(1.0)),
+            button(text("80%").size(LABEL_SM)).padding([SPACE_1, SPACE_3]).style(if is_s_80 { primary_button_style } else { secondary_button_style }).on_press(DashboardMessage::UpdateSfxVolume(0.8)),
+            button(text("50%").size(LABEL_SM)).padding([SPACE_1, SPACE_3]).style(if is_s_50 { primary_button_style } else { secondary_button_style }).on_press(DashboardMessage::UpdateSfxVolume(0.5)),
+            button(text("Mute").size(LABEL_SM)).padding([SPACE_1, SPACE_3]).style(if is_s_0 { primary_button_style } else { secondary_button_style }).on_press(DashboardMessage::UpdateSfxVolume(0.0)),
         ]
         .spacing(SPACE_2)
         .align_y(Alignment::Center);
@@ -2688,6 +2861,7 @@ impl DashboardState {
         let card3 = container(
             column![
                 card3_title,
+                audio_desc,
                 master_row,
                 bgm_vol_row,
                 sfx_vol_row,
@@ -2703,23 +2877,37 @@ impl DashboardState {
             .spacing(SPACE_2)
             .align_y(Alignment::Center);
 
+        let playback_desc = text("Control typewriter animation speed and auto-forward waiting interval during scene dialogue.")
+            .size(BODY_SM)
+            .color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b));
+
         let cur_speed = self.system_screens_config.text_speed;
+        let speed_label = container(
+            text("Text Display Speed:").size(LABEL_SM).color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b))
+        )
+        .width(170);
+
         let speed_row = row![
-            text("Text Speed:").size(LABEL_SM).color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b)),
-            button(text("Slow (0.5x)").size(LABEL_SM)).padding([2.0, 6.0]).style(if (cur_speed - 0.5).abs() < 0.01 { primary_button_style } else { subtle_button_style }).on_press(DashboardMessage::UpdateTextSpeed(0.5)),
-            button(text("Normal (1.0x)").size(LABEL_SM)).padding([2.0, 6.0]).style(if (cur_speed - 1.0).abs() < 0.01 { primary_button_style } else { subtle_button_style }).on_press(DashboardMessage::UpdateTextSpeed(1.0)),
-            button(text("Fast (1.5x)").size(LABEL_SM)).padding([2.0, 6.0]).style(if (cur_speed - 1.5).abs() < 0.01 { primary_button_style } else { subtle_button_style }).on_press(DashboardMessage::UpdateTextSpeed(1.5)),
-            button(text("Instant (2.0x)").size(LABEL_SM)).padding([2.0, 6.0]).style(if (cur_speed - 2.0).abs() < 0.01 { primary_button_style } else { subtle_button_style }).on_press(DashboardMessage::UpdateTextSpeed(2.0)),
+            speed_label,
+            button(text("Slow (0.5×)").size(LABEL_SM)).padding([SPACE_1, SPACE_3]).style(if (cur_speed - 0.5).abs() < 0.01 { primary_button_style } else { secondary_button_style }).on_press(DashboardMessage::UpdateTextSpeed(0.5)),
+            button(text("Normal (1.0×)").size(LABEL_SM)).padding([SPACE_1, SPACE_3]).style(if (cur_speed - 1.0).abs() < 0.01 { primary_button_style } else { secondary_button_style }).on_press(DashboardMessage::UpdateTextSpeed(1.0)),
+            button(text("Fast (1.5×)").size(LABEL_SM)).padding([SPACE_1, SPACE_3]).style(if (cur_speed - 1.5).abs() < 0.01 { primary_button_style } else { secondary_button_style }).on_press(DashboardMessage::UpdateTextSpeed(1.5)),
+            button(text("Instant (2.0×)").size(LABEL_SM)).padding([SPACE_1, SPACE_3]).style(if (cur_speed - 2.0).abs() < 0.01 { primary_button_style } else { secondary_button_style }).on_press(DashboardMessage::UpdateTextSpeed(2.0)),
         ]
         .spacing(SPACE_2)
         .align_y(Alignment::Center);
 
         let cur_delay = self.system_screens_config.auto_forward_delay;
+        let delay_label = container(
+            text("Auto-Forward Delay:").size(LABEL_SM).color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b))
+        )
+        .width(170);
+
         let delay_row = row![
-            text("Auto-Forward Delay:").size(LABEL_SM).color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b)),
-            button(text("Fast (1.5s)").size(LABEL_SM)).padding([2.0, 6.0]).style(if (cur_delay - 1.5).abs() < 0.01 { primary_button_style } else { subtle_button_style }).on_press(DashboardMessage::UpdateAutoForwardDelay(1.5)),
-            button(text("Normal (3.0s)").size(LABEL_SM)).padding([2.0, 6.0]).style(if (cur_delay - 3.0).abs() < 0.01 { primary_button_style } else { subtle_button_style }).on_press(DashboardMessage::UpdateAutoForwardDelay(3.0)),
-            button(text("Relaxed (5.0s)").size(LABEL_SM)).padding([2.0, 6.0]).style(if (cur_delay - 5.0).abs() < 0.01 { primary_button_style } else { subtle_button_style }).on_press(DashboardMessage::UpdateAutoForwardDelay(5.0)),
+            delay_label,
+            button(text("Fast (1.5s)").size(LABEL_SM)).padding([SPACE_1, SPACE_3]).style(if (cur_delay - 1.5).abs() < 0.01 { primary_button_style } else { secondary_button_style }).on_press(DashboardMessage::UpdateAutoForwardDelay(1.5)),
+            button(text("Normal (3.0s)").size(LABEL_SM)).padding([SPACE_1, SPACE_3]).style(if (cur_delay - 3.0).abs() < 0.01 { primary_button_style } else { secondary_button_style }).on_press(DashboardMessage::UpdateAutoForwardDelay(3.0)),
+            button(text("Relaxed (5.0s)").size(LABEL_SM)).padding([SPACE_1, SPACE_3]).style(if (cur_delay - 5.0).abs() < 0.01 { primary_button_style } else { secondary_button_style }).on_press(DashboardMessage::UpdateAutoForwardDelay(5.0)),
         ]
         .spacing(SPACE_2)
         .align_y(Alignment::Center);
@@ -2727,6 +2915,7 @@ impl DashboardState {
         let card4 = container(
             column![
                 card4_title,
+                playback_desc,
                 speed_row,
                 delay_row,
             ]
@@ -2737,20 +2926,56 @@ impl DashboardState {
         .style(card_container_style);
 
         // --- Card 5: Project & License Info ---
+        let item_project = row![
+            text("Project Name: ").size(LABEL_SM).color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b)),
+            text(&project.name).size(BODY_SM).color(iced::Color::from_rgb8(TEXT_PRIMARY.r, TEXT_PRIMARY.g, TEXT_PRIMARY.b)),
+        ]
+        .spacing(SPACE_1)
+        .align_y(Alignment::Center);
+
+        let item_author = row![
+            text("Author: ").size(LABEL_SM).color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b)),
+            text(&project.author).size(BODY_SM).color(iced::Color::from_rgb8(TEXT_PRIMARY.r, TEXT_PRIMARY.g, TEXT_PRIMARY.b)),
+        ]
+        .spacing(SPACE_1)
+        .align_y(Alignment::Center);
+
+        let item_license = row![
+            text("License: ").size(LABEL_SM).color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b)),
+            text("GNU GPLv3 (100% Creator Ownership)")
+                .size(BODY_SM)
+                .color(iced::Color::from_rgb8(STATUS_SUCCESS.r, STATUS_SUCCESS.g, STATUS_SUCCESS.b)),
+        ]
+        .spacing(SPACE_1)
+        .align_y(Alignment::Center);
+
+        let item_engine = row![
+            text("Engine: ").size(LABEL_SM).color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b)),
+            text("Blanc Engine 0.1.0-alpha")
+                .size(BODY_SM)
+                .color(iced::Color::from_rgb8(ACCENT_PRIMARY.r, ACCENT_PRIMARY.g, ACCENT_PRIMARY.b)),
+        ]
+        .spacing(SPACE_1)
+        .align_y(Alignment::Center);
+
+        let meta_row = row![
+            item_project,
+            Space::with_width(SPACE_5),
+            item_author,
+            Space::with_width(SPACE_5),
+            item_license,
+            Space::with_width(SPACE_5),
+            item_engine,
+        ]
+        .spacing(SPACE_2)
+        .align_y(Alignment::Center);
+
         let card5 = container(
             column![
-                row![icon_info(), text("Project & Engine Specifications").size(HEADING_SM)].spacing(SPACE_2).align_y(Alignment::Center),
-                row![
-                    text("Project Name:").size(LABEL_SM).color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b)),
-                    text(&project.name).size(BODY_SM),
-                    Space::with_width(SPACE_4),
-                    text("Author:").size(LABEL_SM).color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b)),
-                    text(&project.author).size(BODY_SM),
-                    Space::with_width(SPACE_4),
-                    text("License:").size(LABEL_SM).color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b)),
-                    text("GNU GPLv3 (100% Creator Ownership)").size(BODY_SM).color(iced::Color::from_rgb8(STATUS_SUCCESS.r, STATUS_SUCCESS.g, STATUS_SUCCESS.b)),
-                ]
-                .align_y(Alignment::Center),
+                row![icon_info(), text("Project & Engine Specifications").size(HEADING_SM)]
+                    .spacing(SPACE_2)
+                    .align_y(Alignment::Center),
+                meta_row,
             ]
             .spacing(SPACE_2),
         )
@@ -2791,10 +3016,19 @@ impl DashboardState {
             content_col = content_col.push(banner);
         }
 
-        scrollable(content_col.padding(SPACE_6))
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .into()
+        let centered_content = container(content_col)
+            .max_width(1120.0)
+            .width(Length::Fill);
+
+        scrollable(
+            container(centered_content)
+                .width(Length::Fill)
+                .padding(SPACE_6)
+                .center_x(Length::Fill),
+        )
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .into()
     }
 
     // ==========================================

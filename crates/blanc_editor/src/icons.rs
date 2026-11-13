@@ -65,7 +65,7 @@ const BRANCH_SVG: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 
 
 const DOWNLOAD_SVG: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#94a3b8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" x2="12" y1="15" y2="3"/></svg>"##;
 
-const SAVE_SVG: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#94a3b8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>"##;
+const SAVE_SVG: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>"##;
 
 const ZAP_SVG: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="#6366f1"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>"##;
 
@@ -261,8 +261,8 @@ pub fn icon_download<'a>() -> Svg<'a, iced::Theme> {
 
 pub fn icon_save<'a>() -> Svg<'a, iced::Theme> {
     Svg::new(Handle::from_memory(SAVE_SVG.as_bytes()))
-        .width(Length::Fixed(14.0))
-        .height(Length::Fixed(14.0))
+        .width(Length::Fixed(16.0))
+        .height(Length::Fixed(16.0))
 }
 
 pub fn icon_zap<'a>() -> Svg<'a, iced::Theme> {
