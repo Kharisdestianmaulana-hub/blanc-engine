@@ -6,6 +6,19 @@ use iced::{Color, Point, Rectangle, Renderer, Size, Theme};
 use blanc_core::flow::{FlowNode, FlowNodeType, StoryFlowGraph};
 use blanc_core::scene::ActionBlock;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FlowInteractionMode {
+    Select,
+    Connect,
+    CutWire,
+}
+
+impl Default for FlowInteractionMode {
+    fn default() -> Self {
+        Self::Select
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct FlowCanvasState {
     pub cache: Cache,
@@ -30,7 +43,6 @@ pub enum FlowCanvasAction {
         to_node: String,
         to_pin: String,
     },
-    #[allow(dead_code)]
     DisconnectPin {
         node_id: String,
         pin_id: String,
@@ -47,12 +59,19 @@ pub enum FlowCanvasAction {
     ZoomDelta(f32),
     RemoveNode(String),
     ClearSelection,
+    SetMode(FlowInteractionMode),
+    FocusAll,
+    AutoLayout,
+    ToggleSnapGrid,
+    ResetView,
 }
 
 pub struct FlowCanvasWidget<'a> {
     pub graph: &'a StoryFlowGraph,
     pub scenes: &'a [blanc_core::scene::Scene],
     pub selected_node_id: Option<&'a str>,
+    pub mode: FlowInteractionMode,
+    pub snap_grid: bool,
 }
 
 impl<'a> Program<FlowCanvasAction, Theme, Renderer> for FlowCanvasWidget<'a> {
@@ -81,10 +100,119 @@ impl<'a> Program<FlowCanvasAction, Theme, Renderer> for FlowCanvasWidget<'a> {
         state.current_mouse_pos = Some(cursor_position);
 
         match event {
+            Event::Keyboard(iced::keyboard::Event::KeyPressed { key, .. }) => {
+                match key.as_ref() {
+                    iced::keyboard::Key::Character("v") | iced::keyboard::Key::Character("V") | iced::keyboard::Key::Character("1") => {
+                        state.cache.clear();
+                        return (canvas::event::Status::Captured, Some(FlowCanvasAction::SetMode(FlowInteractionMode::Select)));
+                    }
+                    iced::keyboard::Key::Character("c") | iced::keyboard::Key::Character("C") | iced::keyboard::Key::Character("2") => {
+                        state.cache.clear();
+                        return (canvas::event::Status::Captured, Some(FlowCanvasAction::SetMode(FlowInteractionMode::Connect)));
+                    }
+                    iced::keyboard::Key::Character("x") | iced::keyboard::Key::Character("X") | iced::keyboard::Key::Character("3") => {
+                        state.cache.clear();
+                        return (canvas::event::Status::Captured, Some(FlowCanvasAction::SetMode(FlowInteractionMode::CutWire)));
+                    }
+                    iced::keyboard::Key::Character("f") | iced::keyboard::Key::Character("F") => {
+                        state.cache.clear();
+                        return (canvas::event::Status::Captured, Some(FlowCanvasAction::FocusAll));
+                    }
+                    iced::keyboard::Key::Character("a") | iced::keyboard::Key::Character("A") => {
+                        state.cache.clear();
+                        return (canvas::event::Status::Captured, Some(FlowCanvasAction::AutoLayout));
+                    }
+                    iced::keyboard::Key::Character("s") | iced::keyboard::Key::Character("S") => {
+                        state.cache.clear();
+                        return (canvas::event::Status::Captured, Some(FlowCanvasAction::ToggleSnapGrid));
+                    }
+                    iced::keyboard::Key::Character("0") => {
+                        state.cache.clear();
+                        return (canvas::event::Status::Captured, Some(FlowCanvasAction::ResetView));
+                    }
+                    iced::keyboard::Key::Character("+") | iced::keyboard::Key::Character("=") => {
+                        state.cache.clear();
+                        return (canvas::event::Status::Captured, Some(FlowCanvasAction::ZoomDelta(0.15)));
+                    }
+                    iced::keyboard::Key::Character("-") => {
+                        state.cache.clear();
+                        return (canvas::event::Status::Captured, Some(FlowCanvasAction::ZoomDelta(-0.15)));
+                    }
+                    iced::keyboard::Key::Named(iced::keyboard::key::Named::Escape) => {
+                        state.connecting_pin = None;
+                        state.cache.clear();
+                        return (canvas::event::Status::Captured, Some(FlowCanvasAction::ClearSelection));
+                    }
+                    _ => (canvas::event::Status::Ignored, None),
+                }
+            }
+
             Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
                 let zoom = self.graph.zoom;
                 let pan_x = self.graph.pan_x;
                 let pan_y = self.graph.pan_y;
+
+                // SPECIAL MODE: CutWire
+                if self.mode == FlowInteractionMode::CutWire {
+                    // 1. Check if clicked an output pin to disconnect all wires from it
+                    for node in &self.graph.nodes {
+                        let nx = node.x * zoom + pan_x;
+                        let ny = node.y * zoom + pan_y;
+                        let nw = self.get_node_width(node) * zoom;
+                        let pin_start_y = ny + 85.0 * zoom;
+
+                        let output_pins = self.get_node_output_pins(node);
+                        for (p_idx, (pin_id, _label)) in output_pins.iter().enumerate() {
+                            let pin_x = nx + nw;
+                            let pin_y = pin_start_y + (p_idx as f32 * 30.0) * zoom;
+                            let dist = ((cursor_position.x - pin_x).powi(2) + (cursor_position.y - pin_y).powi(2)).sqrt();
+                            if dist <= 16.0 * zoom {
+                                state.cache.clear();
+                                return (
+                                    canvas::event::Status::Captured,
+                                    Some(FlowCanvasAction::DisconnectPin {
+                                        node_id: node.id.clone(),
+                                        pin_id: pin_id.clone(),
+                                    }),
+                                );
+                            }
+                        }
+                    }
+
+                    // 2. Check if clicked along any wire curve
+                    for conn in &self.graph.connections {
+                        if let (Some(p1), Some(p2)) = (
+                            self.get_pin_screen_pos(&conn.from_node_id, &conn.from_pin_id, true),
+                            self.get_pin_screen_pos(&conn.to_node_id, &conn.to_pin_id, false),
+                        ) {
+                            let cx1 = p1.x + (p2.x - p1.x).abs().max(40.0) * 0.5;
+                            let cx2 = p2.x - (p2.x - p1.x).abs().max(40.0) * 0.5;
+                            for t_step in 0..=12 {
+                                let t = t_step as f32 / 12.0;
+                                let one_minus_t = 1.0 - t;
+                                let bx = one_minus_t.powi(3) * p1.x
+                                    + 3.0 * one_minus_t.powi(2) * t * cx1
+                                    + 3.0 * one_minus_t * t.powi(2) * cx2
+                                    + t.powi(3) * p2.x;
+                                let by = one_minus_t.powi(3) * p1.y
+                                    + 3.0 * one_minus_t.powi(2) * t * p1.y
+                                    + 3.0 * one_minus_t * t.powi(2) * p2.y
+                                    + t.powi(3) * p2.y;
+                                let d = ((cursor_position.x - bx).powi(2) + (cursor_position.y - by).powi(2)).sqrt();
+                                if d <= 14.0 {
+                                    state.cache.clear();
+                                    return (
+                                        canvas::event::Status::Captured,
+                                        Some(FlowCanvasAction::DisconnectPin {
+                                            node_id: conn.from_node_id.clone(),
+                                            pin_id: conn.from_pin_id.clone(),
+                                        }),
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
 
                 // 1. Check if clicked on an Output Pin
                 for node in &self.graph.nodes {
@@ -213,12 +341,17 @@ impl<'a> Program<FlowCanvasAction, Theme, Renderer> for FlowCanvasWidget<'a> {
                         let zoom = self.graph.zoom;
                         let pan_x = self.graph.pan_x;
                         let pan_y = self.graph.pan_y;
-                        let new_x = (pos.x - pan_x) / zoom - state.drag_offset_x;
-                        let new_y = (pos.y - pan_y) / zoom - state.drag_offset_y;
+                        let raw_x = ((pos.x - pan_x) / zoom - state.drag_offset_x).max(0.0);
+                        let raw_y = ((pos.y - pan_y) / zoom - state.drag_offset_y).max(0.0);
+                        let (new_x, new_y) = if self.snap_grid {
+                            ((raw_x / 20.0).round() * 20.0, (raw_y / 20.0).round() * 20.0)
+                        } else {
+                            (raw_x, raw_y)
+                        };
                         action = Some(FlowCanvasAction::SetNodePosition {
                             node_id: node_id.clone(),
-                            x: new_x.max(0.0),
-                            y: new_y.max(0.0),
+                            x: new_x,
+                            y: new_y,
                         });
                         state.cache.clear();
                     } else if state.is_panning {
@@ -404,6 +537,9 @@ impl<'a> Program<FlowCanvasAction, Theme, Renderer> for FlowCanvasWidget<'a> {
                 let header_h = 34.0 * zoom;
                 let header_color = match &node.node_type {
                     FlowNodeType::MainMenu => Color::from_rgb8(16, 185, 129), // Emerald
+                    FlowNodeType::PauseMenu => Color::from_rgb8(14, 165, 233), // Sky Blue
+                    FlowNodeType::Settings => Color::from_rgb8(99, 102, 241), // Indigo
+                    FlowNodeType::SaveLoad => Color::from_rgb8(20, 184, 166), // Teal
                     FlowNodeType::Ending { .. } => Color::from_rgb8(244, 63, 94), // Rose
                     FlowNodeType::Scene { scene_name } => {
                         if self.scene_has_choice(scene_name) {
@@ -467,6 +603,9 @@ impl<'a> Program<FlowCanvasAction, Theme, Renderer> for FlowCanvasWidget<'a> {
                 // Subtitle / Info Tag (Dedicated area between header and divider)
                 let info_text = match &node.node_type {
                     FlowNodeType::MainMenu => "Entry Screen (Starts New Game)".to_string(),
+                    FlowNodeType::PauseMenu => "System: In-Game Pause (ESC Menu)".to_string(),
+                    FlowNodeType::Settings => "System: Audio, Video & Text Prefs".to_string(),
+                    FlowNodeType::SaveLoad => "System: Progress Save & Load Slots".to_string(),
                     FlowNodeType::Ending { ending_name } => format!("Arc End: {}", ending_name),
                     FlowNodeType::Scene { scene_name } => {
                         let block_count = self.get_scene_block_count(scene_name);
@@ -589,6 +728,12 @@ impl<'a> Program<FlowCanvasAction, Theme, Renderer> for FlowCanvasWidget<'a> {
         if state.dragging_node_id.is_some() {
             return mouse::Interaction::Grabbing;
         }
+        if self.mode == FlowInteractionMode::CutWire {
+            return mouse::Interaction::Crosshair;
+        }
+        if self.mode == FlowInteractionMode::Connect {
+            return mouse::Interaction::Crosshair;
+        }
         if let Some(pos) = cursor.position_in(bounds) {
             let zoom = self.graph.zoom;
             let pan_x = self.graph.pan_x;
@@ -645,7 +790,22 @@ impl<'a> FlowCanvasWidget<'a> {
             FlowNodeType::MainMenu => {
                 vec![("new_game".to_string(), "New Game ->".to_string())]
             }
-            FlowNodeType::Ending { .. } => Vec::new(),
+            FlowNodeType::PauseMenu => {
+                vec![
+                    ("resume".to_string(), "Resume Story ->".to_string()),
+                    ("settings".to_string(), "Settings ->".to_string()),
+                    ("title".to_string(), "Return to Title ->".to_string()),
+                ]
+            }
+            FlowNodeType::Settings => {
+                vec![("back".to_string(), "Back / Return ->".to_string())]
+            }
+            FlowNodeType::SaveLoad => {
+                vec![("back".to_string(), "Back to Story ->".to_string())]
+            }
+            FlowNodeType::Ending { .. } => {
+                vec![("title".to_string(), "To Title Screen ->".to_string())]
+            }
             FlowNodeType::Scene { scene_name } => {
                 if let Some(scene) = self.scenes.iter().find(|s| &s.name == scene_name) {
                     // Check if scene has Choice blocks

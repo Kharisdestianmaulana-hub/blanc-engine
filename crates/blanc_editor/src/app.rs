@@ -968,6 +968,58 @@ impl EditorApp {
                             .flow_graph
                             .save_to_file(&story_dir.join("story_flow.bgraph"));
                     }
+                    FlowCanvasAction::SetMode(mode) => {
+                        dashboard.flow_mode = mode;
+                    }
+                    FlowCanvasAction::FocusAll => {
+                        if !dashboard.flow_graph.nodes.is_empty() {
+                            let min_x = dashboard.flow_graph.nodes.iter().map(|n| n.x).fold(f32::INFINITY, f32::min);
+                            let max_x = dashboard.flow_graph.nodes.iter().map(|n| n.x + n.width).fold(f32::NEG_INFINITY, f32::max);
+                            let min_y = dashboard.flow_graph.nodes.iter().map(|n| n.y).fold(f32::INFINITY, f32::min);
+                            let max_y = dashboard.flow_graph.nodes.iter().map(|n| n.y + n.height).fold(f32::NEG_INFINITY, f32::max);
+                            let center_x = (min_x + max_x) * 0.5;
+                            let center_y = (min_y + max_y) * 0.5;
+                            dashboard.flow_graph.pan_x = 420.0 - center_x;
+                            dashboard.flow_graph.pan_y = 260.0 - center_y;
+                            dashboard.flow_graph.zoom = 1.0;
+                        }
+                    }
+                    FlowCanvasAction::AutoLayout => {
+                        let mut cur_y = 120.0;
+                        if let Some(mm) = dashboard.flow_graph.find_node_mut("system_main_menu") {
+                            mm.x = 60.0;
+                            mm.y = 180.0;
+                        }
+                        for node in dashboard.flow_graph.nodes.iter_mut() {
+                            if matches!(node.node_type, FlowNodeType::Scene { .. }) {
+                                node.x = 360.0;
+                                node.y = cur_y;
+                                cur_y += 160.0;
+                            }
+                        }
+                        for node in dashboard.flow_graph.nodes.iter_mut() {
+                            if matches!(node.node_type, FlowNodeType::Ending { .. } | FlowNodeType::PauseMenu | FlowNodeType::Settings | FlowNodeType::SaveLoad) {
+                                node.x = 720.0;
+                                node.y = 180.0;
+                            }
+                        }
+                        dashboard.flow_graph.pan_x = 0.0;
+                        dashboard.flow_graph.pan_y = 0.0;
+                        dashboard.flow_graph.zoom = 1.0;
+                        let story_dir = project_dir.join("Story");
+                        let _ = std::fs::create_dir_all(&story_dir);
+                        let _ = dashboard
+                            .flow_graph
+                            .save_to_file(&story_dir.join("story_flow.bgraph"));
+                    }
+                    FlowCanvasAction::ToggleSnapGrid => {
+                        dashboard.flow_snap_grid = !dashboard.flow_snap_grid;
+                    }
+                    FlowCanvasAction::ResetView => {
+                        dashboard.flow_graph.pan_x = 0.0;
+                        dashboard.flow_graph.pan_y = 0.0;
+                        dashboard.flow_graph.zoom = 1.0;
+                    }
                 }
             }
             DashboardMessage::FlowAddScene(scene_name) => {
@@ -986,6 +1038,43 @@ impl EditorApp {
                         tokio::time::sleep(std::time::Duration::from_secs(3)),
                         |_| AppMessage::Dashboard(DashboardMessage::DismissFlowStatusMessage),
                     );
+                }
+            }
+            DashboardMessage::FlowAddSystemNode(sys_type) => {
+                let count = dashboard.flow_graph.nodes.len();
+                let new_x = 420.0 + (count as f32 % 3.0) * 260.0;
+                let new_y = 160.0 + (count as f32 / 3.0).floor() * 160.0;
+                if dashboard.flow_graph.add_system_node(&sys_type, new_x, new_y) {
+                    let story_dir = project_dir.join("Story");
+                    let _ = std::fs::create_dir_all(&story_dir);
+                    let _ = dashboard
+                        .flow_graph
+                        .save_to_file(&story_dir.join("story_flow.bgraph"));
+                    dashboard.flow_status_message =
+                        Some(format!("Added system node '{}' to Flow canvas.", sys_type));
+                    return Task::perform(
+                        tokio::time::sleep(std::time::Duration::from_secs(3)),
+                        |_| AppMessage::Dashboard(DashboardMessage::DismissFlowStatusMessage),
+                    );
+                }
+            }
+            DashboardMessage::FlowSetMode(mode) => {
+                dashboard.flow_mode = mode;
+            }
+            DashboardMessage::FlowToggleSnapGrid => {
+                dashboard.flow_snap_grid = !dashboard.flow_snap_grid;
+            }
+            DashboardMessage::FlowFocusAll => {
+                if !dashboard.flow_graph.nodes.is_empty() {
+                    let min_x = dashboard.flow_graph.nodes.iter().map(|n| n.x).fold(f32::INFINITY, f32::min);
+                    let max_x = dashboard.flow_graph.nodes.iter().map(|n| n.x + n.width).fold(f32::NEG_INFINITY, f32::max);
+                    let min_y = dashboard.flow_graph.nodes.iter().map(|n| n.y).fold(f32::INFINITY, f32::min);
+                    let max_y = dashboard.flow_graph.nodes.iter().map(|n| n.y + n.height).fold(f32::NEG_INFINITY, f32::max);
+                    let center_x = (min_x + max_x) * 0.5;
+                    let center_y = (min_y + max_y) * 0.5;
+                    dashboard.flow_graph.pan_x = 420.0 - center_x;
+                    dashboard.flow_graph.pan_y = 260.0 - center_y;
+                    dashboard.flow_graph.zoom = 1.0;
                 }
             }
             DashboardMessage::FlowRemoveNode(node_id) => {

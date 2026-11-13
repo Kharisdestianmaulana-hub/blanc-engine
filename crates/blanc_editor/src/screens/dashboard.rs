@@ -13,7 +13,7 @@ use blanc_core::theme::spacing::*;
 use blanc_core::theme::typography::*;
 
 use crate::icons::*;
-use crate::screens::flow_canvas::{FlowCanvasAction, FlowCanvasState, FlowCanvasWidget};
+use crate::screens::flow_canvas::{FlowCanvasAction, FlowCanvasState, FlowCanvasWidget, FlowInteractionMode};
 use crate::theme::{
     asset_card_button_style, badge_container_style, callout_container_style, canvas_container_style, card_container_style,
     code_container_style, danger_icon_button_style, icon_button_style, input_field_style,
@@ -121,7 +121,11 @@ pub enum DashboardMessage {
     // Story Flow messages
     FlowAction(FlowCanvasAction),
     FlowAddScene(String),
+    FlowAddSystemNode(String),
     FlowRemoveNode(String),
+    FlowSetMode(FlowInteractionMode),
+    FlowToggleSnapGrid,
+    FlowFocusAll,
     FlowAutoLayout,
     FlowResetView,
     FlowZoomIn,
@@ -186,6 +190,8 @@ pub struct DashboardState {
     #[allow(dead_code)]
     pub flow_canvas_state: FlowCanvasState,
     pub flow_selected_node_id: Option<String>,
+    pub flow_mode: FlowInteractionMode,
+    pub flow_snap_grid: bool,
     pub flow_search_query: String,
     pub flow_status_message: Option<String>,
     pub all_scenes: Vec<Scene>,
@@ -335,6 +341,8 @@ impl DashboardState {
             flow_graph,
             flow_canvas_state: FlowCanvasState::default(),
             flow_selected_node_id: None,
+            flow_mode: FlowInteractionMode::Select,
+            flow_snap_grid: true,
             flow_search_query: String::new(),
             flow_status_message: None,
             all_scenes,
@@ -399,6 +407,8 @@ impl Default for DashboardState {
             flow_graph: StoryFlowGraph::default(),
             flow_canvas_state: FlowCanvasState::default(),
             flow_selected_node_id: None,
+            flow_mode: FlowInteractionMode::Select,
+            flow_snap_grid: true,
             flow_search_query: String::new(),
             flow_status_message: None,
             all_scenes: vec![Self::create_starter_scene()],
@@ -2144,27 +2154,6 @@ impl DashboardState {
         .style(primary_button_style)
         .on_press(DashboardMessage::SaveStoryFlow);
 
-        let toolbar_row = row![
-            button(text("Zoom -").size(LABEL_SM))
-                .padding([SPACE_1, SPACE_2])
-                .style(subtle_button_style)
-                .on_press(DashboardMessage::FlowZoomOut),
-            button(text("Zoom +").size(LABEL_SM))
-                .padding([SPACE_1, SPACE_2])
-                .style(subtle_button_style)
-                .on_press(DashboardMessage::FlowZoomIn),
-            button(text("Reset").size(LABEL_SM))
-                .padding([SPACE_1, SPACE_2])
-                .style(subtle_button_style)
-                .on_press(DashboardMessage::FlowResetView),
-            button(text("Auto Align").size(LABEL_SM))
-                .padding([SPACE_1, SPACE_2])
-                .style(subtle_button_style)
-                .on_press(DashboardMessage::FlowAutoLayout),
-        ]
-        .spacing(SPACE_1)
-        .align_y(Alignment::Center);
-
         // Summary Card
         let total_nodes = self.flow_graph.nodes.len();
         let total_conns = self.flow_graph.connections.len();
@@ -2231,7 +2220,7 @@ impl DashboardState {
         .width(Length::Fill)
         .style(code_container_style);
 
-        // Available Scenes List
+        // Section 1: Available Scenes List
         let search_input = text_input("Search scenes...", &self.flow_search_query)
             .on_input(DashboardMessage::FlowSearchChanged)
             .padding(SPACE_2)
@@ -2297,48 +2286,97 @@ impl DashboardState {
             );
         }
 
-        let scenes_scroll = scrollable(scenes_list_col)
-            .width(Length::Fill)
-            .height(Length::Fill);
+        // Section 2: System Nodes Library (Pendekatan A)
+        let system_library_defs = [
+            ("pause_menu", "Pause / In-Game Menu", "system_pause_menu"),
+            ("settings", "In-Game Settings", "system_settings"),
+            ("save_load", "Save & Load Screen", "system_save_load"),
+            ("return_to_title", "Return to Title", "ending_return_to_title"),
+            ("credits", "Credits Roll", "credits"),
+            ("game_over", "Game Over Screen", "game_over"),
+        ];
 
-        // Canvas Tips card at bottom
+        let mut sys_nodes_col = column![].spacing(SPACE_2).width(Length::Fill);
+        for (sys_type, label, check_id) in system_library_defs {
+            let is_on_canvas = if check_id == "credits" || check_id == "game_over" {
+                self.flow_graph.nodes.iter().any(|n| n.title == label)
+            } else {
+                self.flow_graph.nodes.iter().any(|n| n.id == check_id)
+            };
+
+            let row_item = if is_on_canvas {
+                row![
+                    icon_sparkle(),
+                    text(label).size(BODY_SM),
+                    Space::with_width(Length::Fill),
+                    container(
+                        text("In Flow")
+                            .size(LABEL_SM)
+                            .color(iced::Color::from_rgb8(
+                                STATUS_SUCCESS.r,
+                                STATUS_SUCCESS.g,
+                                STATUS_SUCCESS.b,
+                            )),
+                    )
+                    .padding([2.0, 6.0])
+                    .style(code_container_style),
+                ]
+                .spacing(SPACE_2)
+                .align_y(Alignment::Center)
+                .padding([SPACE_1, SPACE_2])
+            } else {
+                row![
+                    icon_sparkle(),
+                    text(label).size(BODY_SM),
+                    Space::with_width(Length::Fill),
+                    button(text("+ Add").size(LABEL_SM))
+                        .padding([2.0, 8.0])
+                        .style(primary_button_style)
+                        .on_press(DashboardMessage::FlowAddSystemNode(sys_type.to_string())),
+                ]
+                .spacing(SPACE_2)
+                .align_y(Alignment::Center)
+                .padding([SPACE_1, SPACE_2])
+            };
+
+            sys_nodes_col = sys_nodes_col.push(
+                container(row_item)
+                    .width(Length::Fill)
+                    .style(callout_container_style),
+            );
+        }
+
+        // Canvas Tips & Shortcuts card at bottom
         let tips_card = container(
             column![
-                text("Interaction Guide:")
+                text("Interaction & Shortcuts:")
                     .size(LABEL_SM)
                     .color(iced::Color::from_rgb8(
                         TEXT_PRIMARY.r,
                         TEXT_PRIMARY.g,
                         TEXT_PRIMARY.b,
                     )),
-                text("• Click & drag from pin to connect wires")
+                text("• V : Select & Move mode")
                     .size(LABEL_SM)
-                    .color(iced::Color::from_rgb8(
-                        TEXT_MUTED.r,
-                        TEXT_MUTED.g,
-                        TEXT_MUTED.b,
-                    )),
-                text("• Double-click scene to open in Scene Editor")
+                    .color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b)),
+                text("• C : Connect Wire mode")
                     .size(LABEL_SM)
-                    .color(iced::Color::from_rgb8(
-                        TEXT_MUTED.r,
-                        TEXT_MUTED.g,
-                        TEXT_MUTED.b,
-                    )),
-                text("• Right-click or middle-click to pan canvas")
+                    .color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b)),
+                text("• X : Cut Wire mode (Click wire/pin)")
                     .size(LABEL_SM)
-                    .color(iced::Color::from_rgb8(
-                        TEXT_MUTED.r,
-                        TEXT_MUTED.g,
-                        TEXT_MUTED.b,
-                    )),
-                text("• Mouse scroll to zoom in and out")
+                    .color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b)),
+                text("• F : Focus / Frame All nodes")
                     .size(LABEL_SM)
-                    .color(iced::Color::from_rgb8(
-                        TEXT_MUTED.r,
-                        TEXT_MUTED.g,
-                        TEXT_MUTED.b,
-                    )),
+                    .color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b)),
+                text("• A : Auto Align layout")
+                    .size(LABEL_SM)
+                    .color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b)),
+                text("• S : Toggle Grid Snap")
+                    .size(LABEL_SM)
+                    .color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b)),
+                text("• Double-click scene to open editor")
+                    .size(LABEL_SM)
+                    .color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b)),
             ]
             .spacing(SPACE_1),
         )
@@ -2346,20 +2384,37 @@ impl DashboardState {
         .width(Length::Fill)
         .style(code_container_style);
 
+        let library_scroll = scrollable(
+            column![
+                text("Available Scenes:")
+                    .size(LABEL_SM)
+                    .color(iced::Color::from_rgb8(
+                        TEXT_MUTED.r,
+                        TEXT_MUTED.g,
+                        TEXT_MUTED.b,
+                    )),
+                search_input,
+                scenes_list_col,
+                Space::with_height(SPACE_2),
+                text("System Nodes (Library):")
+                    .size(LABEL_SM)
+                    .color(iced::Color::from_rgb8(
+                        TEXT_MUTED.r,
+                        TEXT_MUTED.g,
+                        TEXT_MUTED.b,
+                    )),
+                sys_nodes_col,
+            ]
+            .spacing(SPACE_2),
+        )
+        .width(Length::Fill)
+        .height(Length::Fill);
+
         let mut sidebar = column![
             title_row,
             btn_save,
-            toolbar_row,
             summary_card,
-            text("Available Scenes:")
-                .size(LABEL_SM)
-                .color(iced::Color::from_rgb8(
-                    TEXT_MUTED.r,
-                    TEXT_MUTED.g,
-                    TEXT_MUTED.b,
-                )),
-            search_input,
-            scenes_scroll,
+            library_scroll,
             tips_card,
         ]
         .spacing(SPACE_3)
@@ -2398,11 +2453,130 @@ impl DashboardState {
             .height(Length::Fill)
             .style(sidebar_container_style);
 
-        // --- 2. Right Canvas Area ---
+        // --- 2. Right Canvas Area & Top Toolbar ---
+        // Mode Buttons
+        let is_sel = self.flow_mode == FlowInteractionMode::Select;
+        let btn_mode_select = button(
+            row![
+                icon_branch(),
+                text("Select (V)").size(LABEL_SM),
+            ]
+            .spacing(SPACE_1)
+            .align_y(Alignment::Center),
+        )
+        .padding([SPACE_1, SPACE_3])
+        .style(if is_sel { primary_button_style } else { subtle_button_style })
+        .on_press(DashboardMessage::FlowSetMode(FlowInteractionMode::Select));
+
+        let is_conn = self.flow_mode == FlowInteractionMode::Connect;
+        let btn_mode_connect = button(
+            row![
+                icon_branch(),
+                text("Connect (C)").size(LABEL_SM),
+            ]
+            .spacing(SPACE_1)
+            .align_y(Alignment::Center),
+        )
+        .padding([SPACE_1, SPACE_3])
+        .style(if is_conn { primary_button_style } else { subtle_button_style })
+        .on_press(DashboardMessage::FlowSetMode(FlowInteractionMode::Connect));
+
+        let is_cut = self.flow_mode == FlowInteractionMode::CutWire;
+        let btn_mode_cut = button(
+            row![
+                icon_close(),
+                text("Cut Wire (X)").size(LABEL_SM),
+            ]
+            .spacing(SPACE_1)
+            .align_y(Alignment::Center),
+        )
+        .padding([SPACE_1, SPACE_3])
+        .style(if is_cut { primary_button_style } else { subtle_button_style })
+        .on_press(DashboardMessage::FlowSetMode(FlowInteractionMode::CutWire));
+
+        // View Buttons
+        let btn_zoom_in = button(text("Zoom +").size(LABEL_SM))
+            .padding([SPACE_1, SPACE_2])
+            .style(subtle_button_style)
+            .on_press(DashboardMessage::FlowZoomIn);
+
+        let btn_zoom_out = button(text("Zoom -").size(LABEL_SM))
+            .padding([SPACE_1, SPACE_2])
+            .style(subtle_button_style)
+            .on_press(DashboardMessage::FlowZoomOut);
+
+        let btn_reset = button(text("Reset (0)").size(LABEL_SM))
+            .padding([SPACE_1, SPACE_2])
+            .style(subtle_button_style)
+            .on_press(DashboardMessage::FlowResetView);
+
+        let btn_focus_all = button(text("Focus All (F)").size(LABEL_SM))
+            .padding([SPACE_1, SPACE_2])
+            .style(subtle_button_style)
+            .on_press(DashboardMessage::FlowFocusAll);
+
+        let btn_auto_align = button(text("Auto Align (A)").size(LABEL_SM))
+            .padding([SPACE_1, SPACE_2])
+            .style(subtle_button_style)
+            .on_press(DashboardMessage::FlowAutoLayout);
+
+        let btn_snap_grid = button(
+            row![
+                text(if self.flow_snap_grid { "Grid Snap: ON (S)" } else { "Grid Snap: OFF (S)" }).size(LABEL_SM),
+            ]
+            .align_y(Alignment::Center),
+        )
+        .padding([SPACE_1, SPACE_3])
+        .style(if self.flow_snap_grid { primary_button_style } else { subtle_button_style })
+        .on_press(DashboardMessage::FlowToggleSnapGrid);
+
+        let mode_badge = match self.flow_mode {
+            FlowInteractionMode::Select => container(text("Tool: Select & Move [V]").size(LABEL_SM).color(iced::Color::from_rgb8(TEXT_SECONDARY.r, TEXT_SECONDARY.g, TEXT_SECONDARY.b)))
+                .padding([2.0, 8.0])
+                .style(code_container_style),
+            FlowInteractionMode::Connect => container(text("Tool: Connect Wires [C]").size(LABEL_SM).color(iced::Color::from_rgb8(ACCENT_PRIMARY.r, ACCENT_PRIMARY.g, ACCENT_PRIMARY.b)))
+                .padding([2.0, 8.0])
+                .style(badge_container_style),
+            FlowInteractionMode::CutWire => container(text("Tool: Wire Cutter [X]").size(LABEL_SM).color(iced::Color::from_rgb8(STATUS_ERROR.r, STATUS_ERROR.g, STATUS_ERROR.b)))
+                .padding([2.0, 8.0])
+                .style(code_container_style),
+        };
+
+        let top_toolbar = container(
+            row![
+                text("Mode:").size(LABEL_SM).color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b)),
+                btn_mode_select,
+                btn_mode_connect,
+                btn_mode_cut,
+                Space::with_width(SPACE_2),
+                text("•").size(LABEL_SM).color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b)),
+                Space::with_width(SPACE_2),
+                text("View:").size(LABEL_SM).color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b)),
+                btn_zoom_in,
+                btn_zoom_out,
+                btn_reset,
+                btn_focus_all,
+                btn_auto_align,
+                Space::with_width(SPACE_2),
+                text("•").size(LABEL_SM).color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b)),
+                Space::with_width(SPACE_2),
+                btn_snap_grid,
+                Space::with_width(Length::Fill),
+                mode_badge,
+            ]
+            .spacing(SPACE_2)
+            .align_y(Alignment::Center),
+        )
+        .padding([SPACE_2, SPACE_4])
+        .width(Length::Fill)
+        .style(sidebar_container_style);
+
         let canvas_widget = canvas(FlowCanvasWidget {
             graph: &self.flow_graph,
             scenes: &self.all_scenes,
             selected_node_id: self.flow_selected_node_id.as_deref(),
+            mode: self.flow_mode,
+            snap_grid: self.flow_snap_grid,
         })
         .width(Length::Fill)
         .height(Length::Fill);
@@ -2413,7 +2587,15 @@ impl DashboardState {
             .height(Length::Fill)
             .style(canvas_container_style);
 
-        row![sidebar_container, canvas_container]
+        let canvas_area = column![
+            top_toolbar,
+            canvas_container,
+        ]
+        .spacing(0)
+        .width(Length::Fill)
+        .height(Length::Fill);
+
+        row![sidebar_container, canvas_area]
             .spacing(0)
             .width(Length::Fill)
             .height(Length::Fill)

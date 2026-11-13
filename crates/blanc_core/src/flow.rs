@@ -9,6 +9,9 @@ use uuid::Uuid;
 pub enum FlowNodeType {
     MainMenu,
     Scene { scene_name: String },
+    PauseMenu,
+    Settings,
+    SaveLoad,
     Ending { ending_name: String },
 }
 
@@ -56,6 +59,42 @@ impl FlowNode {
             y,
             width: 240.0,
             height: 130.0,
+        }
+    }
+
+    pub fn pause_menu(x: f32, y: f32) -> Self {
+        Self {
+            id: "system_pause_menu".to_string(),
+            node_type: FlowNodeType::PauseMenu,
+            title: "In-Game Menu (Pause)".to_string(),
+            x,
+            y,
+            width: 250.0,
+            height: 140.0,
+        }
+    }
+
+    pub fn settings(x: f32, y: f32) -> Self {
+        Self {
+            id: "system_settings".to_string(),
+            node_type: FlowNodeType::Settings,
+            title: "In-Game Settings".to_string(),
+            x,
+            y,
+            width: 240.0,
+            height: 110.0,
+        }
+    }
+
+    pub fn save_load(x: f32, y: f32) -> Self {
+        Self {
+            id: "system_save_load".to_string(),
+            node_type: FlowNodeType::SaveLoad,
+            title: "Save & Load Screen".to_string(),
+            x,
+            y,
+            width: 240.0,
+            height: 110.0,
         }
     }
 
@@ -181,6 +220,47 @@ impl StoryFlowGraph {
             return false;
         }
         self.nodes.push(FlowNode::scene(scene_name, x, y));
+        true
+    }
+
+    /// Add a system node (PauseMenu, Settings, SaveLoad, Ending) to the canvas
+    pub fn add_system_node(&mut self, system_type: &str, x: f32, y: f32) -> bool {
+        let node = match system_type {
+            "pause_menu" => {
+                if self.nodes.iter().any(|n| n.id == "system_pause_menu") {
+                    return false;
+                }
+                FlowNode::pause_menu(x, y)
+            }
+            "settings" => {
+                if self.nodes.iter().any(|n| n.id == "system_settings") {
+                    return false;
+                }
+                FlowNode::settings(x, y)
+            }
+            "save_load" => {
+                if self.nodes.iter().any(|n| n.id == "system_save_load") {
+                    return false;
+                }
+                FlowNode::save_load(x, y)
+            }
+            "return_to_title" => {
+                if self.nodes.iter().any(|n| n.id == "ending_return_to_title") {
+                    return false;
+                }
+                FlowNode::ending("ending_return_to_title", "Return to Title", x, y)
+            }
+            "credits" => {
+                let id = format!("ending_credits_{}", Uuid::new_v4().simple());
+                FlowNode::ending(&id, "Credits Roll", x, y)
+            }
+            "game_over" => {
+                let id = format!("ending_game_over_{}", Uuid::new_v4().simple());
+                FlowNode::ending(&id, "Game Over", x, y)
+            }
+            _ => return false,
+        };
+        self.nodes.push(node);
         true
     }
 

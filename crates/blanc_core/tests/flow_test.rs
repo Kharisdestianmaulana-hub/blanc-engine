@@ -61,3 +61,32 @@ fn test_story_flow_graph_serialization() {
 
     let _ = std::fs::remove_dir_all(temp_dir);
 }
+
+#[test]
+fn test_story_flow_system_nodes() {
+    let mut graph = StoryFlowGraph::default();
+
+    // Add system nodes
+    assert!(graph.add_system_node("pause_menu", 300.0, 100.0));
+    assert!(graph.add_system_node("settings", 300.0, 250.0));
+    assert!(graph.add_system_node("save_load", 300.0, 400.0));
+
+    // Duplicate additions should return false
+    assert!(!graph.add_system_node("pause_menu", 300.0, 100.0));
+    assert!(!graph.add_system_node("settings", 300.0, 250.0));
+    assert!(!graph.add_system_node("save_load", 300.0, 400.0));
+
+    // Verify nodes exist in graph
+    assert!(graph.nodes.iter().any(|n| n.id == "system_pause_menu"));
+    assert!(graph.nodes.iter().any(|n| n.id == "system_settings"));
+    assert!(graph.nodes.iter().any(|n| n.id == "system_save_load"));
+
+    // Connect pause menu to settings
+    graph.connect_pins("system_pause_menu", "settings", "system_settings", "in");
+    assert!(graph.connections.iter().any(|c| c.from_node_id == "system_pause_menu" && c.to_node_id == "system_settings"));
+
+    // Remove settings node
+    assert!(graph.remove_node("system_settings"));
+    assert!(!graph.nodes.iter().any(|n| n.id == "system_settings"));
+    assert!(!graph.connections.iter().any(|c| c.to_node_id == "system_settings"));
+}
