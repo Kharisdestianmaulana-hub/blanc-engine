@@ -33,6 +33,10 @@ pub struct Project {
     pub updated_at: DateTime<Utc>,
     pub assets: AssetRegistry,
     pub starting_scene_id: Option<String>,
+    #[serde(default)]
+    pub custom_logo_path: Option<String>,
+    #[serde(default)]
+    pub use_custom_logo: bool,
 }
 
 impl Project {
@@ -49,6 +53,8 @@ impl Project {
             updated_at: now,
             assets: AssetRegistry::new(),
             starting_scene_id: None,
+            custom_logo_path: None,
+            use_custom_logo: false,
         }
     }
 

@@ -118,6 +118,11 @@ pub enum DashboardMessage {
     UpdateAutoForwardDelay(f32),
     SaveSystemSettings,
 
+    // Project Logo & Branding messages
+    SetUseCustomLogo(bool),
+    ChooseProjectLogo,
+    ProjectLogoSelected(Option<PathBuf>),
+
     // Story Flow messages
     FlowAction(FlowCanvasAction),
     FlowAddScene(String),
@@ -493,7 +498,27 @@ impl DashboardState {
             .style(secondary_button_style)
             .on_press(DashboardMessage::CloseProject);
 
-        let brand_logo = engine_logo(28.0);
+        let brand_logo: Element<'a, DashboardMessage> = if project.use_custom_logo {
+            if let Some(logo_rel_path) = &project.custom_logo_path {
+                let abs_path = if std::path::Path::new(logo_rel_path).is_absolute() {
+                    std::path::PathBuf::from(logo_rel_path)
+                } else {
+                    _project_dir.join(logo_rel_path)
+                };
+                if abs_path.exists() {
+                    iced::widget::image(iced::widget::image::Handle::from_path(abs_path))
+                        .width(28.0)
+                        .height(28.0)
+                        .into()
+                } else {
+                    engine_logo(28.0).into()
+                }
+            } else {
+                engine_logo(28.0).into()
+            }
+        } else {
+            engine_logo(28.0).into()
+        };
 
         let brand_and_info = row![
             brand_logo,
@@ -2467,7 +2492,7 @@ impl DashboardState {
         let is_sel = self.flow_mode == FlowInteractionMode::Select;
         let btn_mode_select = button(
             row![
-                icon_branch(),
+                icon_cursor(),
                 text("Select (V)").size(LABEL_SM),
             ]
             .spacing(SPACE_1)
@@ -2480,7 +2505,7 @@ impl DashboardState {
         let is_conn = self.flow_mode == FlowInteractionMode::Connect;
         let btn_mode_connect = button(
             row![
-                icon_branch(),
+                icon_link(),
                 text("Connect (C)").size(LABEL_SM),
             ]
             .spacing(SPACE_1)
@@ -2493,7 +2518,7 @@ impl DashboardState {
         let is_cut = self.flow_mode == FlowInteractionMode::CutWire;
         let btn_mode_cut = button(
             row![
-                icon_close(),
+                icon_cut(),
                 text("Cut Wire (X)").size(LABEL_SM),
             ]
             .spacing(SPACE_1)
@@ -2769,10 +2794,80 @@ impl DashboardState {
 
         let card1_body = row![left_col, right_col].spacing(SPACE_4);
 
+        // Logo & Branding Selector Box
+        let logo_badge: Element<'a, DashboardMessage> = if project.use_custom_logo {
+            if let Some(logo_rel_path) = &project.custom_logo_path {
+                let abs_path = if std::path::Path::new(logo_rel_path).is_absolute() {
+                    std::path::PathBuf::from(logo_rel_path)
+                } else {
+                    _project_dir.join(logo_rel_path)
+                };
+                if abs_path.exists() {
+                    iced::widget::image(iced::widget::image::Handle::from_path(abs_path))
+                        .width(36.0)
+                        .height(36.0)
+                        .into()
+                } else {
+                    engine_logo_squircle(36.0).into()
+                }
+            } else {
+                engine_logo_squircle(36.0).into()
+            }
+        } else {
+            engine_logo_squircle(36.0).into()
+        };
+
+        let logo_status_text = if project.use_custom_logo {
+            if let Some(p) = &project.custom_logo_path {
+                format!("Custom Game Logo: {}", p)
+            } else {
+                "Custom Game Logo (No file selected)".to_string()
+            }
+        } else {
+            "Default Engine Logo (Official Blanc Monogram)".to_string()
+        };
+
+        let btn_use_default = button(text("Default Logo").size(LABEL_SM))
+            .padding([SPACE_1, SPACE_3])
+            .style(if !project.use_custom_logo { primary_button_style } else { secondary_button_style })
+            .on_press(DashboardMessage::SetUseCustomLogo(false));
+
+        let btn_use_custom = button(text("Custom Game Logo").size(LABEL_SM))
+            .padding([SPACE_1, SPACE_3])
+            .style(if project.use_custom_logo { primary_button_style } else { secondary_button_style })
+            .on_press(DashboardMessage::SetUseCustomLogo(true));
+
+        let btn_choose_logo = button(
+            row![icon_image(), text("Choose / Change Logo...").size(LABEL_SM)]
+                .spacing(SPACE_2)
+                .align_y(Alignment::Center),
+        )
+        .padding([SPACE_1, SPACE_3])
+        .style(secondary_button_style)
+        .on_press(DashboardMessage::ChooseProjectLogo);
+
+        let logo_box = container(
+            row![
+                logo_badge,
+                column![
+                    text("Project & Game Logo Badge").size(LABEL_SM).color(iced::Color::from_rgb8(TEXT_PRIMARY.r, TEXT_PRIMARY.g, TEXT_PRIMARY.b)),
+                    text(logo_status_text).size(BODY_SM).color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b)),
+                ].spacing(SPACE_1),
+                Space::with_width(Length::Fill),
+                row![btn_use_default, btn_use_custom, btn_choose_logo].spacing(SPACE_2).align_y(Alignment::Center),
+            ]
+            .spacing(SPACE_3)
+            .align_y(Alignment::Center),
+        )
+        .padding(SPACE_3)
+        .width(Length::Fill)
+        .style(code_container_style);
+
         let card1 = container(
             column![
                 card1_title,
                 card1_body,
+                logo_box,
             ]
             .spacing(SPACE_3),
         )

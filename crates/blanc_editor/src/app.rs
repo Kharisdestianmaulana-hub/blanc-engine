@@ -843,6 +843,41 @@ impl EditorApp {
                     }
                 }
             }
+            DashboardMessage::SetUseCustomLogo(use_custom) => {
+                project.use_custom_logo = use_custom;
+                let manifest_filename = format!("{}.{}", project.name.replace(' ', "_"), Project::MANIFEST_EXTENSION);
+                let manifest_path = project_dir.join(manifest_filename);
+                let _ = project.save_manifest(&manifest_path);
+            }
+            DashboardMessage::ChooseProjectLogo => {
+                return Task::perform(
+                    async {
+                        let handle = rfd::AsyncFileDialog::new()
+                            .add_filter("Image", &["png", "jpg", "jpeg", "webp"])
+                            .pick_file()
+                            .await;
+                        handle.map(|h| h.path().to_path_buf())
+                    },
+                    |path| AppMessage::Dashboard(DashboardMessage::ProjectLogoSelected(path)),
+                );
+            }
+            DashboardMessage::ProjectLogoSelected(Some(path)) => {
+                let dest_dir = project_dir.join("Assets").join("UI");
+                let _ = std::fs::create_dir_all(&dest_dir);
+                let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("png");
+                let dest_filename = format!("game_logo.{}", ext);
+                let dest_path = dest_dir.join(&dest_filename);
+                if std::fs::copy(&path, &dest_path).is_ok() {
+                    let rel_path = format!("Assets/UI/{}", dest_filename);
+                    project.custom_logo_path = Some(rel_path);
+                    project.use_custom_logo = true;
+                    let manifest_filename = format!("{}.{}", project.name.replace(' ', "_"), Project::MANIFEST_EXTENSION);
+                    let manifest_path = project_dir.join(manifest_filename);
+                    let _ = project.save_manifest(&manifest_path);
+                    dashboard.settings_status_message = Some("Game logo updated and saved.".to_string());
+                }
+            }
+            DashboardMessage::ProjectLogoSelected(None) => {}
             DashboardMessage::FlowAction(action) => {
                 match action {
                     FlowCanvasAction::SelectNode(node_id) => {
