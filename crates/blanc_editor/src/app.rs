@@ -1194,16 +1194,26 @@ impl EditorApp {
                 let target_dir = project_dir.to_string_lossy().to_string();
                 println!("Launching blanc_runtime for: {}", target_dir);
 
-                // Try to find blanc_runtime executable
-                let _ = Command::new("blanc_runtime")
-                    .arg(&target_dir)
-                    .spawn()
-                    .or_else(|_| {
-                        // Fallback using cargo run in development
-                        Command::new("cargo")
-                            .args(["run", "-p", "blanc_runtime", "--", &target_dir])
-                            .spawn()
-                    });
+                let sibling_runtime = std::env::current_exe()
+                    .ok()
+                    .and_then(|exe| exe.parent().map(|dir| {
+                        let name = if cfg!(windows) { "blanc_runtime.exe" } else { "blanc_runtime" };
+                        dir.join(name)
+                    }))
+                    .filter(|p| p.exists());
+
+                let launched = if let Some(runtime_path) = sibling_runtime {
+                    Command::new(runtime_path).arg(&target_dir).spawn()
+                } else {
+                    Command::new("blanc_runtime").arg(&target_dir).spawn()
+                };
+
+                let _ = launched.or_else(|_| {
+                    // Fallback using cargo run in development
+                    Command::new("cargo")
+                        .args(["run", "-p", "blanc_runtime", "--", &target_dir])
+                        .spawn()
+                });
             }
         }
 
