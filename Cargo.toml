@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/blanc_core",
     "crates/blanc_editor",
+    "crates/blanc_installer",
     "crates/blanc_runtime",
 ]
 

@@ -30,6 +30,7 @@ pub enum DocsTopic {
     StoryScript,
     ActionBlocks,
     StoryFlow,
+    UiDesigner,
     AssetGuidelines,
     RuntimeControls,
 }
@@ -770,6 +771,16 @@ impl WelcomeState {
         .style(sidebar_button_style(self.active_docs_topic == DocsTopic::StoryFlow))
         .on_press(WelcomeMessage::SelectDocsTopic(DocsTopic::StoryFlow));
 
+        let topic_ui = button(
+            row![icon_palette(), text("UI Designer & Packs").size(LABEL_MD)]
+                .spacing(SPACE_2)
+                .align_y(Alignment::Center),
+        )
+        .padding([SPACE_2, SPACE_3])
+        .width(Length::Fill)
+        .style(sidebar_button_style(self.active_docs_topic == DocsTopic::UiDesigner))
+        .on_press(WelcomeMessage::SelectDocsTopic(DocsTopic::UiDesigner));
+
         let topic_assets = button(
             row![icon_palette(), text("Asset Guidelines").size(LABEL_MD)]
                 .spacing(SPACE_2)
@@ -796,6 +807,7 @@ impl WelcomeState {
             topic_script,
             topic_blocks,
             topic_flow,
+            topic_ui,
             topic_assets,
             topic_controls,
         ]
@@ -807,6 +819,7 @@ impl WelcomeState {
             DocsTopic::StoryScript => self.doc_story_script(),
             DocsTopic::ActionBlocks => self.doc_action_blocks(),
             DocsTopic::StoryFlow => self.doc_story_flow(),
+            DocsTopic::UiDesigner => self.doc_ui_designer(),
             DocsTopic::AssetGuidelines => self.doc_asset_guidelines(),
             DocsTopic::RuntimeControls => self.doc_runtime_controls(),
         };
@@ -974,6 +987,45 @@ Alice: "In that case, let's head to the cafeteria together!"
         .into()
     }
 
+    fn doc_ui_designer(&self) -> Element<'_, WelcomeMessage> {
+        column![
+            text("UI Designer & Custom UI Packs")
+                .size(HEADING_MD)
+                .color(iced::Color::from_rgb8(TEXT_PRIMARY.r, TEXT_PRIMARY.g, TEXT_PRIMARY.b)),
+            text("Customize every runtime screen—from Main Menu and Dialogue HUD to Pause, Settings, and Save/Load—with live preview.")
+                .size(BODY_MD)
+                .color(iced::Color::from_rgb8(TEXT_SECONDARY.r, TEXT_SECONDARY.g, TEXT_SECONDARY.b)),
+            Space::with_height(SPACE_3),
+
+            self.create_step_card(
+                "1. Global Theme & Custom Fonts",
+                "In Theme & Buttons, set your Accent color, Panel background, Panel opacity, Corner radius, Button style (Glass Dark, Solid Accent, Outlined), and optional TTF/OTF Custom Font. Default text and button colors defined here act as the fallback for all screens."
+            ),
+            self.create_step_card(
+                "2. Per-Screen Font Color Overrides",
+                "Main Menu, Dialogue Box, Speaker Nameplate, Pause Title, Settings, and Save/Load Title & Slot Cards each have their own Text Color override. Click 'Global' (or leave empty) to inherit Theme.text_hex, or pick/type any #RRGGBB hex color."
+            ),
+            self.create_step_card(
+                "3. Panel-less Layouts & Quick Presets",
+                "Main Menu, Pause, Settings, and Save/Load include one-click Quick Layout Presets plus independent 9-point Anchors and X/Y Offsets for titles, button groups/slots, and Back buttons. Toggle 'Panel Box: OFF' for clean floating text and buttons over the dimmed backdrop."
+            ),
+            self.create_step_card(
+                "4. Gameplay HUD, Nameplate & Advance Indicator",
+                "Position the Dialogue Box, Speaker Nameplate, and Choice buttons, and place the quick-action HUD (History, Hide UI, Menu) at Top-Left, Top-Right, Bottom-Left, Bottom-Center, or Bottom-Right. You can also assign a custom PNG icon and prompt text for the Advance Indicator."
+            ),
+            self.create_step_card(
+                "5. Save & Load Thumbnails",
+                "Choose 2-Column, 3-Column, or List slot layouts. When players save during gameplay, each slot automatically records a thumbnail preview of the active scene background and characters."
+            ),
+            self.create_step_card(
+                "6. Batch Import UI Pack (Custom PNGs)",
+                "Use 'Import UI Pack...' in the UI Designer to auto-map a folder of PNGs:\n• btn_normal.png, btn_hover.png, btn_disabled.png\n• dialogue_box.png, nameplate.png, advance_prompt.png\n• pause_panel.png, settings_panel.png, save_load_panel.png\n• slot_card.png, slot_card_hover.png, slot_card_disabled.png\nTip: Folders named with 'cream' or 'light' automatically apply dark-ink contrast for dialogue, buttons, and save slots."
+            ),
+        ]
+        .spacing(SPACE_4)
+        .into()
+    }
+
     fn doc_asset_guidelines(&self) -> Element<'_, WelcomeMessage> {
         column![
             text("Visual & Audio Asset Guidelines")
@@ -1022,6 +1074,10 @@ Alice: "In that case, let's head to the cafeteria together!"
             self.create_step_card(
                 "Ctrl (Hold)",
                 "Fast-forward / Skip mode to quickly advance through dialogue that has already been read."
+            ),
+            self.create_step_card(
+                "B (History / Backlog)",
+                "Opens the dialogue history log so players can review previous lines and speaker names."
             ),
             self.create_step_card(
                 "H (Hide UI)",

@@ -1,6 +1,8 @@
 use std::path::Path;
 use serde::{Deserialize, Serialize};
 
+use crate::ui_config::RuntimeUiConfig;
+
 /// Aspect ratio scaling mode for runtime display
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AspectScalingMode {
@@ -25,9 +27,20 @@ impl AspectScalingMode {
     }
 }
 
+/// How scene-to-scene transitions behave during gameplay
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum SceneTransitionMode {
+    /// Hide characters and dialogue UI first, then fade into the new scene
+    #[default]
+    CleanFade,
+    /// Immediately switch and show new scene characters and UI without hiding/fading
+    Direct,
+}
+
 /// Configuration for Built-in System Screens (Main Menu, Settings, Save/Load, In-Game Pause)
 /// Stored in `Settings/system_screens.bconfig`
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct SystemScreensConfig {
     pub title_text: String,
     pub title_background_asset_id: Option<String>,
@@ -50,6 +63,12 @@ pub struct SystemScreensConfig {
     // Text & Gameplay Defaults
     pub text_speed: f32,
     pub auto_forward_delay: f32,
+    #[serde(default)]
+    pub scene_transition_mode: SceneTransitionMode,
+
+    // Customizable Runtime UI Theme & Layout
+    #[serde(default)]
+    pub ui_config: RuntimeUiConfig,
 }
 
 impl Default for SystemScreensConfig {
@@ -69,6 +88,8 @@ impl Default for SystemScreensConfig {
             sfx_volume: 1.0,
             text_speed: 1.0,
             auto_forward_delay: 2.0,
+            scene_transition_mode: SceneTransitionMode::CleanFade,
+            ui_config: RuntimeUiConfig::default(),
         }
     }
 }

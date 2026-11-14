@@ -13,3 +13,4 @@ serde_json.workspace = true
 rodio.workspace = true
 image.workspace = true
 thiserror.workspace = true
+gilrs = "0.11"

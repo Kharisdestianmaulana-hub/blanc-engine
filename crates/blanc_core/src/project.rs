@@ -91,6 +91,7 @@ impl Project {
         });
         initial_scene.add_block(crate::scene::ActionBlock::Character {
             character_id: "Alice".to_string(),
+            sprite_asset_id: None,
             expression: "Happy".to_string(),
             position: crate::scene::CharacterPosition::Center,
             offset_x: 0.0,
@@ -101,6 +102,7 @@ impl Project {
             speaker: "Alice".to_string(),
             text: "Hello! Welcome to Blanc Engine's Visual Scene Editor.".to_string(),
             voice_asset_id: None,
+            nameplate_position: None,
         });
         initial_scene.add_block(crate::scene::ActionBlock::Choice {
             prompt: "What would you like to explore next?".to_string(),

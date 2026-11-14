@@ -67,6 +67,52 @@ impl Default for TransitionType {
     }
 }
 
+impl TransitionType {
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Fade => "Fade",
+            Self::Dissolve => "Dissolve",
+            Self::Cut => "Cut",
+            Self::SlideLeft => "Slide Left",
+            Self::SlideRight => "Slide Right",
+        }
+    }
+
+    pub fn all() -> &'static [Self] {
+        &[Self::Cut, Self::Fade, Self::SlideLeft, Self::SlideRight]
+    }
+}
+
+/// Screen-wide visual effect & transition blocks
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ScreenEffectType {
+    FadeIn,
+    FadeOut,
+    FlashWhite,
+    Shake,
+}
+
+impl Default for ScreenEffectType {
+    fn default() -> Self {
+        Self::FadeIn
+    }
+}
+
+impl ScreenEffectType {
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::FadeIn => "Fade In (From Black)",
+            Self::FadeOut => "Fade Out (To Black)",
+            Self::FlashWhite => "Flash White",
+            Self::Shake => "Screen Shake",
+        }
+    }
+
+    pub fn all() -> &'static [Self] {
+        &[Self::FadeIn, Self::FadeOut, Self::FlashWhite, Self::Shake]
+    }
+}
+
 /// An option in a Choice Action Block
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ChoiceOption {
@@ -89,6 +135,10 @@ impl Default for SceneEndAction {
     }
 }
 
+fn default_effect_duration() -> f32 {
+    0.5
+}
+
 /// Individual Action Block in a vertical sequence
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", content = "data")]
@@ -99,6 +149,8 @@ pub enum ActionBlock {
     },
     Character {
         character_id: String,
+        #[serde(default)]
+        sprite_asset_id: Option<String>,
         expression: String,
         position: CharacterPosition,
         offset_x: f32,
@@ -113,6 +165,8 @@ pub enum ActionBlock {
         speaker: String,
         text: String,
         voice_asset_id: Option<String>,
+        #[serde(default)]
+        nameplate_position: Option<CharacterPosition>,
     },
     Narration {
         text: String,
@@ -131,6 +185,11 @@ pub enum ActionBlock {
     },
     Wait {
         seconds: f32,
+    },
+    VisualEffect {
+        effect: ScreenEffectType,
+        #[serde(default = "default_effect_duration")]
+        duration: f32,
     },
     Choice {
         prompt: String,
@@ -155,6 +214,7 @@ impl ActionBlock {
             Self::StopBgm { .. } => "Stop BGM",
             Self::PlaySfx { .. } => "Play SFX",
             Self::Wait { .. } => "Wait",
+            Self::VisualEffect { .. } => "Visual Effect",
             Self::Choice { .. } => "Choice",
             Self::SceneEnd { .. } => "Scene End",
         }

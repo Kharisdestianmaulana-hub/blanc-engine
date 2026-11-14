@@ -14,5 +14,6 @@ chrono.workspace = true
 uuid.workspace = true
 rfd.workspace = true
 image.workspace = true
+rodio.workspace = true
 thiserror.workspace = true
 tokio.workspace = true

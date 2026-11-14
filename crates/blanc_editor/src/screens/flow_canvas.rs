@@ -341,8 +341,8 @@ impl<'a> Program<FlowCanvasAction, Theme, Renderer> for FlowCanvasWidget<'a> {
                         let zoom = self.graph.zoom;
                         let pan_x = self.graph.pan_x;
                         let pan_y = self.graph.pan_y;
-                        let raw_x = ((pos.x - pan_x) / zoom - state.drag_offset_x).max(0.0);
-                        let raw_y = ((pos.y - pan_y) / zoom - state.drag_offset_y).max(0.0);
+                        let raw_x = (pos.x - pan_x) / zoom - state.drag_offset_x;
+                        let raw_y = (pos.y - pan_y) / zoom - state.drag_offset_y;
                         let (new_x, new_y) = if self.snap_grid {
                             ((raw_x / 20.0).round() * 20.0, (raw_y / 20.0).round() * 20.0)
                         } else {
@@ -589,14 +589,31 @@ impl<'a> Program<FlowCanvasAction, Theme, Renderer> for FlowCanvasWidget<'a> {
                         .with_width(border_width),
                 );
 
-                // Header Title Text
-                frame.fill_text(Text {
-                    content: node.title.clone(),
-                    position: Point::new(nx + 12.0 * zoom, ny + 9.0 * zoom),
-                    color: Color::WHITE,
-                    size: (13.0 * zoom).max(9.0).into(),
-                    ..Default::default()
-                });
+                // Header Title Text (clipped so it never overflows the node header on zoom out)
+                if zoom >= 0.25 {
+                    let title_clip_w = if node.id != "system_main_menu" {
+                        (nw - 34.0 * zoom).max(0.0)
+                    } else {
+                        (nw - 16.0 * zoom).max(0.0)
+                    };
+                    frame.with_clip(
+                        Rectangle {
+                            x: nx,
+                            y: ny,
+                            width: title_clip_w,
+                            height: header_h,
+                        },
+                        |frame| {
+                            frame.fill_text(Text {
+                                content: node.title.clone(),
+                                position: Point::new(12.0 * zoom, 9.0 * zoom),
+                                color: Color::WHITE,
+                                size: (13.0 * zoom).max(1.0).into(),
+                                ..Default::default()
+                            });
+                        },
+                    );
+                }
 
                 // Vector Delete Button [X] in header (Immune to font glyph issues)
                 if node.id != "system_main_menu" {
@@ -640,13 +657,25 @@ impl<'a> Program<FlowCanvasAction, Theme, Renderer> for FlowCanvasWidget<'a> {
                 );
                 frame.fill(&pill_rect, Color::from_rgba8(30, 41, 59, 0.7));
 
-                frame.fill_text(Text {
-                    content: info_text,
-                    position: Point::new(nx + 16.0 * zoom, ny + 47.0 * zoom),
-                    color: Color::from_rgb8(148, 163, 184),
-                    size: (11.0 * zoom).max(8.0).into(),
-                    ..Default::default()
-                });
+                if zoom >= 0.42 {
+                    frame.with_clip(
+                        Rectangle {
+                            x: nx + 12.0 * zoom,
+                            y: ny + 42.0 * zoom,
+                            width: (nw - 24.0 * zoom).max(0.0),
+                            height: 22.0 * zoom,
+                        },
+                        |frame| {
+                            frame.fill_text(Text {
+                                content: info_text,
+                                position: Point::new(4.0 * zoom, 5.0 * zoom),
+                                color: Color::from_rgb8(148, 163, 184),
+                                size: (11.0 * zoom).max(1.0).into(),
+                                ..Default::default()
+                            });
+                        },
+                    );
+                }
 
                 // Subtle Divider line between info pill and pins
                 let div_path = Path::new(|b| {
@@ -674,19 +703,31 @@ impl<'a> Program<FlowCanvasAction, Theme, Renderer> for FlowCanvasWidget<'a> {
                             .with_width(2.0 * zoom),
                     );
 
-                    let in_label = if node.id == "system_main_menu" {
-                        "In / Loop"
-                    } else {
-                        "In"
-                    };
+                    if zoom >= 0.42 {
+                        let in_label = if node.id == "system_main_menu" {
+                            "In / Loop"
+                        } else {
+                            "In"
+                        };
 
-                    frame.fill_text(Text {
-                        content: in_label.to_string(),
-                        position: Point::new(nx + 14.0 * zoom, pin_y - 7.0 * zoom),
-                        color: Color::from_rgb8(148, 163, 184),
-                        size: (11.0 * zoom).max(8.0).into(),
-                        ..Default::default()
-                    });
+                        frame.with_clip(
+                            Rectangle {
+                                x: nx + 8.0 * zoom,
+                                y: ny + header_h,
+                                width: (nw - 16.0 * zoom).max(0.0),
+                                height: (nh - header_h).max(0.0),
+                            },
+                            |frame| {
+                                frame.fill_text(Text {
+                                    content: in_label.to_string(),
+                                    position: Point::new(6.0 * zoom, (pin_y - ny - header_h) - 7.0 * zoom),
+                                    color: Color::from_rgb8(148, 163, 184),
+                                    size: (11.0 * zoom).max(1.0).into(),
+                                    ..Default::default()
+                                });
+                            },
+                        );
+                    }
                 }
 
                 // --- Output Pins (Right Edge) ---
@@ -709,28 +750,53 @@ impl<'a> Program<FlowCanvasAction, Theme, Renderer> for FlowCanvasWidget<'a> {
                             .with_width(2.0 * zoom),
                     );
 
-                    // Pin Label inside node (right-aligned)
-                    let text_w = label.len() as f32 * 6.5 * zoom;
-                    frame.fill_text(Text {
-                        content: label.clone(),
-                        position: Point::new(pin_x - text_w - 14.0 * zoom, pin_y - 7.0 * zoom),
-                        color: Color::from_rgb8(226, 232, 240),
-                        size: (11.0 * zoom).max(8.0).into(),
-                        ..Default::default()
-                    });
+                    if zoom >= 0.42 {
+                        // Pin Label inside node (right-aligned & clipped within node bounds)
+                        let clip_w = (nw - 60.0 * zoom).max(0.0);
+                        frame.with_clip(
+                            Rectangle {
+                                x: nx + 48.0 * zoom,
+                                y: pin_y - 11.0 * zoom,
+                                width: clip_w,
+                                height: 22.0 * zoom,
+                            },
+                            |frame| {
+                                frame.fill_text(Text {
+                                    content: label.clone(),
+                                    position: Point::new((clip_w - 2.0 * zoom).max(0.0), 4.0 * zoom),
+                                    color: Color::from_rgb8(226, 232, 240),
+                                    size: (11.0 * zoom).max(1.0).into(),
+                                    horizontal_alignment: iced::alignment::Horizontal::Right,
+                                    ..Default::default()
+                                });
+                            },
+                        );
+                    }
                 }
 
                 // Warning indicator if scene node is unconnected
-                if let FlowNodeType::Scene { .. } = &node.node_type {
-                    let is_connected = self.graph.connections.iter().any(|c| c.from_node_id == node.id);
-                    if !is_connected {
-                        frame.fill_text(Text {
-                            content: "! Unconnected".to_string(),
-                            position: Point::new(nx + 14.0 * zoom, ny + nh - 14.0 * zoom),
-                            color: Color::from_rgb8(251, 191, 36),
-                            size: (10.0 * zoom).max(7.0).into(),
-                            ..Default::default()
-                        });
+                if zoom >= 0.42 {
+                    if let FlowNodeType::Scene { .. } = &node.node_type {
+                        let is_connected = self.graph.connections.iter().any(|c| c.from_node_id == node.id);
+                        if !is_connected {
+                            frame.with_clip(
+                                Rectangle {
+                                    x: nx + 8.0 * zoom,
+                                    y: ny + header_h,
+                                    width: (nw - 16.0 * zoom).max(0.0),
+                                    height: (nh - header_h).max(0.0),
+                                },
+                                |frame| {
+                                    frame.fill_text(Text {
+                                        content: "! Unconnected".to_string(),
+                                        position: Point::new(6.0 * zoom, (nh - header_h) - 14.0 * zoom),
+                                        color: Color::from_rgb8(251, 191, 36),
+                                        size: (10.0 * zoom).max(1.0).into(),
+                                        ..Default::default()
+                                    });
+                                },
+                            );
+                        }
                     }
                 }
             }

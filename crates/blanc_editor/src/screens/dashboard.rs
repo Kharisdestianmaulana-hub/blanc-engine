@@ -1,10 +1,22 @@
+use std::collections::HashMap;
 use std::path::PathBuf;
-use iced::widget::{button, canvas, column, container, image, row, scrollable, stack, text, text_editor, text_input, Space};
+use iced::widget::{
+    button, canvas, checkbox, column, container, image, pick_list, progress_bar, row, scrollable,
+    stack, text, text_editor, text_input, Space,
+};
 use iced::{Alignment, Element, Length};
 
 use blanc_core::asset::{Asset, AssetCategory};
-use blanc_core::config::{AspectScalingMode, SystemScreensConfig};
+use blanc_core::config::{AspectScalingMode, SceneTransitionMode, SystemScreensConfig};
 use blanc_core::flow::{FlowNodeType, StoryFlowGraph};
+use blanc_core::installer::{
+    default_privacy_and_terms_en, default_privacy_and_terms_map, CustomPolicyLanguage,
+    ExportBuildKind, InstallerLang,
+};
+use blanc_core::localization::{
+    collect_project_items, LocaleCategory, LocaleManifest, LocaleStrings, LocalizationItem,
+};
+use blanc_core::pack::ExportSaveMode;
 use blanc_core::project::Project;
 use blanc_core::scene::{ActionBlock, CharacterPosition, ChoiceLayoutPosition, ChoiceOption as SceneChoiceOption, Scene};
 use blanc_core::story::{Story, StoryElement};
@@ -14,6 +26,10 @@ use blanc_core::theme::typography::*;
 
 use crate::icons::*;
 use crate::screens::flow_canvas::{FlowCanvasAction, FlowCanvasState, FlowCanvasWidget, FlowInteractionMode};
+use crate::screens::ui_designer::{
+    view_ui_designer, UiAssetSlot, UiDesignerMessage, UiDesignerSections, UiDesignerSubTab,
+    UiPreviewMode,
+};
 use crate::theme::{
     asset_card_button_style, badge_container_style, callout_container_style, canvas_container_style, card_container_style,
     code_container_style, danger_icon_button_style, icon_button_style, input_field_style,
@@ -45,6 +61,7 @@ pub enum AssetPickerTarget {
     Block(usize),
     TitleBackground,
     TitleBgm,
+    UiAsset(UiAssetSlot),
 }
 
 #[derive(Debug, Clone)]
@@ -69,6 +86,11 @@ pub enum DashboardMessage {
     // Asset Manager messages
     SelectAssetCategory(Option<AssetCategory>),
     AssetSearchChanged(String),
+    SetAssetViewMode(AssetViewMode),
+    SelectAssetForPreview(String),
+    ToggleAssetPreviewBg,
+    PlayAssetAudioPreview(String),
+    StopAssetAudioPreview,
     ImportAssetClicked(AssetCategory),
     DeleteAssetClicked(String),
     OpenAssetFolder(AssetCategory),
@@ -86,15 +108,19 @@ pub enum DashboardMessage {
     CreateNewScene,
     DeleteScene(usize),
     SaveCurrentScene,
+    PlayFromCurrentScene,
     OpenScenesFolder,
     AddBlockToScene(ActionBlock),
     RemoveBlockFromScene(usize),
     MoveBlockUp(usize),
     MoveBlockDown(usize),
     UpdateBlockCharacterPosition(usize, CharacterPosition),
+    UpdateBlockTransition(usize, Option<blanc_core::scene::TransitionType>),
+    UpdateVisualEffect(usize, blanc_core::scene::ScreenEffectType, f32),
     UpdateBlockChoicePosition(usize, ChoiceLayoutPosition),
     UpdateSpeakerName(usize, String),
     UpdateDialogueText(usize, String),
+    UpdateDialogueNameplatePosition(usize, Option<CharacterPosition>),
     UpdateChoicePrompt(usize, String),
 
     // Custom Modal Asset Picker messages
@@ -116,6 +142,7 @@ pub enum DashboardMessage {
     UpdateSfxVolume(f32),
     UpdateTextSpeed(f32),
     UpdateAutoForwardDelay(f32),
+    UpdateSceneTransitionMode(SceneTransitionMode),
     SaveSystemSettings,
 
     // Project Logo & Branding messages
@@ -138,6 +165,87 @@ pub enum DashboardMessage {
     FlowSearchChanged(String),
     DismissFlowStatusMessage,
     SaveStoryFlow,
+
+    // UI Designer messages
+    UiDesigner(UiDesignerMessage),
+    ImportUiPackFolder,
+    UiPackFolderSelected(Option<PathBuf>),
+
+    // Export messages
+    SetExportExeName(String),
+    SetExportOutputDir(String),
+    BrowseExportOutputDir,
+    ExportOutputDirSelected(Option<PathBuf>),
+    SetExportPacked(bool),
+    SetExportSaveMode(ExportSaveMode),
+    SetExportBuildKind(ExportBuildKind),
+    SetInstallerVersion(String),
+    SetInstallerPublisher(String),
+    SetInstallerWelcome(String),
+    SelectInstallerPolicyLang(String),
+    InstallerPolicyEditorAction(text_editor::Action),
+    ResetInstallerPolicyDefault,
+    ToggleAddInstallerPolicyLang,
+    SetNewPolicyLangCode(String),
+    SetNewPolicyLangName(String),
+    ConfirmAddInstallerPolicyLang,
+    RemoveCustomPolicyLang(String),
+    SetInstallerDesktopShortcut(bool),
+    SetInstallerStartMenuShortcut(bool),
+    SetInstallerIncludeLogo(bool),
+    SetInstallerIncludeBanner(bool),
+    PickInstallerCustomBanner,
+    ClearInstallerCustomBanner,
+    RunExportGame,
+    ExportProgress(f32, String),
+    ExportDone(Result<String, String>),
+    OpenExportFolder,
+
+    // Scene Editor scroll preservation
+    SceneEditorBlocksScrolled(scrollable::AbsoluteOffset),
+
+    // Localization tab
+    LocaleSyncFromProject,
+    LocaleSelectLanguage(String),
+    LocaleNewCodeChanged(String),
+    LocaleNewNameChanged(String),
+    LocaleDefaultCodeChanged(String),
+    LocaleDefaultNameChanged(String),
+    LocaleSaveDefaultLanguage,
+    LocaleAddLanguage,
+    LocaleRemoveLanguage(String),
+    LocaleSearchChanged(String),
+    LocaleFilterScopeChanged(LocaleFilterScope),
+    LocaleToggleUntranslatedOnly(bool),
+    LocaleTranslationChanged(String, String),
+    LocaleSaveAll,
+    LocaleExportCsv,
+    LocaleImportCsv,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LocaleFilterScope {
+    All,
+    Ui,
+    Speaker,
+    Scene(String),
+}
+
+impl std::fmt::Display for LocaleFilterScope {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::All => write!(f, "All Strings"),
+            Self::Ui => write!(f, "UI Labels"),
+            Self::Speaker => write!(f, "Character Names"),
+            Self::Scene(name) => write!(f, "Scene: {}", name),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AssetViewMode {
+    List,
+    Grid,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -147,7 +255,10 @@ pub enum WorkflowTab {
     Story,
     SceneEditor,
     StoryFlow,
+    UiDesigner,
+    Localization,
     Settings,
+    Export,
 }
 
 impl WorkflowTab {
@@ -158,7 +269,10 @@ impl WorkflowTab {
             Self::Story => "Story Setup",
             Self::SceneEditor => "Scene Editor",
             Self::StoryFlow => "Story Flow",
+            Self::UiDesigner => "UI Designer",
+            Self::Localization => "Localization",
             Self::Settings => "Settings",
+            Self::Export => "Export",
         }
     }
 }
@@ -169,6 +283,12 @@ pub struct DashboardState {
     // Asset Manager state
     pub selected_category: Option<AssetCategory>,
     pub asset_search_query: String,
+    pub asset_view_mode: AssetViewMode,
+    pub selected_preview_asset_id: Option<String>,
+    pub asset_preview_light_bg: bool,
+    pub playing_audio_asset_id: Option<String>,
+    pub audio_stream: Option<(rodio::OutputStream, rodio::OutputStreamHandle)>,
+    pub audio_sink: Option<rodio::Sink>,
     pub status_message: Option<String>,
 
     // Story Setup state
@@ -182,6 +302,7 @@ pub struct DashboardState {
     pub selected_scene_index: usize,
     pub current_scene: Option<Scene>,
     pub scene_status_message: Option<String>,
+    pub scene_blocks_scroll_offset: scrollable::AbsoluteOffset,
 
     // Custom Modal Asset Picker state
     pub asset_picker_modal: Option<AssetPickerModalState>,
@@ -200,6 +321,51 @@ pub struct DashboardState {
     pub flow_search_query: String,
     pub flow_status_message: Option<String>,
     pub all_scenes: Vec<Scene>,
+
+    // UI Designer state
+    pub ui_designer_sub_tab: UiDesignerSubTab,
+    pub ui_designer_sections: UiDesignerSections,
+    pub ui_preview_mode: UiPreviewMode,
+
+    // Export state
+    pub export_exe_name: String,
+    pub export_output_dir: String,
+    pub export_packed: bool,
+    pub export_save_mode: ExportSaveMode,
+    pub export_build_kind: ExportBuildKind,
+    pub installer_version: String,
+    pub installer_publisher: String,
+    pub installer_welcome_text: String,
+    pub installer_policy_lang: String,
+    pub installer_policy_texts: std::collections::BTreeMap<String, String>,
+    pub installer_policy_editor: text_editor::Content,
+    pub installer_custom_policy_langs: Vec<CustomPolicyLanguage>,
+    pub installer_add_lang_open: bool,
+    pub installer_new_lang_code: String,
+    pub installer_new_lang_name: String,
+    pub installer_desktop_shortcut: bool,
+    pub installer_start_menu_shortcut: bool,
+    pub installer_include_logo: bool,
+    pub installer_include_banner: bool,
+    pub installer_custom_banner_path: Option<PathBuf>,
+    pub export_in_progress: bool,
+    pub export_progress: f32,
+    pub export_stage_label: String,
+    pub export_status_message: Option<String>,
+
+    // Localization tab state
+    pub locale_manifest: LocaleManifest,
+    pub locale_items: Vec<LocalizationItem>,
+    pub locale_tables: HashMap<String, LocaleStrings>,
+    pub locale_selected_code: String,
+    pub locale_new_code: String,
+    pub locale_new_name: String,
+    pub locale_default_code: String,
+    pub locale_default_name: String,
+    pub locale_search_query: String,
+    pub locale_filter_scope: LocaleFilterScope,
+    pub locale_untranslated_only: bool,
+    pub locale_status_message: Option<String>,
 }
 
 impl DashboardState {
@@ -211,6 +377,7 @@ impl DashboardState {
         });
         opening_scene.add_block(ActionBlock::Character {
             character_id: "Alice".to_string(),
+            sprite_asset_id: None,
             expression: "Happy".to_string(),
             position: CharacterPosition::Center,
             offset_x: 0.0,
@@ -221,6 +388,7 @@ impl DashboardState {
             speaker: "Alice".to_string(),
             text: "Hello! Welcome to Blanc Engine's Visual Scene Editor.".to_string(),
             voice_asset_id: None,
+            nameplate_position: None,
         });
         opening_scene.add_block(ActionBlock::Choice {
             prompt: "What would you like to explore next?".to_string(),
@@ -323,10 +491,31 @@ impl DashboardState {
             }
         }
 
+        let locale_manifest = LocaleManifest::load_from_dir(project_dir);
+        let locale_items = collect_project_items(project_dir);
+        let mut locale_tables = HashMap::new();
+        for lang in locale_manifest.all_languages() {
+            let strings = LocaleStrings::load_from_dir(project_dir, &lang.code);
+            locale_tables.insert(lang.code.to_ascii_lowercase(), strings);
+        }
+        let locale_selected_code = locale_manifest
+            .languages
+            .first()
+            .map(|l| l.code.clone())
+            .unwrap_or_else(|| locale_manifest.default_language.code.clone());
+        let locale_default_code = locale_manifest.default_language.code.clone();
+        let locale_default_name = locale_manifest.default_language.display_name.clone();
+
         Self {
             active_tab: WorkflowTab::Dashboard,
             selected_category: Some(AssetCategory::Background),
             asset_search_query: String::new(),
+            asset_view_mode: AssetViewMode::Grid,
+            selected_preview_asset_id: None,
+            asset_preview_light_bg: false,
+            playing_audio_asset_id: None,
+            audio_stream: None,
+            audio_sink: None,
             status_message: None,
 
             script_content,
@@ -338,6 +527,7 @@ impl DashboardState {
             selected_scene_index: 0,
             current_scene,
             scene_status_message: None,
+            scene_blocks_scroll_offset: scrollable::AbsoluteOffset::default(),
 
             asset_picker_modal: None,
             system_screens_config,
@@ -351,6 +541,49 @@ impl DashboardState {
             flow_search_query: String::new(),
             flow_status_message: None,
             all_scenes,
+            ui_designer_sub_tab: UiDesignerSubTab::ThemeAndButtons,
+            ui_designer_sections: UiDesignerSections::default(),
+            ui_preview_mode: UiPreviewMode::MainMenu,
+            export_exe_name: String::new(),
+            export_output_dir: project_dir.join("Exports").to_string_lossy().to_string(),
+            export_packed: true,
+            export_save_mode: ExportSaveMode::Portable,
+            export_build_kind: ExportBuildKind::Portable,
+            installer_version: "1.0.0".to_string(),
+            installer_publisher: String::new(),
+            installer_welcome_text: "Welcome! Click Next to install the game on your computer.".to_string(),
+            installer_policy_lang: InstallerLang::En.code().to_string(),
+            installer_policy_texts: default_privacy_and_terms_map(),
+            installer_policy_editor: text_editor::Content::with_text(&default_privacy_and_terms_en(
+                "{GAME_TITLE}",
+                "{PUBLISHER}",
+            )),
+            installer_custom_policy_langs: Vec::new(),
+            installer_add_lang_open: false,
+            installer_new_lang_code: String::new(),
+            installer_new_lang_name: String::new(),
+            installer_desktop_shortcut: true,
+            installer_start_menu_shortcut: true,
+            installer_include_logo: true,
+            installer_include_banner: true,
+            installer_custom_banner_path: None,
+            export_in_progress: false,
+            export_progress: 0.0,
+            export_stage_label: String::new(),
+            export_status_message: None,
+
+            locale_manifest,
+            locale_items,
+            locale_tables,
+            locale_selected_code,
+            locale_new_code: String::new(),
+            locale_new_name: String::new(),
+            locale_default_code,
+            locale_default_name,
+            locale_search_query: String::new(),
+            locale_filter_scope: LocaleFilterScope::All,
+            locale_untranslated_only: false,
+            locale_status_message: None,
         }
     }
 
@@ -389,10 +622,23 @@ impl Default for DashboardState {
         let initial_script = DEFAULT_SCRIPT_TEMPLATE.to_string();
         let parsed = Story::parse_script(&initial_script);
 
+        let locale_manifest = LocaleManifest::default();
+        let locale_items = Vec::new();
+        let locale_tables = HashMap::new();
+        let locale_selected_code = locale_manifest.default_language.code.clone();
+        let locale_default_code = locale_manifest.default_language.code.clone();
+        let locale_default_name = locale_manifest.default_language.display_name.clone();
+
         Self {
             active_tab: WorkflowTab::Dashboard,
             selected_category: Some(AssetCategory::Background),
             asset_search_query: String::new(),
+            asset_view_mode: AssetViewMode::Grid,
+            selected_preview_asset_id: None,
+            asset_preview_light_bg: false,
+            playing_audio_asset_id: None,
+            audio_stream: None,
+            audio_sink: None,
             status_message: None,
 
             script_content: text_editor::Content::with_text(&initial_script),
@@ -404,6 +650,7 @@ impl Default for DashboardState {
             selected_scene_index: 0,
             current_scene: Some(Self::create_starter_scene()),
             scene_status_message: None,
+            scene_blocks_scroll_offset: scrollable::AbsoluteOffset::default(),
 
             asset_picker_modal: None,
             system_screens_config: SystemScreensConfig::default(),
@@ -417,6 +664,49 @@ impl Default for DashboardState {
             flow_search_query: String::new(),
             flow_status_message: None,
             all_scenes: vec![Self::create_starter_scene()],
+            ui_designer_sub_tab: UiDesignerSubTab::ThemeAndButtons,
+            ui_designer_sections: UiDesignerSections::default(),
+            ui_preview_mode: UiPreviewMode::MainMenu,
+            export_exe_name: String::new(),
+            export_output_dir: String::new(),
+            export_packed: true,
+            export_save_mode: ExportSaveMode::Portable,
+            export_build_kind: ExportBuildKind::Portable,
+            installer_version: "1.0.0".to_string(),
+            installer_publisher: String::new(),
+            installer_welcome_text: "Welcome! Click Next to install the game on your computer.".to_string(),
+            installer_policy_lang: InstallerLang::En.code().to_string(),
+            installer_policy_texts: default_privacy_and_terms_map(),
+            installer_policy_editor: text_editor::Content::with_text(&default_privacy_and_terms_en(
+                "{GAME_TITLE}",
+                "{PUBLISHER}",
+            )),
+            installer_custom_policy_langs: Vec::new(),
+            installer_add_lang_open: false,
+            installer_new_lang_code: String::new(),
+            installer_new_lang_name: String::new(),
+            installer_desktop_shortcut: true,
+            installer_start_menu_shortcut: true,
+            installer_include_logo: true,
+            installer_include_banner: true,
+            installer_custom_banner_path: None,
+            export_in_progress: false,
+            export_progress: 0.0,
+            export_stage_label: String::new(),
+            export_status_message: None,
+
+            locale_manifest,
+            locale_items,
+            locale_tables,
+            locale_selected_code,
+            locale_new_code: String::new(),
+            locale_new_name: String::new(),
+            locale_default_code,
+            locale_default_name,
+            locale_search_query: String::new(),
+            locale_filter_scope: LocaleFilterScope::All,
+            locale_untranslated_only: false,
+            locale_status_message: None,
         }
     }
 }
@@ -432,7 +722,21 @@ impl DashboardState {
             WorkflowTab::Story => self.view_story_content(project, project_dir),
             WorkflowTab::SceneEditor => self.view_scene_editor_content(project, project_dir),
             WorkflowTab::StoryFlow => self.view_story_flow_content(project, project_dir),
+            WorkflowTab::UiDesigner => view_ui_designer(
+                &self.system_screens_config.ui_config,
+                self.ui_designer_sub_tab,
+                &self.ui_designer_sections,
+                self.ui_preview_mode,
+                &self.system_screens_config.title_text,
+                self.system_screens_config.title_background_asset_id.as_deref(),
+                self.system_screens_config.logo_asset_id.as_deref(),
+                project,
+                project_dir,
+                self.settings_status_message.as_deref(),
+            ),
+            WorkflowTab::Localization => self.view_localization_content(),
             WorkflowTab::Settings => self.view_settings_content(project, project_dir),
+            WorkflowTab::Export => self.view_export_content(project, project_dir),
         };
 
         let layout = column![top_bar, workflow_bar, main_content]
@@ -445,12 +749,12 @@ impl DashboardState {
             .height(Length::Fill)
             .into();
 
+        let mut root_stack = stack![base_view];
         if let Some(modal) = &self.asset_picker_modal {
             let modal_overlay = self.view_asset_picker_modal(modal, project, project_dir);
-            stack![base_view, modal_overlay].into()
-        } else {
-            base_view
+            root_stack = root_stack.push(modal_overlay);
         }
+        root_stack.into()
     }
 
     // ==========================================
@@ -552,7 +856,10 @@ impl DashboardState {
             WorkflowTab::Story,
             WorkflowTab::SceneEditor,
             WorkflowTab::StoryFlow,
+            WorkflowTab::UiDesigner,
+            WorkflowTab::Localization,
             WorkflowTab::Settings,
+            WorkflowTab::Export,
         ];
 
         let mut tab_row = row![].spacing(SPACE_2);
@@ -652,11 +959,12 @@ impl DashboardState {
     // ==========================================
     // TAB 2: ASSET MANAGER
     // ==========================================
-    fn view_assets_content<'a>(&'a self, project: &'a Project, _project_dir: &'a PathBuf) -> Element<'a, DashboardMessage> {
+    fn view_assets_content<'a>(&'a self, project: &'a Project, project_dir: &'a PathBuf) -> Element<'a, DashboardMessage> {
         let sidebar = self.view_asset_categories_sidebar(project);
-        let main_pane = self.view_asset_list_pane(project);
+        let main_pane = self.view_asset_list_pane(project, project_dir);
+        let preview_pane = self.view_asset_preview_pane(project, project_dir);
 
-        let split = row![sidebar, main_pane]
+        let split = row![sidebar, main_pane, preview_pane]
             .width(Length::Fill)
             .height(Length::Fill);
 
@@ -738,7 +1046,7 @@ impl DashboardState {
         sidebar_container.into()
     }
 
-    fn view_asset_list_pane<'a>(&'a self, project: &'a Project) -> Element<'a, DashboardMessage> {
+    fn view_asset_list_pane<'a>(&'a self, project: &'a Project, project_dir: &'a PathBuf) -> Element<'a, DashboardMessage> {
         let (category_title, category_subtitle, current_cat) = match self.selected_category {
             Some(cat) => (
                 cat.display_name(),
@@ -770,8 +1078,18 @@ impl DashboardState {
         let search_input = text_input("Search assets...", &self.asset_search_query)
             .on_input(DashboardMessage::AssetSearchChanged)
             .padding([SPACE_2, SPACE_3])
-            .width(Length::Fixed(240.0))
+            .width(Length::Fixed(190.0))
             .style(input_field_style);
+
+        let btn_mode_list = button(text("List").size(LABEL_SM).wrapping(text::Wrapping::None))
+            .padding([SPACE_2, SPACE_3])
+            .style(if self.asset_view_mode == AssetViewMode::List { primary_button_style } else { secondary_button_style })
+            .on_press(DashboardMessage::SetAssetViewMode(AssetViewMode::List));
+
+        let btn_mode_grid = button(text("Grid").size(LABEL_SM).wrapping(text::Wrapping::None))
+            .padding([SPACE_2, SPACE_3])
+            .style(if self.asset_view_mode == AssetViewMode::Grid { primary_button_style } else { secondary_button_style })
+            .on_press(DashboardMessage::SetAssetViewMode(AssetViewMode::Grid));
 
         let btn_open_folder = button(
             row![icon_folder(), text("Folder").size(LABEL_MD)]
@@ -795,10 +1113,12 @@ impl DashboardState {
             title_col,
             Space::with_width(Length::Fill),
             search_input,
+            btn_mode_list,
+            btn_mode_grid,
             btn_open_folder,
             btn_import,
         ]
-        .spacing(SPACE_3)
+        .spacing(SPACE_2)
         .align_y(Alignment::Center);
 
         let q_lower = self.asset_search_query.to_lowercase();
@@ -858,15 +1178,46 @@ impl DashboardState {
                 .center_x(Length::Fill)
                 .center_y(Length::Fill)
                 .into()
-        } else {
-            let mut asset_list = column![].spacing(SPACE_3).width(Length::Fill);
+        } else if self.asset_view_mode == AssetViewMode::List {
+            let mut asset_list = column![].spacing(SPACE_2).width(Length::Fill);
 
             for asset in filtered_assets {
-                let card = self.view_asset_card(asset);
+                let card = self.view_asset_card(asset, project_dir);
                 asset_list = asset_list.push(card);
             }
 
-            scrollable(asset_list).width(Length::Fill).height(Length::Fill).into()
+            container(scrollable(asset_list).width(Length::Fill).height(Length::Fill))
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .clip(true)
+                .into()
+        } else {
+            let mut grid_col = column![].spacing(SPACE_3).width(Length::Fill);
+            let mut current_row = row![].spacing(SPACE_3).width(Length::Fill);
+            let mut in_row = 0;
+
+            for asset in filtered_assets {
+                current_row = current_row.push(self.view_asset_grid_card(asset, project_dir));
+                in_row += 1;
+                if in_row == 3 {
+                    grid_col = grid_col.push(current_row);
+                    current_row = row![].spacing(SPACE_3).width(Length::Fill);
+                    in_row = 0;
+                }
+            }
+            if in_row > 0 {
+                while in_row < 3 {
+                    current_row = current_row.push(Space::with_width(Length::FillPortion(1)));
+                    in_row += 1;
+                }
+                grid_col = grid_col.push(current_row);
+            }
+
+            container(scrollable(grid_col).width(Length::Fill).height(Length::Fill))
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .clip(true)
+                .into()
         };
 
         let mut pane = column![action_bar, Space::with_height(SPACE_4), list_content]
@@ -889,26 +1240,70 @@ impl DashboardState {
         pane.into()
     }
 
-    fn view_asset_card<'a>(&'a self, asset: &'a Asset) -> Element<'a, DashboardMessage> {
-        let cat_icon = match asset.category {
-            AssetCategory::Background => icon_image(),
-            AssetCategory::Character | AssetCategory::CharacterExpression => icon_user(),
-            AssetCategory::Bgm => icon_music(),
-            AssetCategory::Sfx => icon_volume(),
-            AssetCategory::Font => icon_type(),
-            AssetCategory::Ui | AssetCategory::Other => icon_blocks(),
+    fn asset_is_image(cat: AssetCategory) -> bool {
+        matches!(
+            cat,
+            AssetCategory::Background
+                | AssetCategory::Character
+                | AssetCategory::CharacterExpression
+                | AssetCategory::Ui
+        )
+    }
+
+    fn asset_is_audio(cat: AssetCategory) -> bool {
+        matches!(cat, AssetCategory::Bgm | AssetCategory::Sfx)
+    }
+
+    fn view_asset_card<'a>(&'a self, asset: &'a Asset, project_dir: &'a PathBuf) -> Element<'a, DashboardMessage> {
+        let is_selected = self.selected_preview_asset_id.as_deref() == Some(&asset.id);
+        let full_path = project_dir.join(&asset.relative_path);
+
+        let thumb_box: Element<'a, DashboardMessage> = if Self::asset_is_image(asset.category) && full_path.exists() {
+            let fit = if asset.category == AssetCategory::Background {
+                iced::ContentFit::Cover
+            } else {
+                iced::ContentFit::Contain
+            };
+            container(
+                image(image::Handle::from_path(&full_path))
+                    .width(Length::Fixed(52.0))
+                    .height(Length::Fixed(52.0))
+                    .content_fit(fit),
+            )
+            .width(Length::Fixed(52.0))
+            .height(Length::Fixed(52.0))
+            .clip(true)
+            .style(code_container_style)
+            .into()
+        } else {
+            let cat_icon = match asset.category {
+                AssetCategory::Background => icon_image(),
+                AssetCategory::Character | AssetCategory::CharacterExpression => icon_user(),
+                AssetCategory::Bgm => icon_music(),
+                AssetCategory::Sfx => icon_volume(),
+                AssetCategory::Font => icon_type(),
+                AssetCategory::Ui | AssetCategory::Other => icon_blocks(),
+            };
+            container(cat_icon)
+                .center_x(Length::Fixed(52.0))
+                .center_y(Length::Fixed(52.0))
+                .style(code_container_style)
+                .into()
         };
 
-        let icon_box = container(cat_icon)
-            .padding(SPACE_3)
-            .style(card_container_style);
-
         let size_str = format_bytes(asset.file_size);
+        let name_display = if asset.name.chars().count() > 30 {
+            let t: String = asset.name.chars().take(27).collect();
+            format!("{}...", t)
+        } else {
+            asset.name.clone()
+        };
 
         let details = column![
             row![
-                text(&asset.name)
+                text(name_display)
                     .size(HEADING_SM)
+                    .wrapping(text::Wrapping::None)
                     .color(iced::Color::from_rgb8(TEXT_PRIMARY.r, TEXT_PRIMARY.g, TEXT_PRIMARY.b)),
                 container(
                     text(asset.category.display_name())
@@ -920,43 +1315,36 @@ impl DashboardState {
             ]
             .spacing(SPACE_3)
             .align_y(Alignment::Center),
-            text(&asset.relative_path)
-                .size(BODY_SM)
-                .color(iced::Color::from_rgb8(TEXT_SECONDARY.r, TEXT_SECONDARY.g, TEXT_SECONDARY.b)),
-            row![
-                text(format!("ID: {}", asset.id))
-                    .size(LABEL_SM)
-                    .color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b)),
-                text("•").size(LABEL_SM).color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b)),
-                text(size_str)
-                    .size(LABEL_SM)
-                    .color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b)),
-            ]
-            .spacing(SPACE_2)
-            .align_y(Alignment::Center),
+            text(format!("{} • {}", asset.relative_path, size_str))
+                .size(LABEL_SM)
+                .wrapping(text::Wrapping::None)
+                .color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b)),
         ]
         .spacing(SPACE_1);
 
-        let btn_reveal = button(
-            row![icon_external_link(), text("Explorer").size(LABEL_SM)]
-                .spacing(SPACE_1)
-                .align_y(Alignment::Center),
-        )
-        .padding([SPACE_2, SPACE_3])
-        .style(subtle_button_style)
-        .on_press(DashboardMessage::RevealAssetInExplorer(asset.relative_path.clone()));
-
-        let btn_delete = button(icon_trash())
-            .padding([SPACE_2, SPACE_3])
-            .style(subtle_button_style)
-            .on_press(DashboardMessage::DeleteAssetClicked(asset.id.clone()));
-
-        let actions = row![btn_reveal, btn_delete]
-            .spacing(SPACE_2)
-            .align_y(Alignment::Center);
+        let mut actions = row![].spacing(SPACE_2).align_y(Alignment::Center);
+        if Self::asset_is_audio(asset.category) {
+            let is_playing = self.playing_audio_asset_id.as_deref() == Some(&asset.id);
+            actions = actions.push(
+                button(text(if is_playing { "Stop" } else { "Play" }).size(LABEL_SM))
+                    .padding([SPACE_1, SPACE_3])
+                    .style(if is_playing { primary_button_style } else { secondary_button_style })
+                    .on_press(if is_playing {
+                        DashboardMessage::StopAssetAudioPreview
+                    } else {
+                        DashboardMessage::PlayAssetAudioPreview(asset.id.clone())
+                    }),
+            );
+        }
+        actions = actions.push(
+            button(icon_trash())
+                .padding([SPACE_2, SPACE_3])
+                .style(subtle_button_style)
+                .on_press(DashboardMessage::DeleteAssetClicked(asset.id.clone())),
+        );
 
         let card_content = row![
-            icon_box,
+            thumb_box,
             Space::with_width(SPACE_3),
             details,
             Space::with_width(Length::Fill),
@@ -966,11 +1354,258 @@ impl DashboardState {
         .align_y(Alignment::Center)
         .width(Length::Fill);
 
-        container(card_content)
-            .padding(SPACE_4)
+        button(card_content)
+            .padding(SPACE_3)
             .width(Length::Fill)
-            .style(project_card_style)
+            .style(asset_card_button_style(is_selected))
+            .on_press(DashboardMessage::SelectAssetForPreview(asset.id.clone()))
             .into()
+    }
+
+    fn view_asset_grid_card<'a>(&'a self, asset: &'a Asset, project_dir: &'a PathBuf) -> Element<'a, DashboardMessage> {
+        let is_selected = self.selected_preview_asset_id.as_deref() == Some(&asset.id);
+        let full_path = project_dir.join(&asset.relative_path);
+
+        let thumb: Element<'a, DashboardMessage> = if Self::asset_is_image(asset.category) && full_path.exists() {
+            container(
+                image(image::Handle::from_path(&full_path))
+                    .width(Length::Fill)
+                    .height(Length::Fixed(108.0))
+                    .content_fit(iced::ContentFit::Contain),
+            )
+            .width(Length::Fill)
+            .height(Length::Fixed(108.0))
+            .clip(true)
+            .style(code_container_style)
+            .into()
+        } else if Self::asset_is_audio(asset.category) {
+            let is_playing = self.playing_audio_asset_id.as_deref() == Some(&asset.id);
+            container(
+                column![
+                    if asset.category == AssetCategory::Bgm { icon_music() } else { icon_volume() },
+                    text(if is_playing { "Playing..." } else { "Audio Track" })
+                        .size(LABEL_SM)
+                        .color(iced::Color::from_rgb8(
+                            if is_playing { ACCENT_PRIMARY.r } else { TEXT_MUTED.r },
+                            if is_playing { ACCENT_PRIMARY.g } else { TEXT_MUTED.g },
+                            if is_playing { ACCENT_PRIMARY.b } else { TEXT_MUTED.b },
+                        )),
+                ]
+                .spacing(SPACE_1)
+                .align_x(Alignment::Center),
+            )
+            .width(Length::Fill)
+            .center_x(Length::Fill)
+            .center_y(Length::Fixed(108.0))
+            .style(code_container_style)
+            .into()
+        } else {
+            container(icon_blocks())
+                .width(Length::Fill)
+                .center_x(Length::Fill)
+                .center_y(Length::Fixed(108.0))
+                .style(code_container_style)
+                .into()
+        };
+
+        let name_display = if asset.name.chars().count() > 21 {
+            let t: String = asset.name.chars().take(18).collect();
+            format!("{}...", t)
+        } else {
+            asset.name.clone()
+        };
+
+        let body = column![
+            thumb,
+            text(name_display)
+                .size(LABEL_MD)
+                .wrapping(text::Wrapping::None)
+                .color(iced::Color::from_rgb8(TEXT_PRIMARY.r, TEXT_PRIMARY.g, TEXT_PRIMARY.b)),
+            row![
+                text(asset.category.display_name())
+                    .size(LABEL_SM)
+                    .wrapping(text::Wrapping::None)
+                    .color(iced::Color::from_rgb8(ACCENT_PRIMARY.r, ACCENT_PRIMARY.g, ACCENT_PRIMARY.b)),
+                Space::with_width(Length::Fill),
+                text(format_bytes(asset.file_size))
+                    .size(LABEL_SM)
+                    .wrapping(text::Wrapping::None)
+                    .color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b)),
+            ]
+            .align_y(Alignment::Center),
+        ]
+        .spacing(SPACE_2);
+
+        button(body)
+            .padding(SPACE_3)
+            .width(Length::FillPortion(1))
+            .style(asset_card_button_style(is_selected))
+            .on_press(DashboardMessage::SelectAssetForPreview(asset.id.clone()))
+            .into()
+    }
+
+    fn view_asset_preview_pane<'a>(&'a self, project: &'a Project, project_dir: &'a PathBuf) -> Element<'a, DashboardMessage> {
+        let header = row![
+            text("Asset Preview")
+                .size(HEADING_SM)
+                .color(iced::Color::from_rgb8(TEXT_PRIMARY.r, TEXT_PRIMARY.g, TEXT_PRIMARY.b)),
+        ];
+
+        let content: Element<'a, DashboardMessage> = if let Some(sel_id) = &self.selected_preview_asset_id {
+            if let Some(asset) = project.assets.assets.get(sel_id) {
+                let full_path = project_dir.join(&asset.relative_path);
+
+                let preview_box: Element<'a, DashboardMessage> = if Self::asset_is_image(asset.category) && full_path.exists() {
+                    let light_bg = self.asset_preview_light_bg;
+                    let dims = ::image::image_dimensions(&full_path)
+                        .map(|(w, h)| format!("{} × {} px", w, h))
+                        .unwrap_or_else(|_| "Unknown dimensions".to_string());
+
+                    let img_container = container(
+                        image(image::Handle::from_path(&full_path))
+                            .width(Length::Fixed(282.0))
+                            .height(Length::Fixed(210.0))
+                            .content_fit(iced::ContentFit::Contain),
+                    )
+                    .width(Length::Fixed(282.0))
+                    .height(Length::Fixed(210.0))
+                    .clip(true)
+                    .style(move |_| container::Style {
+                        background: Some(iced::Background::Color(if light_bg {
+                            iced::Color::from_rgb8(230, 232, 238)
+                        } else {
+                            iced::Color::from_rgb8(18, 20, 28)
+                        })),
+                        border: iced::Border {
+                            radius: 8.0.into(),
+                            width: 1.0,
+                            color: iced::Color::from_rgb8(BORDER_DEFAULT.r, BORDER_DEFAULT.g, BORDER_DEFAULT.b),
+                        },
+                        ..Default::default()
+                    });
+
+                    let bg_toggle = row![
+                        text("Backdrop:").size(LABEL_SM).color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b)),
+                        button(text("Dark").size(LABEL_SM))
+                            .padding([2.0, 8.0])
+                            .style(if !light_bg { primary_button_style } else { secondary_button_style })
+                            .on_press(DashboardMessage::ToggleAssetPreviewBg),
+                        button(text("Light").size(LABEL_SM))
+                            .padding([2.0, 8.0])
+                            .style(if light_bg { primary_button_style } else { secondary_button_style })
+                            .on_press(DashboardMessage::ToggleAssetPreviewBg),
+                        Space::with_width(Length::Fill),
+                        text(dims).size(LABEL_SM).color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b)),
+                    ]
+                    .spacing(SPACE_2)
+                    .align_y(Alignment::Center);
+
+                    column![img_container, bg_toggle].spacing(SPACE_2).into()
+                } else if Self::asset_is_audio(asset.category) {
+                    let is_playing = self.playing_audio_asset_id.as_deref() == Some(&asset.id);
+                    container(
+                        column![
+                            if asset.category == AssetCategory::Bgm { icon_music() } else { icon_volume() },
+                            text(if is_playing { "Playing Audio Preview..." } else { "Audio Ready" })
+                                .size(BODY_SM)
+                                .color(iced::Color::from_rgb8(TEXT_PRIMARY.r, TEXT_PRIMARY.g, TEXT_PRIMARY.b)),
+                            row![
+                                button(text("Play").size(LABEL_SM))
+                                    .padding([SPACE_1, SPACE_4])
+                                    .style(if is_playing { primary_button_style } else { secondary_button_style })
+                                    .on_press(DashboardMessage::PlayAssetAudioPreview(asset.id.clone())),
+                                button(text("Stop").size(LABEL_SM))
+                                    .padding([SPACE_1, SPACE_4])
+                                    .style(secondary_button_style)
+                                    .on_press(DashboardMessage::StopAssetAudioPreview),
+                            ]
+                            .spacing(SPACE_2),
+                        ]
+                        .spacing(SPACE_3)
+                        .align_x(Alignment::Center),
+                    )
+                    .center_x(Length::Fixed(282.0))
+                    .center_y(Length::Fixed(160.0))
+                    .style(code_container_style)
+                    .into()
+                } else {
+                    container(icon_blocks())
+                        .center_x(Length::Fixed(282.0))
+                        .center_y(Length::Fixed(140.0))
+                        .style(code_container_style)
+                        .into()
+                };
+
+                let meta = column![
+                    text(&asset.name)
+                        .size(HEADING_SM)
+                        .color(iced::Color::from_rgb8(TEXT_PRIMARY.r, TEXT_PRIMARY.g, TEXT_PRIMARY.b)),
+                    text(format!("Category: {}", asset.category.display_name()))
+                        .size(LABEL_SM)
+                        .color(iced::Color::from_rgb8(ACCENT_PRIMARY.r, ACCENT_PRIMARY.g, ACCENT_PRIMARY.b)),
+                    text(format!("Size: {}", format_bytes(asset.file_size)))
+                        .size(LABEL_SM)
+                        .color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b)),
+                    text(format!("Path: {}", asset.relative_path))
+                        .size(LABEL_SM)
+                        .color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b)),
+                ]
+                .spacing(SPACE_1);
+
+                let actions = row![
+                    button(
+                        row![icon_external_link(), text("Explorer").size(LABEL_SM)]
+                            .spacing(SPACE_1)
+                            .align_y(Alignment::Center),
+                    )
+                    .padding([SPACE_2, SPACE_3])
+                    .style(secondary_button_style)
+                    .on_press(DashboardMessage::RevealAssetInExplorer(asset.relative_path.clone())),
+                    button(
+                        row![icon_trash(), text("Delete").size(LABEL_SM)]
+                            .spacing(SPACE_1)
+                            .align_y(Alignment::Center),
+                    )
+                    .padding([SPACE_2, SPACE_3])
+                    .style(danger_icon_button_style)
+                    .on_press(DashboardMessage::DeleteAssetClicked(asset.id.clone())),
+                ]
+                .spacing(SPACE_2);
+
+                column![preview_box, meta, actions].spacing(SPACE_4).into()
+            } else {
+                container(text("Asset not found.").size(BODY_SM).color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b)))
+                    .center_x(Length::Fill)
+                    .center_y(Length::Fill)
+                    .into()
+            }
+        } else {
+            container(
+                column![
+                    icon_image(),
+                    text("Select an asset to preview")
+                        .size(BODY_SM)
+                        .color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b)),
+                ]
+                .spacing(SPACE_2)
+                .align_x(Alignment::Center),
+            )
+            .center_x(Length::Fill)
+            .center_y(Length::Fill)
+            .into()
+        };
+
+        container(
+            column![header, content]
+                .spacing(SPACE_4)
+                .width(Length::Fill)
+                .height(Length::Fill),
+        )
+        .padding(SPACE_4)
+        .width(Length::Fixed(320.0))
+        .height(Length::Fill)
+        .style(sidebar_container_style)
+        .into()
     }
 
     // ==========================================
@@ -1298,7 +1933,7 @@ impl DashboardState {
     // ==========================================
     fn view_scene_editor_content<'a>(&'a self, project: &'a Project, project_dir: &'a PathBuf) -> Element<'a, DashboardMessage> {
         let left_sidebar = self.view_scene_selector_sidebar(project_dir);
-        let main_canvas = self.view_scene_canvas_pane(project);
+        let main_canvas = self.view_scene_canvas_pane(project, project_dir);
 
         let split = row![left_sidebar, main_canvas]
             .width(Length::Fill)
@@ -1323,7 +1958,7 @@ impl DashboardState {
         ]
         .align_y(Alignment::Center);
 
-        let mut scenes_col = column![title_row].spacing(SPACE_2);
+        let mut scenes_col = column![].spacing(SPACE_1).width(Length::Fill);
 
         for (idx, scene_name) in self.scenes_list.iter().enumerate() {
             let is_selected = self.selected_scene_index == idx;
@@ -1333,26 +1968,47 @@ impl DashboardState {
                 0
             };
 
-            let btn_scene = button(
-                row![
-                    icon_film(),
-                    text(scene_name).size(LABEL_MD),
-                    Space::with_width(Length::Fill),
-                    if is_selected {
+            let display_name = if scene_name.chars().count() > 23 {
+                let truncated: String = scene_name.chars().take(20).collect();
+                format!("{}...", truncated)
+            } else {
+                scene_name.clone()
+            };
+
+            let title_line = row![
+                icon_film(),
+                text(display_name)
+                    .size(LABEL_MD)
+                    .wrapping(text::Wrapping::None),
+            ]
+            .spacing(SPACE_2)
+            .align_y(Alignment::Center)
+            .width(Length::Fill);
+
+            let btn_content: Element<'a, DashboardMessage> = if is_selected {
+                column![
+                    title_line,
+                    row![
+                        Space::with_width(Length::Fixed(24.0)),
                         text(format!("{} blocks", block_count))
                             .size(LABEL_SM)
-                            .color(iced::Color::from_rgb8(ACCENT_PRIMARY.r, ACCENT_PRIMARY.g, ACCENT_PRIMARY.b))
-                    } else {
-                        text("").size(LABEL_SM)
-                    },
+                            .wrapping(text::Wrapping::None)
+                            .color(iced::Color::from_rgb8(ACCENT_PRIMARY.r, ACCENT_PRIMARY.g, ACCENT_PRIMARY.b)),
+                    ]
+                    .align_y(Alignment::Center),
                 ]
-                .spacing(SPACE_2)
-                .align_y(Alignment::Center),
-            )
-            .padding([SPACE_2, SPACE_3])
-            .width(Length::Fill)
-            .style(sidebar_button_style(is_selected))
-            .on_press(DashboardMessage::SelectScene(idx));
+                .spacing(SPACE_1)
+                .width(Length::Fill)
+                .into()
+            } else {
+                title_line.into()
+            };
+
+            let btn_scene = button(btn_content)
+                .padding([SPACE_2, SPACE_3])
+                .width(Length::Fill)
+                .style(sidebar_button_style(is_selected))
+                .on_press(DashboardMessage::SelectScene(idx));
 
             let can_delete = self.scenes_list.len() > 1;
             let item_row: Element<'a, DashboardMessage> = if can_delete {
@@ -1372,6 +2028,10 @@ impl DashboardState {
 
             scenes_col = scenes_col.push(item_row);
         }
+
+        let scenes_scroll = scrollable(scenes_col)
+            .width(Length::Fill)
+            .height(Length::Fill);
 
         let btn_new_scene = button(
             row![icon_plus(), text("New Scene").size(BODY_SM)]
@@ -1394,14 +2054,14 @@ impl DashboardState {
         .on_press(DashboardMessage::OpenScenesFolder);
 
         let sidebar_layout = column![
-            scenes_col,
-            Space::with_height(Length::Fill),
+            title_row,
+            scenes_scroll,
             btn_new_scene,
             btn_open_folder,
         ]
-        .spacing(SPACE_2)
+        .spacing(SPACE_3)
         .padding(SPACE_4)
-        .width(Length::Fixed(260.0))
+        .width(Length::Fixed(280.0))
         .height(Length::Fill);
 
         container(sidebar_layout)
@@ -1410,7 +2070,7 @@ impl DashboardState {
             .into()
     }
 
-    fn view_scene_canvas_pane<'a>(&'a self, _project: &'a Project) -> Element<'a, DashboardMessage> {
+    fn view_scene_canvas_pane<'a>(&'a self, project: &'a Project, project_dir: &'a PathBuf) -> Element<'a, DashboardMessage> {
         let Some(scene) = &self.current_scene else {
             return container(text("No scene selected.").size(BODY_MD))
                 .center_x(Length::Fill)
@@ -1449,11 +2109,22 @@ impl DashboardState {
         .style(secondary_button_style)
         .on_press(DashboardMessage::SaveCurrentScene);
 
+        let btn_play_here = button(
+            row![icon_play(), text("Play From Here").size(LABEL_MD)]
+                .spacing(SPACE_2)
+                .align_y(Alignment::Center),
+        )
+        .padding([SPACE_2, SPACE_4])
+        .style(primary_button_style)
+        .on_press(DashboardMessage::PlayFromCurrentScene);
+
         let top_action_bar = row![
             scene_header,
             Space::with_width(Length::Fill),
             btn_save,
+            btn_play_here,
         ]
+        .spacing(SPACE_2)
         .align_y(Alignment::Center);
 
         // Add Block Quick Bar
@@ -1470,6 +2141,7 @@ impl DashboardState {
             speaker: "Alice".to_string(),
             text: "Type your spoken dialogue here...".to_string(),
             voice_asset_id: None,
+            nameplate_position: None,
         }));
 
         let btn_add_char = button(
@@ -1479,6 +2151,7 @@ impl DashboardState {
         .style(secondary_button_style)
         .on_press(DashboardMessage::AddBlockToScene(ActionBlock::Character {
             character_id: "Alice".to_string(),
+            sprite_asset_id: None,
             expression: "Normal".to_string(),
             position: CharacterPosition::Center,
             offset_x: 0.0,
@@ -1529,6 +2202,16 @@ impl DashboardState {
             looping: true,
         }));
 
+        let btn_add_effect = button(
+            row![icon_film(), text("Effect").size(LABEL_SM)].spacing(SPACE_1).align_y(Alignment::Center),
+        )
+        .padding([SPACE_1, SPACE_3])
+        .style(secondary_button_style)
+        .on_press(DashboardMessage::AddBlockToScene(ActionBlock::VisualEffect {
+            effect: blanc_core::scene::ScreenEffectType::FadeIn,
+            duration: 0.6,
+        }));
+
         let add_bar = container(
             row![
                 bar_label,
@@ -1537,6 +2220,7 @@ impl DashboardState {
                 btn_add_bg,
                 btn_add_choice,
                 btn_add_bgm,
+                btn_add_effect,
             ]
             .spacing(SPACE_3)
             .align_y(Alignment::Center),
@@ -1549,11 +2233,15 @@ impl DashboardState {
         let mut blocks_col = column![].spacing(SPACE_3).width(Length::Fill);
 
         for (idx, block) in scene.blocks.iter().enumerate() {
-            let card = self.view_action_block_card(idx, block, scene.blocks.len());
+            let card = self.view_action_block_card(idx, block, scene.blocks.len(), project, project_dir);
             blocks_col = blocks_col.push(card);
         }
 
-        let scroll_pane = scrollable(blocks_col).width(Length::Fill).height(Length::Fill);
+        let scroll_pane = scrollable(blocks_col)
+            .id(scrollable::Id::new("scene_editor_blocks_scroll"))
+            .on_scroll(|vp| DashboardMessage::SceneEditorBlocksScrolled(vp.absolute_offset()))
+            .width(Length::Fill)
+            .height(Length::Fill);
 
         let mut pane = column![
             top_action_bar,
@@ -1593,7 +2281,23 @@ impl DashboardState {
         pane.into()
     }
 
-    fn view_action_block_card<'a>(&'a self, idx: usize, block: &'a ActionBlock, total: usize) -> Element<'a, DashboardMessage> {
+    fn view_action_block_card<'a>(
+        &'a self,
+        idx: usize,
+        block: &'a ActionBlock,
+        total: usize,
+        project: &'a Project,
+        project_dir: &'a PathBuf,
+    ) -> Element<'a, DashboardMessage> {
+        let resolve_thumb = |key: &str| -> Option<PathBuf> {
+            let asset = project
+                .assets
+                .get(key)
+                .or_else(|| project.assets.assets.values().find(|a| a.name.eq_ignore_ascii_case(key)))?;
+            let path = project_dir.join(&asset.relative_path);
+            if path.exists() { Some(path) } else { None }
+        };
+
         let order_badge = container(
             text(format!("#{}", idx + 1))
                 .size(LABEL_SM)
@@ -1604,9 +2308,9 @@ impl DashboardState {
 
         // Block Type Header & Custom Inline Controls
         let (block_type_label, block_icon, content_element): (&'static str, iced::widget::svg::Svg<'a, iced::Theme>, Element<'a, DashboardMessage>) = match block {
-            ActionBlock::Character { character_id, expression, position, .. } => {
+            ActionBlock::Character { character_id, sprite_asset_id, expression, position, transition, .. } => {
                 let pos_buttons = row![
-                    text("Screen Position:").size(LABEL_SM).color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b)),
+                    text("Position:").size(LABEL_SM).color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b)),
                     button(text("Left").size(LABEL_SM))
                         .padding([2.0, 8.0])
                         .style(if *position == CharacterPosition::Left { primary_button_style } else { subtle_button_style })
@@ -1619,8 +2323,22 @@ impl DashboardState {
                         .padding([2.0, 8.0])
                         .style(if *position == CharacterPosition::Right { primary_button_style } else { subtle_button_style })
                         .on_press(DashboardMessage::UpdateBlockCharacterPosition(idx, CharacterPosition::Right)),
+                    Space::with_width(SPACE_3),
+                    text("Anim:").size(LABEL_SM).color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b)),
+                    button(text("Cut").size(LABEL_SM))
+                        .padding([2.0, 7.0])
+                        .style(if matches!(transition, None | Some(blanc_core::scene::TransitionType::Cut)) { primary_button_style } else { subtle_button_style })
+                        .on_press(DashboardMessage::UpdateBlockTransition(idx, Some(blanc_core::scene::TransitionType::Cut))),
+                    button(text("Slide L").size(LABEL_SM))
+                        .padding([2.0, 7.0])
+                        .style(if *transition == Some(blanc_core::scene::TransitionType::SlideLeft) { primary_button_style } else { subtle_button_style })
+                        .on_press(DashboardMessage::UpdateBlockTransition(idx, Some(blanc_core::scene::TransitionType::SlideLeft))),
+                    button(text("Slide R").size(LABEL_SM))
+                        .padding([2.0, 7.0])
+                        .style(if *transition == Some(blanc_core::scene::TransitionType::SlideRight) { primary_button_style } else { subtle_button_style })
+                        .on_press(DashboardMessage::UpdateBlockTransition(idx, Some(blanc_core::scene::TransitionType::SlideRight))),
                 ]
-                .spacing(SPACE_2)
+                .spacing(SPACE_1)
                 .align_y(Alignment::Center);
 
                 let btn_pick_char = button(
@@ -1645,13 +2363,56 @@ impl DashboardState {
                 .spacing(SPACE_2)
                 .align_y(Alignment::Center);
 
+                let sprite_label = match sprite_asset_id {
+                    Some(id) => format!("Sprite Asset: {}", id),
+                    None => "Sprite Asset: Auto-match by character/expression (or click Select Sprite...)".to_string(),
+                };
+                let sprite_row = text(sprite_label)
+                    .size(LABEL_SM)
+                    .color(if sprite_asset_id.is_some() {
+                        iced::Color::from_rgb8(STATUS_SUCCESS.r, STATUS_SUCCESS.g, STATUS_SUCCESS.b)
+                    } else {
+                        iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b)
+                    });
+
+                let thumb_path = sprite_asset_id
+                    .as_deref()
+                    .and_then(&resolve_thumb)
+                    .or_else(|| resolve_thumb(character_id));
+
+                let thumb_box: Element<'a, DashboardMessage> = if let Some(path) = thumb_path {
+                    container(
+                        image(image::Handle::from_path(path))
+                            .width(Length::Fixed(52.0))
+                            .height(Length::Fixed(52.0))
+                            .content_fit(iced::ContentFit::Contain),
+                    )
+                    .width(Length::Fixed(52.0))
+                    .height(Length::Fixed(52.0))
+                    .clip(true)
+                    .style(code_container_style)
+                    .into()
+                } else {
+                    container(icon_user())
+                        .center_x(Length::Fixed(52.0))
+                        .center_y(Length::Fixed(52.0))
+                        .style(code_container_style)
+                        .into()
+                };
+
                 (
                     "Character Sprite",
                     icon_user(),
-                    column![info_row, pos_buttons].spacing(SPACE_2).into(),
+                    row![
+                        thumb_box,
+                        column![info_row, sprite_row, pos_buttons].spacing(SPACE_2).width(Length::Fill),
+                    ]
+                    .spacing(SPACE_3)
+                    .align_y(Alignment::Center)
+                    .into(),
                 )
             }
-            ActionBlock::Dialogue { speaker, text: spoken_text, .. } => {
+            ActionBlock::Dialogue { speaker, text: spoken_text, nameplate_position, .. } => {
                 let speaker_input = text_input("Speaker", speaker)
                     .on_input(move |val| DashboardMessage::UpdateSpeakerName(idx, val))
                     .padding(SPACE_1)
@@ -1671,14 +2432,33 @@ impl DashboardState {
                 .spacing(SPACE_3)
                 .align_y(Alignment::Center);
 
+                let np_pos_btn = |label: &'static str, pos: Option<CharacterPosition>| {
+                    let is_active = *nameplate_position == pos;
+                    button(text(label).size(LABEL_SM))
+                        .padding([2.0, 8.0])
+                        .style(if is_active { primary_button_style } else { secondary_button_style })
+                        .on_press(DashboardMessage::UpdateDialogueNameplatePosition(idx, pos))
+                };
+
+                let nameplate_row = row![
+                    text("Nameplate:")
+                        .size(LABEL_SM)
+                        .color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b)),
+                    np_pos_btn("Default", None),
+                    np_pos_btn("Left", Some(CharacterPosition::Left)),
+                    np_pos_btn("Center", Some(CharacterPosition::Center)),
+                    np_pos_btn("Right", Some(CharacterPosition::Right)),
+                ]
+                .spacing(SPACE_2)
+                .align_y(Alignment::Center);
+
                 (
                     "Dialogue",
                     icon_message(),
-                    inputs_row.into(),
+                    column![inputs_row, nameplate_row].spacing(SPACE_2).into(),
                 )
             }
             ActionBlock::Background { asset_id, transition } => {
-                let trans_name = transition.map(|t| format!("{:?}", t)).unwrap_or_else(|| "Cut".to_string());
                 let display_id = if asset_id.is_empty() { "None (Click to choose)".to_string() } else { asset_id.clone() };
 
                 let btn_pick_bg = button(
@@ -1693,20 +2473,110 @@ impl DashboardState {
                     category: AssetCategory::Background,
                 });
 
-                let content = row![
-                    text(format!("Asset: {}", display_id)).size(BODY_SM).color(iced::Color::from_rgb8(TEXT_PRIMARY.r, TEXT_PRIMARY.g, TEXT_PRIMARY.b)),
-                    text("•").size(LABEL_SM).color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b)),
-                    text(format!("Transition: {}", trans_name)).size(BODY_SM).color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b)),
-                    Space::with_width(Length::Fill),
-                    btn_pick_bg,
+                let thumb_box: Element<'a, DashboardMessage> = if let Some(path) = resolve_thumb(asset_id) {
+                    container(
+                        image(image::Handle::from_path(path))
+                            .width(Length::Fixed(76.0))
+                            .height(Length::Fixed(46.0))
+                            .content_fit(iced::ContentFit::Cover),
+                    )
+                    .width(Length::Fixed(76.0))
+                    .height(Length::Fixed(46.0))
+                    .clip(true)
+                    .style(code_container_style)
+                    .into()
+                } else {
+                    container(icon_image())
+                        .center_x(Length::Fixed(76.0))
+                        .center_y(Length::Fixed(46.0))
+                        .style(code_container_style)
+                        .into()
+                };
+
+                let trans_row = row![
+                    text("Transition:").size(LABEL_SM).color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b)),
+                    button(text("Cut").size(LABEL_SM))
+                        .padding([2.0, 8.0])
+                        .style(if matches!(transition, None | Some(blanc_core::scene::TransitionType::Cut)) { primary_button_style } else { subtle_button_style })
+                        .on_press(DashboardMessage::UpdateBlockTransition(idx, Some(blanc_core::scene::TransitionType::Cut))),
+                    button(text("Fade").size(LABEL_SM))
+                        .padding([2.0, 8.0])
+                        .style(if matches!(transition, Some(blanc_core::scene::TransitionType::Fade | blanc_core::scene::TransitionType::Dissolve)) { primary_button_style } else { subtle_button_style })
+                        .on_press(DashboardMessage::UpdateBlockTransition(idx, Some(blanc_core::scene::TransitionType::Fade))),
                 ]
                 .spacing(SPACE_2)
+                .align_y(Alignment::Center);
+
+                let content = row![
+                    thumb_box,
+                    column![
+                        row![
+                            text(format!("Asset: {}", display_id)).size(BODY_SM).color(iced::Color::from_rgb8(TEXT_PRIMARY.r, TEXT_PRIMARY.g, TEXT_PRIMARY.b)),
+                            Space::with_width(Length::Fill),
+                            btn_pick_bg,
+                        ]
+                        .spacing(SPACE_2)
+                        .align_y(Alignment::Center),
+                        trans_row,
+                    ]
+                    .spacing(SPACE_2)
+                    .width(Length::Fill),
+                ]
+                .spacing(SPACE_3)
                 .align_y(Alignment::Center);
 
                 (
                     "Background",
                     icon_image(),
                     content.into(),
+                )
+            }
+            ActionBlock::VisualEffect { effect, duration } => {
+                use blanc_core::scene::ScreenEffectType;
+                let fx_row = row![
+                    text("Effect:").size(LABEL_SM).color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b)),
+                    button(text("Fade In").size(LABEL_SM))
+                        .padding([2.0, 8.0])
+                        .style(if *effect == ScreenEffectType::FadeIn { primary_button_style } else { subtle_button_style })
+                        .on_press(DashboardMessage::UpdateVisualEffect(idx, ScreenEffectType::FadeIn, *duration)),
+                    button(text("Fade Out").size(LABEL_SM))
+                        .padding([2.0, 8.0])
+                        .style(if *effect == ScreenEffectType::FadeOut { primary_button_style } else { subtle_button_style })
+                        .on_press(DashboardMessage::UpdateVisualEffect(idx, ScreenEffectType::FadeOut, *duration)),
+                    button(text("Flash").size(LABEL_SM))
+                        .padding([2.0, 8.0])
+                        .style(if *effect == ScreenEffectType::FlashWhite { primary_button_style } else { subtle_button_style })
+                        .on_press(DashboardMessage::UpdateVisualEffect(idx, ScreenEffectType::FlashWhite, *duration)),
+                    button(text("Shake").size(LABEL_SM))
+                        .padding([2.0, 8.0])
+                        .style(if *effect == ScreenEffectType::Shake { primary_button_style } else { subtle_button_style })
+                        .on_press(DashboardMessage::UpdateVisualEffect(idx, ScreenEffectType::Shake, *duration)),
+                ]
+                .spacing(SPACE_1)
+                .align_y(Alignment::Center);
+
+                let dur_row = row![
+                    text("Duration:").size(LABEL_SM).color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b)),
+                    button(text("0.3s").size(LABEL_SM))
+                        .padding([2.0, 8.0])
+                        .style(if (*duration - 0.3).abs() < 0.1 { primary_button_style } else { subtle_button_style })
+                        .on_press(DashboardMessage::UpdateVisualEffect(idx, *effect, 0.3)),
+                    button(text("0.6s").size(LABEL_SM))
+                        .padding([2.0, 8.0])
+                        .style(if (*duration - 0.6).abs() < 0.1 { primary_button_style } else { subtle_button_style })
+                        .on_press(DashboardMessage::UpdateVisualEffect(idx, *effect, 0.6)),
+                    button(text("1.0s").size(LABEL_SM))
+                        .padding([2.0, 8.0])
+                        .style(if (*duration - 1.0).abs() < 0.1 { primary_button_style } else { subtle_button_style })
+                        .on_press(DashboardMessage::UpdateVisualEffect(idx, *effect, 1.0)),
+                ]
+                .spacing(SPACE_1)
+                .align_y(Alignment::Center);
+
+                (
+                    "Visual Effect",
+                    icon_film(),
+                    column![fx_row, dur_row].spacing(SPACE_2).into(),
                 )
             }
             ActionBlock::Choice { prompt, options, position } => {
@@ -2022,54 +2892,85 @@ impl DashboardState {
                 let preview_element: Element<'a, DashboardMessage> = if modal.category == AssetCategory::Background
                     || modal.category == AssetCategory::Character
                     || modal.category == AssetCategory::CharacterExpression
+                    || modal.category == AssetCategory::Ui
                 {
                     if full_path.exists() {
+                        let fit = if modal.category == AssetCategory::Background {
+                            iced::ContentFit::Cover
+                        } else {
+                            iced::ContentFit::Contain
+                        };
                         container(
                             image(image::Handle::from_path(&full_path))
-                                .content_fit(iced::ContentFit::Cover)
+                                .content_fit(fit)
                                 .width(Length::Fixed(190.0))
                                 .height(Length::Fixed(110.0)),
                         )
+                        .width(Length::Fixed(190.0))
+                        .height(Length::Fixed(110.0))
+                        .clip(true)
                         .style(code_container_style)
                         .into()
                     } else {
                         container(icon_image())
-                            .width(Length::Fixed(190.0))
-                            .height(Length::Fixed(110.0))
-                            .center_x(Length::Fill)
-                            .center_y(Length::Fill)
+                            .center_x(Length::Fixed(190.0))
+                            .center_y(Length::Fixed(110.0))
                             .style(code_container_style)
                             .into()
                     }
                 } else {
                     container(icon_music())
-                        .width(Length::Fixed(190.0))
-                        .height(Length::Fixed(80.0))
-                        .center_x(Length::Fill)
-                        .center_y(Length::Fill)
+                        .center_x(Length::Fixed(190.0))
+                        .center_y(Length::Fixed(80.0))
                         .style(code_container_style)
+                        .into()
+                };
+
+                let asset_display = if asset.name.chars().count() > 24 {
+                    let truncated: String = asset.name.chars().take(21).collect();
+                    format!("{}...", truncated)
+                } else {
+                    asset.name.clone()
+                };
+
+                let path_display = if asset.relative_path.chars().count() > 18 {
+                    let tail: String = asset.relative_path.chars().rev().take(15).collect::<String>().chars().rev().collect();
+                    format!("...{}", tail)
+                } else {
+                    asset.relative_path.clone()
+                };
+
+                let status_badge: Element<'a, DashboardMessage> = if is_selected {
+                    text("✓ Selected")
+                        .size(LABEL_SM)
+                        .wrapping(text::Wrapping::None)
+                        .color(iced::Color::from_rgb8(ACCENT_PRIMARY.r, ACCENT_PRIMARY.g, ACCENT_PRIMARY.b))
+                        .into()
+                } else {
+                    text(format_bytes(asset.file_size))
+                        .size(LABEL_SM)
+                        .wrapping(text::Wrapping::None)
+                        .color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b))
                         .into()
                 };
 
                 let card_body = column![
                     preview_element,
+                    text(asset_display)
+                        .size(LABEL_MD)
+                        .wrapping(text::Wrapping::None)
+                        .color(iced::Color::from_rgb8(TEXT_PRIMARY.r, TEXT_PRIMARY.g, TEXT_PRIMARY.b)),
                     row![
-                        text(&asset.name)
-                            .size(LABEL_MD)
-                            .color(iced::Color::from_rgb8(TEXT_PRIMARY.r, TEXT_PRIMARY.g, TEXT_PRIMARY.b)),
+                        text(path_display)
+                            .size(LABEL_SM)
+                            .wrapping(text::Wrapping::None)
+                            .color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b)),
                         Space::with_width(Length::Fill),
-                        if is_selected {
-                            text("✓ Selected").size(LABEL_SM).color(iced::Color::from_rgb8(ACCENT_PRIMARY.r, ACCENT_PRIMARY.g, ACCENT_PRIMARY.b))
-                        } else {
-                            text("").size(LABEL_SM)
-                        },
+                        status_badge,
                     ]
                     .align_y(Alignment::Center),
-                    text(format!("{} • {}", &asset.relative_path, format_bytes(asset.file_size)))
-                        .size(LABEL_SM)
-                        .color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b)),
                 ]
-                .spacing(SPACE_2);
+                .spacing(SPACE_1);
 
                 let card_btn = button(card_body)
                     .padding(SPACE_3)
@@ -2091,7 +2992,11 @@ impl DashboardState {
                 cards_col = cards_col.push(current_row);
             }
 
-            scrollable(cards_col).width(Length::Fill).height(Length::Fill).into()
+            container(scrollable(cards_col).width(Length::Fill).height(Length::Fill))
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .clip(true)
+                .into()
         };
 
         // Footer
@@ -2691,21 +3596,37 @@ impl DashboardState {
             self.scenes_list.first().map(|s| s.as_str()).unwrap_or("01_opening")
         );
 
-        let mut scenes_row = row![].spacing(SPACE_2).align_y(Alignment::Center);
-        for scene_name in &self.scenes_list {
-            let is_selected = scene_name == current_start_scene;
-            let btn_scene = button(
-                row![
-                    icon_film(),
-                    text(scene_name).size(LABEL_SM),
-                ]
-                .spacing(SPACE_2)
-                .align_y(Alignment::Center)
-            )
-            .padding([SPACE_2, SPACE_3])
-            .style(if is_selected { primary_button_style } else { secondary_button_style })
-            .on_press(DashboardMessage::UpdateStartingScene(scene_name.clone()));
-            scenes_row = scenes_row.push(btn_scene);
+        let mut scenes_grid = column![].spacing(SPACE_2).width(Length::Fill);
+        for chunk in self.scenes_list.chunks(2) {
+            let mut chunk_row = row![].spacing(SPACE_2).width(Length::Fill);
+            for scene_name in chunk {
+                let is_selected = scene_name == current_start_scene;
+                let display_name = if scene_name.chars().count() > 24 {
+                    let truncated: String = scene_name.chars().take(21).collect();
+                    format!("{}...", truncated)
+                } else {
+                    scene_name.clone()
+                };
+                let btn_scene = button(
+                    row![
+                        icon_film(),
+                        text(display_name)
+                            .size(LABEL_SM)
+                            .wrapping(text::Wrapping::None),
+                    ]
+                    .spacing(SPACE_2)
+                    .align_y(Alignment::Center),
+                )
+                .padding([SPACE_2, SPACE_3])
+                .width(Length::FillPortion(1))
+                .style(if is_selected { primary_button_style } else { secondary_button_style })
+                .on_press(DashboardMessage::UpdateStartingScene(scene_name.clone()));
+                chunk_row = chunk_row.push(btn_scene);
+            }
+            if chunk.len() == 1 {
+                chunk_row = chunk_row.push(Space::with_width(Length::FillPortion(1)));
+            }
+            scenes_grid = scenes_grid.push(chunk_row);
         }
 
         let left_col = column![
@@ -2713,7 +3634,7 @@ impl DashboardState {
             title_text_input,
             Space::with_height(SPACE_1),
             starting_scene_label,
-            scenes_row,
+            scenes_grid,
         ]
         .spacing(SPACE_2)
         .width(Length::FillPortion(1));
@@ -3198,12 +4119,33 @@ impl DashboardState {
         .spacing(SPACE_2)
         .align_y(Alignment::Center);
 
+        let cur_trans = self.system_screens_config.scene_transition_mode;
+        let trans_label = container(
+            text("Scene Transition:").size(LABEL_SM).color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b))
+        )
+        .width(170);
+
+        let trans_row = row![
+            trans_label,
+            button(text("Clean Fade (Hide UI & Chars -> Fade)").size(LABEL_SM))
+                .padding([SPACE_1, SPACE_3])
+                .style(if cur_trans == SceneTransitionMode::CleanFade { primary_button_style } else { secondary_button_style })
+                .on_press(DashboardMessage::UpdateSceneTransitionMode(SceneTransitionMode::CleanFade)),
+            button(text("Direct (Instant)").size(LABEL_SM))
+                .padding([SPACE_1, SPACE_3])
+                .style(if cur_trans == SceneTransitionMode::Direct { primary_button_style } else { secondary_button_style })
+                .on_press(DashboardMessage::UpdateSceneTransitionMode(SceneTransitionMode::Direct)),
+        ]
+        .spacing(SPACE_2)
+        .align_y(Alignment::Center);
+
         let card4 = container(
             column![
                 card4_title,
                 playback_desc,
                 speed_row,
                 delay_row,
+                trans_row,
             ]
             .spacing(SPACE_3),
         )
@@ -3322,6 +4264,1070 @@ impl DashboardState {
         .width(Length::Fill)
         .height(Length::Fill)
         .into()
+    }
+
+    // ==========================================
+    // EXPORT WORKSPACE
+    // ==========================================
+    fn view_export_content<'a>(&'a self, project: &'a Project, project_dir: &'a PathBuf) -> Element<'a, DashboardMessage> {
+        let default_exe_name: String = project
+            .name
+            .chars()
+            .map(|c| if c.is_ascii_alphanumeric() || c == '_' || c == '-' { c } else { '_' })
+            .collect();
+        let default_exe_name = if default_exe_name.trim_matches('_').is_empty() {
+            "BlancGame".to_string()
+        } else {
+            default_exe_name
+        };
+
+        let effective_exe = if self.export_exe_name.trim().is_empty() {
+            default_exe_name.clone()
+        } else {
+            self.export_exe_name.trim().trim_end_matches(".exe").to_string()
+        };
+
+        let effective_output = if self.export_output_dir.trim().is_empty() {
+            project_dir.join("Exports").to_string_lossy().to_string()
+        } else {
+            self.export_output_dir.clone()
+        };
+
+        let title_col = column![
+            text("Export Standalone Game")
+                .size(HEADING_LG)
+                .color(iced::Color::from_rgb8(TEXT_PRIMARY.r, TEXT_PRIMARY.g, TEXT_PRIMARY.b)),
+            text("Package your visual novel into a standalone Windows executable with encrypted game assets.")
+                .size(BODY_SM)
+                .color(iced::Color::from_rgb8(TEXT_SECONDARY.r, TEXT_SECONDARY.g, TEXT_SECONDARY.b)),
+        ]
+        .spacing(SPACE_1);
+
+        let btn_open_folder = button(
+            row![icon_folder(), text("Open Output Folder").size(LABEL_MD)]
+                .spacing(SPACE_2)
+                .align_y(Alignment::Center),
+        )
+        .padding([SPACE_2, SPACE_3])
+        .style(secondary_button_style)
+        .on_press(DashboardMessage::OpenExportFolder);
+
+        let mut btn_export = button(
+            row![
+                icon_play(),
+                text(if self.export_in_progress {
+                    "Exporting..."
+                } else {
+                    "Export Game"
+                })
+                .size(LABEL_MD)
+            ]
+            .spacing(SPACE_2)
+            .align_y(Alignment::Center),
+        )
+        .padding([SPACE_2, SPACE_4])
+        .style(primary_button_style);
+        if !self.export_in_progress {
+            btn_export = btn_export.on_press(DashboardMessage::RunExportGame);
+        }
+
+        let header_row = row![
+            title_col,
+            Space::with_width(Length::Fill),
+            btn_open_folder,
+            btn_export,
+        ]
+        .spacing(SPACE_3)
+        .align_y(Alignment::Center);
+
+        // Card 1: Executable & Output Folder
+        let card1_title = row![
+            icon_sparkle(),
+            text("Executable & Output Location").size(HEADING_SM),
+            Space::with_width(SPACE_2),
+            container(text("WINDOWS BUILD").size(LABEL_SM).color(iced::Color::from_rgb8(ACCENT_PRIMARY.r, ACCENT_PRIMARY.g, ACCENT_PRIMARY.b)))
+                .padding([2.0, 6.0])
+                .style(badge_container_style),
+        ]
+        .spacing(SPACE_2)
+        .align_y(Alignment::Center);
+
+        let exe_input = text_input(&default_exe_name, &self.export_exe_name)
+            .on_input(DashboardMessage::SetExportExeName)
+            .padding([SPACE_2, SPACE_3])
+            .style(input_field_style);
+
+        let output_input = text_input("Select output folder...", &self.export_output_dir)
+            .on_input(DashboardMessage::SetExportOutputDir)
+            .padding([SPACE_2, SPACE_3])
+            .width(Length::Fill)
+            .style(input_field_style);
+
+        let btn_browse = button(
+            row![icon_folder(), text("Browse...").size(LABEL_SM)]
+                .spacing(SPACE_2)
+                .align_y(Alignment::Center),
+        )
+        .padding([SPACE_2, SPACE_3])
+        .style(secondary_button_style)
+        .on_press(DashboardMessage::BrowseExportOutputDir);
+
+        let card1 = container(
+            column![
+                card1_title,
+                row![
+                    column![
+                        text("Executable Name (.exe will be appended):")
+                            .size(LABEL_SM)
+                            .color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b)),
+                        exe_input,
+                        text(format!("Output binary: {}.exe", effective_exe))
+                            .size(BODY_SM)
+                            .color(iced::Color::from_rgb8(TEXT_SECONDARY.r, TEXT_SECONDARY.g, TEXT_SECONDARY.b)),
+                    ]
+                    .spacing(SPACE_2)
+                    .width(Length::FillPortion(1)),
+                    column![
+                        text("Export Output Directory:")
+                            .size(LABEL_SM)
+                            .color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b)),
+                        row![output_input, btn_browse].spacing(SPACE_2).align_y(Alignment::Center),
+                        text(format!("Target path: {}/{}.exe", effective_output, effective_exe))
+                            .size(BODY_SM)
+                            .color(iced::Color::from_rgb8(TEXT_SECONDARY.r, TEXT_SECONDARY.g, TEXT_SECONDARY.b)),
+                    ]
+                    .spacing(SPACE_2)
+                    .width(Length::FillPortion(2)),
+                ]
+                .spacing(SPACE_5),
+            ]
+            .spacing(SPACE_4),
+        )
+        .padding(SPACE_5)
+        .width(Length::Fill)
+        .style(card_container_style);
+
+        // Card 2: Packaging & Security Mode
+        let option_title_color = |selected: bool| {
+            if selected {
+                iced::Color::WHITE
+            } else {
+                iced::Color::from_rgb8(TEXT_PRIMARY.r, TEXT_PRIMARY.g, TEXT_PRIMARY.b)
+            }
+        };
+        let option_desc_color = |selected: bool| {
+            if selected {
+                iced::Color::from_rgba(1.0, 1.0, 1.0, 0.88)
+            } else {
+                iced::Color::from_rgb8(TEXT_SECONDARY.r, TEXT_SECONDARY.g, TEXT_SECONDARY.b)
+            }
+        };
+
+        let btn_packed = button(
+            column![
+                text("Encrypted .bpack Archive (Recommended)")
+                    .size(LABEL_MD)
+                    .color(option_title_color(self.export_packed)),
+                text("Packs all scenes, scripts, config, and assets into a single encrypted game.bpack file.")
+                    .size(BODY_SM)
+                    .color(option_desc_color(self.export_packed)),
+            ]
+            .spacing(SPACE_1),
+        )
+        .padding(SPACE_3)
+        .width(Length::FillPortion(1))
+        .style(if self.export_packed { primary_button_style } else { secondary_button_style })
+        .on_press(DashboardMessage::SetExportPacked(true));
+
+        let btn_loose = button(
+            column![
+                text("Loose Folder (GameData/)")
+                    .size(LABEL_MD)
+                    .color(option_title_color(!self.export_packed)),
+                text("Copies project files into a readable GameData/ folder next to the executable for debugging/modding.")
+                    .size(BODY_SM)
+                    .color(option_desc_color(!self.export_packed)),
+            ]
+            .spacing(SPACE_1),
+        )
+        .padding(SPACE_3)
+        .width(Length::FillPortion(1))
+        .style(if !self.export_packed { primary_button_style } else { secondary_button_style })
+        .on_press(DashboardMessage::SetExportPacked(false));
+
+        let card2 = container(
+            column![
+                row![
+                    text("Packaging & Asset Protection").size(HEADING_SM),
+                    Space::with_width(SPACE_2),
+                    container(text("PROTECTION").size(LABEL_SM).color(iced::Color::from_rgb8(ACCENT_PRIMARY.r, ACCENT_PRIMARY.g, ACCENT_PRIMARY.b)))
+                        .padding([2.0, 6.0])
+                        .style(badge_container_style),
+                ]
+                .spacing(SPACE_2)
+                .align_y(Alignment::Center),
+                row![btn_packed, btn_loose].spacing(SPACE_3).width(Length::Fill),
+            ]
+            .spacing(SPACE_3),
+        )
+        .padding(SPACE_4)
+        .width(Length::Fill)
+        .style(card_container_style);
+
+        // Card 3: Distribution Type (Portable vs Windows Installer)
+        let is_portable_build = self.export_build_kind == ExportBuildKind::Portable;
+        let btn_dist_portable = button(
+            column![
+                text("Portable Build (No Install Required)")
+                    .size(LABEL_MD)
+                    .color(option_title_color(is_portable_build)),
+                text("Outputs ready-to-play Game.exe + game.bpack. Players extract and run directly.")
+                    .size(BODY_SM)
+                    .color(option_desc_color(is_portable_build)),
+            ]
+            .spacing(SPACE_1),
+        )
+        .padding(SPACE_3)
+        .width(Length::FillPortion(1))
+        .style(if is_portable_build { primary_button_style } else { secondary_button_style })
+        .on_press(DashboardMessage::SetExportBuildKind(ExportBuildKind::Portable));
+
+        let btn_dist_installer = button(
+            column![
+                text("Windows Installer (Setup.exe Wizard)")
+                    .size(LABEL_MD)
+                    .color(option_title_color(!is_portable_build)),
+                text("Packages a standalone Setup.exe wizard with install folder, shortcuts, and Uninstaller.")
+                    .size(BODY_SM)
+                    .color(option_desc_color(!is_portable_build)),
+            ]
+            .spacing(SPACE_1),
+        )
+        .padding(SPACE_3)
+        .width(Length::FillPortion(1))
+        .style(if !is_portable_build { primary_button_style } else { secondary_button_style })
+        .on_press(DashboardMessage::SetExportBuildKind(ExportBuildKind::Installer));
+
+        let card_dist = container(
+            column![
+                row![
+                    text("Distribution Type").size(HEADING_SM),
+                    Space::with_width(SPACE_2),
+                    container(text("PORTABLE / INSTALLER").size(LABEL_SM).color(iced::Color::from_rgb8(ACCENT_PRIMARY.r, ACCENT_PRIMARY.g, ACCENT_PRIMARY.b)))
+                        .padding([2.0, 6.0])
+                        .style(badge_container_style),
+                ]
+                .spacing(SPACE_2)
+                .align_y(Alignment::Center),
+                row![btn_dist_portable, btn_dist_installer].spacing(SPACE_3).width(Length::Fill),
+            ]
+            .spacing(SPACE_3),
+        )
+        .padding(SPACE_4)
+        .width(Length::Fill)
+        .style(card_container_style);
+
+        // Card 3b: Save Data Mode (Portable vs AppData)
+        let is_portable = self.export_save_mode == ExportSaveMode::Portable;
+        let btn_portable = button(
+            column![
+                text("Portable (Saves/ next to .exe)")
+                    .size(LABEL_MD)
+                    .color(option_title_color(is_portable)),
+                text("Saves stay in Saves/ beside the game executable.")
+                    .size(BODY_SM)
+                    .color(option_desc_color(is_portable)),
+            ]
+            .spacing(SPACE_1),
+        )
+        .padding(SPACE_3)
+        .width(Length::FillPortion(1))
+        .style(if is_portable { primary_button_style } else { secondary_button_style })
+        .on_press(DashboardMessage::SetExportSaveMode(ExportSaveMode::Portable));
+
+        let btn_appdata = button(
+            column![
+                text("System AppData (%APPDATA%/BlancGames)")
+                    .size(LABEL_MD)
+                    .color(option_title_color(!is_portable)),
+                text("Stores saves in the Windows user profile folder (automatically used by Installer).")
+                    .size(BODY_SM)
+                    .color(option_desc_color(!is_portable)),
+            ]
+            .spacing(SPACE_1),
+        )
+        .padding(SPACE_3)
+        .width(Length::FillPortion(1))
+        .style(if !is_portable { primary_button_style } else { secondary_button_style })
+        .on_press(DashboardMessage::SetExportSaveMode(ExportSaveMode::AppData));
+
+        let card3 = container(
+            column![
+                text("Save Data Location").size(HEADING_SM),
+                row![btn_portable, btn_appdata].spacing(SPACE_3).width(Length::Fill),
+            ]
+            .spacing(SPACE_3),
+        )
+        .padding(SPACE_4)
+        .width(Length::Fill)
+        .style(card_container_style);
+
+        // Card 3c: Installer Wizard Customization (when Installer is selected)
+        let card_installer_opt: Option<Element<'a, DashboardMessage>> = if !is_portable_build {
+            let toggle_pill = |lbl: &'static str, active: bool, msg: DashboardMessage| {
+                button(text(lbl).size(LABEL_SM))
+                    .padding([SPACE_1, SPACE_3])
+                    .style(if active { primary_button_style } else { secondary_button_style })
+                    .on_press(msg)
+            };
+
+            Some(
+                container(
+                    column![
+                        row![
+                            text("Setup Wizard Customization").size(HEADING_SM),
+                            Space::with_width(SPACE_2),
+                            container(text("SETUP.EXE").size(LABEL_SM).color(iced::Color::from_rgb8(ACCENT_PRIMARY.r, ACCENT_PRIMARY.g, ACCENT_PRIMARY.b)))
+                                .padding([2.0, 6.0])
+                                .style(badge_container_style),
+                        ]
+                        .spacing(SPACE_2)
+                        .align_y(Alignment::Center),
+                        row![
+                            column![
+                                text("Version:").size(LABEL_SM).color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b)),
+                                text_input("1.0.0", &self.installer_version)
+                                    .on_input(DashboardMessage::SetInstallerVersion)
+                                    .padding([SPACE_2, SPACE_3])
+                                    .style(input_field_style),
+                            ]
+                            .spacing(SPACE_1)
+                            .width(Length::FillPortion(1)),
+                            column![
+                                text("Publisher / Studio:").size(LABEL_SM).color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b)),
+                                text_input(&project.author, &self.installer_publisher)
+                                    .on_input(DashboardMessage::SetInstallerPublisher)
+                                    .padding([SPACE_2, SPACE_3])
+                                    .style(input_field_style),
+                            ]
+                            .spacing(SPACE_1)
+                            .width(Length::FillPortion(2)),
+                        ]
+                        .spacing(SPACE_3),
+                        column![
+                            text("Welcome Message:").size(LABEL_SM).color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b)),
+                            text_input("Welcome! Click Next to install...", &self.installer_welcome_text)
+                                .on_input(DashboardMessage::SetInstallerWelcome)
+                                .padding([SPACE_2, SPACE_3])
+                                .style(input_field_style),
+                        ]
+                        .spacing(SPACE_1),
+                        {
+                            let mut lang_row = row(InstallerLang::ALL.iter().map(|&lang| {
+                                let code = lang.code().to_string();
+                                let has_text = self
+                                    .installer_policy_texts
+                                    .get(&code)
+                                    .is_some_and(|t| !t.trim().is_empty());
+                                let label = if has_text {
+                                    format!("{} •", lang.short_label())
+                                } else {
+                                    lang.short_label().to_string()
+                                };
+                                let active = self.installer_policy_lang == code;
+                                button(text(label).size(LABEL_SM))
+                                    .padding([SPACE_1, SPACE_3])
+                                    .style(if active { primary_button_style } else { subtle_button_style })
+                                    .on_press(DashboardMessage::SelectInstallerPolicyLang(code))
+                                    .into()
+                            }))
+                            .spacing(SPACE_1)
+                            .align_y(Alignment::Center);
+
+                            for custom in &self.installer_custom_policy_langs {
+                                let code = custom.code.clone();
+                                let has_text = self
+                                    .installer_policy_texts
+                                    .get(&code)
+                                    .is_some_and(|t| !t.trim().is_empty());
+                                let label = if has_text {
+                                    format!("{} •", code.to_ascii_uppercase())
+                                } else {
+                                    code.to_ascii_uppercase()
+                                };
+                                let active = self.installer_policy_lang == code;
+                                lang_row = lang_row.push(
+                                    row![
+                                        button(text(label).size(LABEL_SM))
+                                            .padding([SPACE_1, SPACE_2])
+                                            .style(if active { primary_button_style } else { subtle_button_style })
+                                            .on_press(DashboardMessage::SelectInstallerPolicyLang(code.clone())),
+                                        button(text("×").size(LABEL_SM))
+                                            .padding([SPACE_1, SPACE_1])
+                                            .style(subtle_button_style)
+                                            .on_press(DashboardMessage::RemoveCustomPolicyLang(code)),
+                                    ]
+                                    .spacing(2.0),
+                                );
+                            }
+
+                            lang_row = lang_row.push(
+                                button(text("+").size(LABEL_SM))
+                                    .padding([SPACE_1, SPACE_3])
+                                    .style(if self.installer_add_lang_open {
+                                        primary_button_style
+                                    } else {
+                                        subtle_button_style
+                                    })
+                                    .on_press(DashboardMessage::ToggleAddInstallerPolicyLang),
+                            );
+
+                            column![
+                                row![
+                                    text("Terms & Privacy Policy (per language — empty falls back to EN):").size(LABEL_SM).color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b)),
+                                    Space::with_width(Length::Fill),
+                                    button(text("Reset Defaults").size(LABEL_SM))
+                                        .padding([SPACE_1, SPACE_2])
+                                        .style(subtle_button_style)
+                                        .on_press(DashboardMessage::ResetInstallerPolicyDefault),
+                                ]
+                                .align_y(Alignment::Center),
+                                lang_row,
+                                if self.installer_add_lang_open {
+                                    Element::from(
+                                        container(
+                                            row![
+                                                text_input("Code (e.g. ko, fr)", &self.installer_new_lang_code)
+                                                    .on_input(DashboardMessage::SetNewPolicyLangCode)
+                                                    .padding([SPACE_1, SPACE_2])
+                                                    .width(Length::Fixed(130.0))
+                                                    .style(input_field_style),
+                                                text_input("Display Name (e.g. 한국어 (Korean))", &self.installer_new_lang_name)
+                                                    .on_input(DashboardMessage::SetNewPolicyLangName)
+                                                    .padding([SPACE_1, SPACE_2])
+                                                    .width(Length::Fill)
+                                                    .style(input_field_style),
+                                                button(text("Add").size(LABEL_SM))
+                                                    .padding([SPACE_1, SPACE_3])
+                                                    .style(primary_button_style)
+                                                    .on_press(DashboardMessage::ConfirmAddInstallerPolicyLang),
+                                                button(text("Cancel").size(LABEL_SM))
+                                                    .padding([SPACE_1, SPACE_2])
+                                                    .style(subtle_button_style)
+                                                    .on_press(DashboardMessage::ToggleAddInstallerPolicyLang),
+                                            ]
+                                            .spacing(SPACE_2)
+                                            .align_y(Alignment::Center),
+                                        )
+                                        .padding(SPACE_2)
+                                        .style(badge_container_style),
+                                    )
+                                } else {
+                                    Space::with_height(0.0).into()
+                                },
+                                text_editor(&self.installer_policy_editor)
+                                    .on_action(DashboardMessage::InstallerPolicyEditorAction)
+                                    .height(Length::Fixed(160.0))
+                                    .style(text_editor_style),
+                                text("Placeholders {GAME_TITLE} and {PUBLISHER} are replaced automatically. Leave all languages blank to skip.")
+                                    .size(LABEL_SM)
+                                    .color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b)),
+                            ]
+                            .spacing(SPACE_1)
+                        },
+                        row![
+                            toggle_pill(
+                                if self.installer_include_logo { "Logo: ON" } else { "Logo: OFF" },
+                                self.installer_include_logo,
+                                DashboardMessage::SetInstallerIncludeLogo(!self.installer_include_logo),
+                            ),
+                            toggle_pill(
+                                if self.installer_include_banner { "Title Banner: ON" } else { "Title Banner: OFF" },
+                                self.installer_include_banner,
+                                DashboardMessage::SetInstallerIncludeBanner(!self.installer_include_banner),
+                            ),
+                            toggle_pill(
+                                if self.installer_desktop_shortcut { "Desktop Shortcut: ON" } else { "Desktop Shortcut: OFF" },
+                                self.installer_desktop_shortcut,
+                                DashboardMessage::SetInstallerDesktopShortcut(!self.installer_desktop_shortcut),
+                            ),
+                            toggle_pill(
+                                if self.installer_start_menu_shortcut { "Start Menu: ON" } else { "Start Menu: OFF" },
+                                self.installer_start_menu_shortcut,
+                                DashboardMessage::SetInstallerStartMenuShortcut(!self.installer_start_menu_shortcut),
+                            ),
+                        ]
+                        .spacing(SPACE_2),
+                        row![
+                            text(match &self.installer_custom_banner_path {
+                                Some(p) => format!(
+                                    "Wizard Sidebar Photo: {}",
+                                    p.file_name()
+                                        .map(|n| n.to_string_lossy().to_string())
+                                        .unwrap_or_else(|| "Custom Image".to_string())
+                                ),
+                                None => "Wizard Sidebar Photo: Title Screen Background (Default)".to_string(),
+                            })
+                            .size(LABEL_SM)
+                            .color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b)),
+                            Space::with_width(Length::Fill),
+                            button(text("Choose Image...").size(LABEL_SM))
+                                .padding([SPACE_1, SPACE_2])
+                                .style(subtle_button_style)
+                                .on_press(DashboardMessage::PickInstallerCustomBanner),
+                            if self.installer_custom_banner_path.is_some() {
+                                Element::from(
+                                    button(text("Use Default").size(LABEL_SM))
+                                        .padding([SPACE_1, SPACE_2])
+                                        .style(subtle_button_style)
+                                        .on_press(DashboardMessage::ClearInstallerCustomBanner),
+                                )
+                            } else {
+                                Space::with_width(0.0).into()
+                            },
+                        ]
+                        .spacing(SPACE_2)
+                        .align_y(Alignment::Center),
+                    ]
+                    .spacing(SPACE_3),
+                )
+                .padding(SPACE_4)
+                .width(Length::Fill)
+                .style(card_container_style)
+                .into(),
+            )
+        } else {
+            None
+        };
+
+        // Card 4: Pre-Export Checklist
+        let runtime_exe_found = std::env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(|dir| dir.join("blanc_runtime.exe").exists()))
+            .unwrap_or(false);
+        let installer_exe_found = std::env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(|dir| dir.join("blanc_installer.exe").exists()))
+            .unwrap_or(false);
+
+        let check_line = |ok: bool, label: String| {
+            let status_txt = if ok { "READY" } else { "MISSING" };
+            let status_col = if ok {
+                iced::Color::from_rgb8(110, 220, 140)
+            } else {
+                iced::Color::from_rgb8(240, 120, 120)
+            };
+            row![
+                text(status_txt).size(LABEL_SM).color(status_col),
+                text(label)
+                    .size(BODY_SM)
+                    .color(iced::Color::from_rgb8(TEXT_PRIMARY.r, TEXT_PRIMARY.g, TEXT_PRIMARY.b)),
+            ]
+            .spacing(SPACE_3)
+            .align_y(Alignment::Center)
+        };
+
+        let card4 = container(
+            column![
+                text("Pre-Export Checklist").size(HEADING_SM),
+                check_line(!self.scenes_list.is_empty(), format!("Scenes available: {} scene(s)", self.scenes_list.len())),
+                check_line(true, format!("Registered assets: {} asset(s)", project.assets.assets.len())),
+                check_line(
+                    runtime_exe_found,
+                    if runtime_exe_found {
+                        "Runtime template (blanc_runtime.exe) found next to editor.".to_string()
+                    } else {
+                        "Runtime template (blanc_runtime.exe) not found next to editor — build blanc_runtime first.".to_string()
+                    }
+                ),
+                check_line(
+                    is_portable_build || installer_exe_found,
+                    if is_portable_build {
+                        "Installer stub not needed for Portable build.".to_string()
+                    } else if installer_exe_found {
+                        "Installer wizard stub (blanc_installer.exe) found next to editor.".to_string()
+                    } else {
+                        "Installer wizard stub (blanc_installer.exe) not found — build blanc_installer first.".to_string()
+                    }
+                ),
+            ]
+            .spacing(SPACE_2),
+        )
+        .padding(SPACE_4)
+        .width(Length::Fill)
+        .style(card_container_style);
+
+        let mut content_col = column![header_row, card1, card2, card_dist, card3].spacing(SPACE_4);
+        if let Some(card_inst) = card_installer_opt {
+            content_col = content_col.push(card_inst);
+        }
+        content_col = content_col.push(card4);
+
+        let centered_content = container(content_col)
+            .max_width(1120.0)
+            .width(Length::Fill);
+
+        let sticky_footer_content: Element<'_, DashboardMessage> = if self.export_in_progress {
+            let pct = (self.export_progress * 100.0).clamp(0.0, 100.0).round() as u32;
+            column![
+                row![
+                    text(&self.export_stage_label)
+                        .size(BODY_SM)
+                        .color(iced::Color::from_rgb8(TEXT_PRIMARY.r, TEXT_PRIMARY.g, TEXT_PRIMARY.b)),
+                    Space::with_width(Length::Fill),
+                    text(format!("{}%", pct))
+                        .size(LABEL_SM)
+                        .color(iced::Color::from_rgb8(ACCENT_PRIMARY.r, ACCENT_PRIMARY.g, ACCENT_PRIMARY.b)),
+                ]
+                .align_y(Alignment::Center),
+                progress_bar(0.0..=1.0, self.export_progress)
+                    .width(Length::Fill)
+                    .height(Length::Fixed(8.0)),
+            ]
+            .spacing(SPACE_2)
+            .into()
+        } else if let Some(msg) = &self.export_status_message {
+            let is_err = msg.starts_with("Export failed");
+            let msg_color = if is_err {
+                iced::Color::from_rgb8(248, 113, 113)
+            } else {
+                iced::Color::from_rgb8(110, 220, 140)
+            };
+            row![
+                text(msg).size(BODY_SM).color(msg_color),
+                Space::with_width(Length::Fill),
+                button(text("Open Folder").size(LABEL_SM))
+                    .padding([SPACE_1, SPACE_3])
+                    .style(subtle_button_style)
+                    .on_press(DashboardMessage::OpenExportFolder),
+            ]
+            .spacing(SPACE_3)
+            .align_y(Alignment::Center)
+            .into()
+        } else {
+            let exe_base = if self.export_exe_name.trim().is_empty() {
+                project.name.replace(' ', "_")
+            } else {
+                self.export_exe_name.trim().to_string()
+            };
+            let target_label = if is_portable_build {
+                format!("{}.exe (Portable)", exe_base)
+            } else {
+                format!("{}_Setup.exe (Windows Installer)", exe_base)
+            };
+            row![
+                text(format!("Ready to export: {}", target_label))
+                    .size(BODY_SM)
+                    .color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b)),
+                Space::with_width(Length::Fill),
+            ]
+            .align_y(Alignment::Center)
+            .into()
+        };
+
+        let sticky_footer = container(sticky_footer_content)
+            .width(Length::Fill)
+            .padding([SPACE_3, SPACE_6])
+            .style(sidebar_container_style);
+
+        column![
+            container(
+                scrollable(
+                    container(centered_content)
+                        .width(Length::Fill)
+                        .padding([SPACE_4, SPACE_6])
+                        .center_x(Length::Fill),
+                )
+                .width(Length::Fill)
+                .height(Length::Fill),
+            )
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .clip(true),
+            sticky_footer,
+        ]
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .into()
+    }
+
+    // ==========================================
+    // LOCALIZATION TAB
+    // ==========================================
+    fn view_localization_content(&self) -> Element<'_, DashboardMessage> {
+        let total_items = self.locale_items.len().max(1);
+        let selected_key = self.locale_selected_code.to_ascii_lowercase();
+        let active_table = self.locale_tables.get(&selected_key);
+
+        let header = container(
+            row![
+                column![
+                    text("Localization & Multi-Language")
+                        .size(HEADING_MD)
+                        .color(iced::Color::from_rgb8(TEXT_PRIMARY.r, TEXT_PRIMARY.g, TEXT_PRIMARY.b)),
+                    text("Add any number of languages for your game. Translate UI labels, character names, and scene scripts.")
+                        .size(BODY_SM)
+                        .color(iced::Color::from_rgb8(TEXT_SECONDARY.r, TEXT_SECONDARY.g, TEXT_SECONDARY.b)),
+                ]
+                .spacing(SPACE_1)
+                .width(Length::Fill),
+                row![
+                    button(text("Sync Strings").size(LABEL_SM))
+                        .padding([SPACE_2, SPACE_3])
+                        .style(secondary_button_style)
+                        .on_press(DashboardMessage::LocaleSyncFromProject),
+                    button(text("Export CSV").size(LABEL_SM))
+                        .padding([SPACE_2, SPACE_3])
+                        .style(secondary_button_style)
+                        .on_press(DashboardMessage::LocaleExportCsv),
+                    button(text("Import CSV").size(LABEL_SM))
+                        .padding([SPACE_2, SPACE_3])
+                        .style(secondary_button_style)
+                        .on_press(DashboardMessage::LocaleImportCsv),
+                    button(text("Save Locales").size(LABEL_SM))
+                        .padding([SPACE_2, SPACE_3])
+                        .style(primary_button_style)
+                        .on_press(DashboardMessage::LocaleSaveAll),
+                ]
+                .spacing(SPACE_2)
+                .align_y(Alignment::Center),
+            ]
+            .spacing(SPACE_4)
+            .align_y(Alignment::Center),
+        )
+        .padding(SPACE_4)
+        .width(Length::Fill)
+        .style(card_container_style);
+
+        // Left pane: Default language + Add language + Languages list
+        let default_lang_card = container(
+            column![
+                text("Source / Default Language")
+                    .size(LABEL_MD)
+                    .color(iced::Color::from_rgb8(TEXT_PRIMARY.r, TEXT_PRIMARY.g, TEXT_PRIMARY.b)),
+                row![
+                    text_input("Code (e.g. en)", &self.locale_default_code)
+                        .on_input(DashboardMessage::LocaleDefaultCodeChanged)
+                        .size(BODY_SM)
+                        .padding(SPACE_2)
+                        .width(Length::Fixed(80.0))
+                        .style(input_field_style),
+                    text_input("Display Name", &self.locale_default_name)
+                        .on_input(DashboardMessage::LocaleDefaultNameChanged)
+                        .size(BODY_SM)
+                        .padding(SPACE_2)
+                        .width(Length::Fill)
+                        .style(input_field_style),
+                ]
+                .spacing(SPACE_2),
+                button(text("Update Default").size(LABEL_SM))
+                    .padding([SPACE_1, SPACE_3])
+                    .style(secondary_button_style)
+                    .on_press(DashboardMessage::LocaleSaveDefaultLanguage),
+            ]
+            .spacing(SPACE_2),
+        )
+        .padding(SPACE_3)
+        .width(Length::Fill)
+        .style(card_container_style);
+
+        let add_lang_card = container(
+            column![
+                text("Add Language")
+                    .size(LABEL_MD)
+                    .color(iced::Color::from_rgb8(TEXT_PRIMARY.r, TEXT_PRIMARY.g, TEXT_PRIMARY.b)),
+                row![
+                    text_input("Code (id, ja...)", &self.locale_new_code)
+                        .on_input(DashboardMessage::LocaleNewCodeChanged)
+                        .size(BODY_SM)
+                        .padding(SPACE_2)
+                        .width(Length::Fixed(95.0))
+                        .style(input_field_style),
+                    text_input("Name (e.g. 日本語)", &self.locale_new_name)
+                        .on_input(DashboardMessage::LocaleNewNameChanged)
+                        .size(BODY_SM)
+                        .padding(SPACE_2)
+                        .width(Length::Fill)
+                        .style(input_field_style),
+                ]
+                .spacing(SPACE_2),
+                button(text("+ Add Language").size(LABEL_SM))
+                    .padding([SPACE_2, SPACE_3])
+                    .width(Length::Fill)
+                    .style(primary_button_style)
+                    .on_press(DashboardMessage::LocaleAddLanguage),
+            ]
+            .spacing(SPACE_2),
+        )
+        .padding(SPACE_3)
+        .width(Length::Fill)
+        .style(card_container_style);
+
+        let mut lang_list_col = column![].spacing(SPACE_2).width(Length::Fill);
+        for lang in self.locale_manifest.all_languages() {
+            let is_default = lang
+                .code
+                .eq_ignore_ascii_case(&self.locale_manifest.default_language.code);
+            let is_selected = lang.code.eq_ignore_ascii_case(&self.locale_selected_code);
+            let translated_count = self
+                .locale_tables
+                .get(&lang.code.to_ascii_lowercase())
+                .map(|tbl| {
+                    self.locale_items
+                        .iter()
+                        .filter(|it| tbl.entries.get(&it.key).map(|v| !v.is_empty()).unwrap_or(false))
+                        .count()
+                })
+                .unwrap_or(0);
+            let pct = (translated_count * 100) / total_items;
+
+            let info_col = column![
+                text(format!(
+                    "{} ({}){}",
+                    lang.display_name,
+                    lang.code,
+                    if is_default { " • Default" } else { "" }
+                ))
+                .size(LABEL_MD)
+                .color(iced::Color::from_rgb8(TEXT_PRIMARY.r, TEXT_PRIMARY.g, TEXT_PRIMARY.b)),
+                text(format!(
+                    "{} / {} translated ({}%)",
+                    translated_count,
+                    self.locale_items.len(),
+                    pct
+                ))
+                .size(LABEL_SM)
+                .color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b)),
+            ]
+            .spacing(2)
+            .width(Length::Fill);
+
+            let mut card_row = row![
+                button(info_col)
+                    .padding(SPACE_2)
+                    .width(Length::Fill)
+                    .style(sidebar_button_style(is_selected))
+                    .on_press(DashboardMessage::LocaleSelectLanguage(lang.code.clone())),
+            ]
+            .spacing(SPACE_1)
+            .align_y(Alignment::Center);
+
+            if !is_default {
+                card_row = card_row.push(
+                    button(text("×").size(LABEL_MD))
+                        .padding([SPACE_2, SPACE_3])
+                        .style(danger_icon_button_style)
+                        .on_press(DashboardMessage::LocaleRemoveLanguage(lang.code.clone())),
+                );
+            }
+
+            lang_list_col = lang_list_col.push(card_row);
+        }
+
+        let left_pane = column![
+            default_lang_card,
+            add_lang_card,
+            container(
+                column![
+                    text("Configured Languages")
+                        .size(LABEL_MD)
+                        .color(iced::Color::from_rgb8(TEXT_PRIMARY.r, TEXT_PRIMARY.g, TEXT_PRIMARY.b)),
+                    scrollable(lang_list_col).height(Length::Fill),
+                ]
+                .spacing(SPACE_2)
+                .height(Length::Fill),
+            )
+            .padding(SPACE_3)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .style(card_container_style),
+        ]
+        .spacing(SPACE_3)
+        .width(Length::Fixed(320.0))
+        .height(Length::Fill);
+
+        // Right pane: Filters + Translation table
+        let mut scopes = vec![
+            LocaleFilterScope::All,
+            LocaleFilterScope::Ui,
+            LocaleFilterScope::Speaker,
+        ];
+        let mut seen_scenes: Vec<String> = Vec::new();
+        for item in &self.locale_items {
+            if let LocaleCategory::Scene(name) = &item.category {
+                if !seen_scenes.contains(name) {
+                    seen_scenes.push(name.clone());
+                }
+            }
+        }
+        for s in seen_scenes {
+            scopes.push(LocaleFilterScope::Scene(s));
+        }
+
+        let filter_bar = row![
+            text_input("Search key, source text, or translation...", &self.locale_search_query)
+                .on_input(DashboardMessage::LocaleSearchChanged)
+                .size(BODY_SM)
+                .padding(SPACE_2)
+                .width(Length::Fill)
+                .style(input_field_style),
+            pick_list(
+                scopes,
+                Some(self.locale_filter_scope.clone()),
+                DashboardMessage::LocaleFilterScopeChanged,
+            )
+            .width(Length::Fixed(320.0))
+            .padding([6, 10]),
+            checkbox("Untranslated Only", self.locale_untranslated_only)
+                .on_toggle(DashboardMessage::LocaleToggleUntranslatedOnly)
+                .size(16)
+                .text_size(LABEL_SM),
+        ]
+        .spacing(SPACE_3)
+        .align_y(Alignment::Center)
+        .width(Length::Fill);
+
+        let query = self.locale_search_query.trim().to_ascii_lowercase();
+        let mut rows_col = column![].spacing(SPACE_2).width(Length::Fill);
+        let mut shown_count = 0usize;
+
+        for item in &self.locale_items {
+            let scope_ok = match &self.locale_filter_scope {
+                LocaleFilterScope::All => true,
+                LocaleFilterScope::Ui => item.category == LocaleCategory::Ui,
+                LocaleFilterScope::Speaker => item.category == LocaleCategory::Speaker,
+                LocaleFilterScope::Scene(name) => {
+                    matches!(&item.category, LocaleCategory::Scene(s) if s == name)
+                }
+            };
+            if !scope_ok {
+                continue;
+            }
+
+            let trans_val = active_table
+                .and_then(|t| t.entries.get(&item.key))
+                .map(String::as_str)
+                .unwrap_or("");
+
+            if self.locale_untranslated_only && !trans_val.is_empty() {
+                continue;
+            }
+
+            if !query.is_empty() {
+                let matches = item.key.to_ascii_lowercase().contains(&query)
+                    || item.source_text.to_ascii_lowercase().contains(&query)
+                    || trans_val.to_ascii_lowercase().contains(&query)
+                    || item.context_label.to_ascii_lowercase().contains(&query);
+                if !matches {
+                    continue;
+                }
+            }
+
+            shown_count += 1;
+            let key_clone = item.key.clone();
+            let row_card = container(
+                column![
+                    row![
+                        container(
+                            text(&item.context_label)
+                                .size(LABEL_SM)
+                                .color(iced::Color::from_rgb8(ACCENT_PRIMARY.r, ACCENT_PRIMARY.g, ACCENT_PRIMARY.b)),
+                        )
+                        .padding([2, 8])
+                        .style(badge_container_style),
+                        text(&item.key)
+                            .size(11)
+                            .color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b)),
+                    ]
+                    .spacing(SPACE_2)
+                    .align_y(Alignment::Center),
+                    row![
+                        container(
+                            text(&item.source_text)
+                                .size(BODY_SM)
+                                .color(iced::Color::from_rgb8(TEXT_SECONDARY.r, TEXT_SECONDARY.g, TEXT_SECONDARY.b)),
+                        )
+                        .padding(SPACE_2)
+                        .width(Length::FillPortion(1))
+                        .style(code_container_style),
+                        text_input("Translation (empty = fallback to source)...", trans_val)
+                            .on_input(move |v| DashboardMessage::LocaleTranslationChanged(key_clone.clone(), v))
+                            .size(BODY_SM)
+                            .padding(SPACE_2)
+                            .width(Length::FillPortion(1))
+                            .style(input_field_style),
+                    ]
+                    .spacing(SPACE_3)
+                    .align_y(Alignment::Start),
+                ]
+                .spacing(SPACE_2),
+            )
+            .padding(SPACE_3)
+            .width(Length::Fill)
+            .style(card_container_style);
+
+            rows_col = rows_col.push(row_card);
+        }
+
+        if shown_count == 0 {
+            rows_col = rows_col.push(
+                container(
+                    text("No strings match the current filter.")
+                        .size(BODY_SM)
+                        .color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b)),
+                )
+                .padding(SPACE_5)
+                .width(Length::Fill)
+                .center_x(Length::Fill),
+            );
+        }
+
+        let right_pane = container(
+            column![
+                row![
+                    text(format!("Editing Language: {}", self.locale_selected_code))
+                        .size(LABEL_MD)
+                        .color(iced::Color::from_rgb8(TEXT_PRIMARY.r, TEXT_PRIMARY.g, TEXT_PRIMARY.b)),
+                    Space::new(Length::Fill, Length::Shrink),
+                    text(format!("Showing {} string(s)", shown_count))
+                        .size(LABEL_SM)
+                        .color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b)),
+                ]
+                .align_y(Alignment::Center)
+                .width(Length::Fill),
+                filter_bar,
+                scrollable(rows_col).height(Length::Fill).width(Length::Fill),
+            ]
+            .spacing(SPACE_3)
+            .height(Length::Fill)
+            .width(Length::Fill),
+        )
+        .padding(SPACE_3)
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .style(card_container_style);
+
+        let mut root = column![header].spacing(SPACE_3).padding(SPACE_4).height(Length::Fill);
+        if let Some(status) = &self.locale_status_message {
+            root = root.push(
+                container(
+                    text(status)
+                        .size(BODY_SM)
+                        .color(iced::Color::from_rgb8(TEXT_PRIMARY.r, TEXT_PRIMARY.g, TEXT_PRIMARY.b)),
+                )
+                .padding([SPACE_2, SPACE_3])
+                .width(Length::Fill)
+                .style(callout_container_style),
+            );
+        }
+        root = root.push(
+            row![left_pane, right_pane]
+                .spacing(SPACE_3)
+                .width(Length::Fill)
+                .height(Length::Fill),
+        );
+
+        root.into()
     }
 
     // ==========================================

@@ -8,14 +8,38 @@ use blanc_core::project::Project;
 use blanc_core::scene::{ActionBlock, CharacterPosition, ChoiceOption as SceneChoiceOption, Scene};
 use blanc_core::story::{Chapter, Story, StoryElement};
 use crate::screens::{
-    AssetPickerModalState, AssetPickerTarget, DashboardMessage, DashboardState, FlowCanvasAction,
-    WelcomeMessage, WelcomeState, WorkflowTab, DEFAULT_SCRIPT_TEMPLATE,
+    handle_ui_designer_message, AssetPickerModalState, AssetPickerTarget, DashboardMessage,
+    DashboardState, FlowCanvasAction, UiAssetSlot, WelcomeMessage, WelcomeState, WorkflowTab,
+    DEFAULT_SCRIPT_TEMPLATE,
 };
 
 #[derive(Debug, Clone)]
 pub enum AppMessage {
     Welcome(WelcomeMessage),
     Dashboard(DashboardMessage),
+}
+
+struct ExportJobSnapshot {
+    export_exe_name: String,
+    export_output_dir: String,
+    export_packed: bool,
+    export_save_mode: blanc_core::pack::ExportSaveMode,
+    export_build_kind: blanc_core::installer::ExportBuildKind,
+    logo_asset_id: Option<String>,
+    title_bg_asset_id: Option<String>,
+    accent_hex: String,
+    installer_include_logo: bool,
+    installer_include_banner: bool,
+    installer_custom_banner_path: Option<PathBuf>,
+    installer_publisher: String,
+    installer_version: String,
+    installer_welcome_text: String,
+    installer_desktop_shortcut: bool,
+    installer_start_menu_shortcut: bool,
+    license_translations: std::collections::BTreeMap<String, String>,
+    custom_policy_languages: Vec<blanc_core::installer::CustomPolicyLanguage>,
+    project: Project,
+    project_dir: PathBuf,
 }
 
 pub enum CurrentScreen {
@@ -117,10 +141,12 @@ impl EditorApp {
                         let manifest_path = target_dir.join(manifest_filename);
                         state.config.add_recent(name, author, manifest_path);
 
+                        let mut dashboard = DashboardState::init_for_project(&target_dir);
+                        dashboard.installer_publisher = project.author.clone();
                         self.screen = CurrentScreen::Workspace {
                             project,
                             project_dir: target_dir.clone(),
-                            dashboard: DashboardState::init_for_project(&target_dir),
+                            dashboard,
                         };
                     }
                     Err(err) => {
@@ -137,10 +163,12 @@ impl EditorApp {
                         Ok(project) => {
                             let project_dir = file_path.parent().unwrap_or(&file_path).to_path_buf();
                             state.config.add_recent(&project.name, &project.author, file_path);
+                            let mut dashboard = DashboardState::init_for_project(&project_dir);
+                            dashboard.installer_publisher = project.author.clone();
                             self.screen = CurrentScreen::Workspace {
                                 project,
                                 project_dir: project_dir.clone(),
-                                dashboard: DashboardState::init_for_project(&project_dir),
+                                dashboard,
                             };
                         }
                         Err(err) => {
@@ -154,10 +182,12 @@ impl EditorApp {
                     Ok(project) => {
                         let project_dir = path.parent().unwrap_or(&path).to_path_buf();
                         state.config.add_recent(&project.name, &project.author, path);
+                        let mut dashboard = DashboardState::init_for_project(&project_dir);
+                        dashboard.installer_publisher = project.author.clone();
                         self.screen = CurrentScreen::Workspace {
                             project,
                             project_dir: project_dir.clone(),
-                            dashboard: DashboardState::init_for_project(&project_dir),
+                            dashboard,
                         };
                     }
                     Err(err) => {
@@ -192,6 +222,16 @@ impl EditorApp {
         Task::none()
     }
 
+    fn save_localization(dashboard: &DashboardState, project_dir: &std::path::Path) -> Result<(), String> {
+        dashboard.locale_manifest.save_to_dir(project_dir)?;
+        for lang in dashboard.locale_manifest.all_languages() {
+            if let Some(tbl) = dashboard.locale_tables.get(&lang.code.to_ascii_lowercase()) {
+                tbl.save_to_dir(project_dir, &lang.code)?;
+            }
+        }
+        Ok(())
+    }
+
     fn auto_save_current_scene(dashboard: &DashboardState, project_dir: &std::path::Path) {
         if let Some(scene) = &dashboard.current_scene {
             if dashboard.selected_scene_index < dashboard.scenes_list.len() {
@@ -216,14 +256,30 @@ impl EditorApp {
 
         match message {
             DashboardMessage::CloseProject => {
+                if let Some(sink) = dashboard.audio_sink.take() {
+                    sink.stop();
+                }
+                dashboard.playing_audio_asset_id = None;
                 Self::auto_save_current_scene(dashboard, project_dir);
                 self.screen = CurrentScreen::Welcome(WelcomeState::new());
             }
             DashboardMessage::SelectWorkflowTab(tab) => {
+                if tab != WorkflowTab::Assets {
+                    if let Some(sink) = dashboard.audio_sink.take() {
+                        sink.stop();
+                    }
+                    dashboard.playing_audio_asset_id = None;
+                }
+                if dashboard.active_tab == WorkflowTab::Localization && tab != WorkflowTab::Localization {
+                    let _ = Self::save_localization(dashboard, project_dir);
+                }
                 Self::auto_save_current_scene(dashboard, project_dir);
                 dashboard.active_tab = tab;
                 dashboard.status_message = None;
                 dashboard.story_status_message = None;
+                if tab == WorkflowTab::Localization {
+                    dashboard.locale_items = blanc_core::localization::collect_project_items(project_dir);
+                }
                 if tab == WorkflowTab::SceneEditor || tab == WorkflowTab::StoryFlow {
                     dashboard.refresh_scenes(project_dir);
                     if let Some(scene_name) = dashboard.scenes_list.get(dashboard.selected_scene_index) {
@@ -275,22 +331,69 @@ impl EditorApp {
                     }
                 }
 
-                if let Some(picked_path) = dialog.pick_file() {
-                    match project.import_asset(project_dir, &picked_path, category) {
-                        Ok(asset) => {
-                            dashboard.status_message = Some(format!(
-                                "Imported '{}' to {}.",
-                                asset.name,
-                                asset.category.display_name()
-                            ));
-                        }
-                        Err(err) => {
-                            dashboard.status_message = Some(format!("Failed to import asset: {}", err));
+                if let Some(picked_paths) = dialog.pick_files() {
+                    let mut imported_count = 0usize;
+                    let mut last_imported_name: Option<String> = None;
+                    let mut last_imported_id: Option<String> = None;
+                    let mut first_error: Option<String> = None;
+                    let mut error_count = 0usize;
+
+                    for picked_path in picked_paths {
+                        match project.import_asset(project_dir, &picked_path, category) {
+                            Ok(asset) => {
+                                imported_count += 1;
+                                last_imported_name = Some(asset.name);
+                                last_imported_id = Some(asset.id);
+                            }
+                            Err(err) => {
+                                error_count += 1;
+                                if first_error.is_none() {
+                                    first_error = Some(err.to_string());
+                                }
+                            }
                         }
                     }
+
+                    if let Some(id) = last_imported_id {
+                        dashboard.selected_preview_asset_id = Some(id);
+                    }
+
+                    dashboard.status_message = Some(match (imported_count, error_count) {
+                        (1, 0) => format!(
+                            "Imported '{}' to {}.",
+                            last_imported_name.unwrap_or_default(),
+                            category.display_name()
+                        ),
+                        (n, 0) if n > 1 => format!(
+                            "Imported {} assets to {}.",
+                            n,
+                            category.display_name()
+                        ),
+                        (n, e) if n > 0 => format!(
+                            "Imported {} asset(s) to {} ({} failed: {}).",
+                            n,
+                            category.display_name(),
+                            e,
+                            first_error.unwrap_or_default()
+                        ),
+                        (0, _) => format!(
+                            "Failed to import asset(s): {}",
+                            first_error.unwrap_or_else(|| "Unknown error".to_string())
+                        ),
+                        _ => "No assets selected.".to_string(),
+                    });
                 }
             }
             DashboardMessage::DeleteAssetClicked(asset_id) => {
+                if dashboard.playing_audio_asset_id.as_deref() == Some(asset_id.as_str()) {
+                    if let Some(sink) = dashboard.audio_sink.take() {
+                        sink.stop();
+                    }
+                    dashboard.playing_audio_asset_id = None;
+                }
+                if dashboard.selected_preview_asset_id.as_deref() == Some(asset_id.as_str()) {
+                    dashboard.selected_preview_asset_id = None;
+                }
                 match project.delete_asset(project_dir, &asset_id, true) {
                     Ok(_) => {
                         dashboard.status_message = Some("Asset deleted successfully.".to_string());
@@ -299,6 +402,59 @@ impl EditorApp {
                         dashboard.status_message = Some(format!("Failed to delete asset: {}", err));
                     }
                 }
+            }
+            DashboardMessage::SetAssetViewMode(mode) => {
+                dashboard.asset_view_mode = mode;
+            }
+            DashboardMessage::SelectAssetForPreview(asset_id) => {
+                dashboard.selected_preview_asset_id = Some(asset_id);
+            }
+            DashboardMessage::ToggleAssetPreviewBg => {
+                dashboard.asset_preview_light_bg = !dashboard.asset_preview_light_bg;
+            }
+            DashboardMessage::PlayAssetAudioPreview(asset_id) => {
+                if let Some(sink) = dashboard.audio_sink.take() {
+                    sink.stop();
+                }
+                dashboard.playing_audio_asset_id = None;
+
+                if let Some(asset) = project.assets.assets.get(&asset_id) {
+                    let full_path = project_dir.join(&asset.relative_path);
+                    if dashboard.audio_stream.is_none() {
+                        dashboard.audio_stream = rodio::OutputStream::try_default().ok();
+                    }
+                    if let Some((_, handle)) = &dashboard.audio_stream {
+                        match std::fs::File::open(&full_path) {
+                            Ok(file) => match rodio::Decoder::new(std::io::BufReader::new(file)) {
+                                Ok(source) => match rodio::Sink::try_new(handle) {
+                                    Ok(sink) => {
+                                        sink.append(source);
+                                        sink.play();
+                                        dashboard.audio_sink = Some(sink);
+                                        dashboard.playing_audio_asset_id = Some(asset_id);
+                                    }
+                                    Err(err) => {
+                                        dashboard.status_message = Some(format!("Failed to create audio sink: {}", err));
+                                    }
+                                },
+                                Err(err) => {
+                                    dashboard.status_message = Some(format!("Failed to decode audio: {}", err));
+                                }
+                            },
+                            Err(err) => {
+                                dashboard.status_message = Some(format!("Failed to open audio file: {}", err));
+                            }
+                        }
+                    } else {
+                        dashboard.status_message = Some("No audio output device available.".to_string());
+                    }
+                }
+            }
+            DashboardMessage::StopAssetAudioPreview => {
+                if let Some(sink) = dashboard.audio_sink.take() {
+                    sink.stop();
+                }
+                dashboard.playing_audio_asset_id = None;
             }
             DashboardMessage::OpenAssetFolder(category) => {
                 let cat_folder = project_dir.join(category.subfolder());
@@ -407,6 +563,7 @@ impl EditorApp {
                             if let Some(exp) = &d.expression {
                                 current_scene.add_block(ActionBlock::Character {
                                     character_id: d.speaker.clone(),
+                                    sprite_asset_id: None,
                                     expression: exp.clone(),
                                     position: CharacterPosition::Center,
                                     offset_x: 0.0,
@@ -418,6 +575,7 @@ impl EditorApp {
                                 speaker: d.speaker.clone(),
                                 text: d.text.clone(),
                                 voice_asset_id: None,
+                                nameplate_position: None,
                             });
                         }
                         StoryElement::Narration(n) => {
@@ -635,6 +793,28 @@ impl EditorApp {
                 }
                 Self::auto_save_current_scene(dashboard, project_dir);
             }
+            DashboardMessage::UpdateBlockTransition(idx, trans) => {
+                if let Some(scene) = &mut dashboard.current_scene {
+                    match scene.blocks.get_mut(idx) {
+                        Some(ActionBlock::Background { transition, .. })
+                        | Some(ActionBlock::Character { transition, .. })
+                        | Some(ActionBlock::HideCharacter { transition, .. }) => {
+                            *transition = trans;
+                        }
+                        _ => {}
+                    }
+                }
+                Self::auto_save_current_scene(dashboard, project_dir);
+            }
+            DashboardMessage::UpdateVisualEffect(idx, new_effect, new_duration) => {
+                if let Some(scene) = &mut dashboard.current_scene {
+                    if let Some(ActionBlock::VisualEffect { effect, duration }) = scene.blocks.get_mut(idx) {
+                        *effect = new_effect;
+                        *duration = new_duration;
+                    }
+                }
+                Self::auto_save_current_scene(dashboard, project_dir);
+            }
             DashboardMessage::UpdateBlockChoicePosition(idx, pos) => {
                 if let Some(scene) = &mut dashboard.current_scene {
                     if let Some(ActionBlock::Choice { position, .. }) = scene.blocks.get_mut(idx) {
@@ -659,6 +839,14 @@ impl EditorApp {
                     }
                 }
             }
+            DashboardMessage::UpdateDialogueNameplatePosition(idx, pos) => {
+                if let Some(scene) = &mut dashboard.current_scene {
+                    if let Some(ActionBlock::Dialogue { nameplate_position, .. }) = scene.blocks.get_mut(idx) {
+                        *nameplate_position = pos;
+                    }
+                }
+                Self::auto_save_current_scene(dashboard, project_dir);
+            }
             DashboardMessage::UpdateChoicePrompt(idx, pmt) => {
                 if let Some(scene) = &mut dashboard.current_scene {
                     if let Some(ActionBlock::Choice { prompt, .. }) = scene.blocks.get_mut(idx) {
@@ -672,7 +860,9 @@ impl EditorApp {
                         if let Some(scene) = &dashboard.current_scene {
                             match scene.blocks.get(*block_index) {
                                 Some(ActionBlock::Background { asset_id, .. }) => Some(asset_id.clone()),
-                                Some(ActionBlock::Character { character_id, .. }) => Some(character_id.clone()),
+                                Some(ActionBlock::Character { character_id, sprite_asset_id, .. }) => {
+                                    sprite_asset_id.clone().or_else(|| Some(character_id.clone()))
+                                }
                                 Some(ActionBlock::PlayBgm { asset_id, .. }) => Some(asset_id.clone()),
                                 Some(ActionBlock::PlaySfx { asset_id, .. }) => Some(asset_id.clone()),
                                 _ => None,
@@ -687,6 +877,40 @@ impl EditorApp {
                     AssetPickerTarget::TitleBgm => {
                         dashboard.system_screens_config.title_bgm_asset_id.clone()
                     }
+                    AssetPickerTarget::UiAsset(slot) => {
+                        let ui = &dashboard.system_screens_config.ui_config;
+                        match slot {
+                            UiAssetSlot::Font => ui.theme.font_asset_id.clone(),
+                            UiAssetSlot::ButtonNormal => ui.theme.button_normal_asset_id.clone(),
+                            UiAssetSlot::ButtonFocus => ui.theme.button_focus_asset_id.clone(),
+                            UiAssetSlot::ButtonPressed => ui.theme.button_pressed_asset_id.clone(),
+                            UiAssetSlot::ButtonDisabled => ui.theme.button_disabled_asset_id.clone(),
+                            UiAssetSlot::SmallButtonNormal => ui.theme.small_button_normal_asset_id.clone(),
+                            UiAssetSlot::SmallButtonFocus => ui.theme.small_button_focus_asset_id.clone(),
+                            UiAssetSlot::SmallButtonPressed => ui.theme.small_button_pressed_asset_id.clone(),
+                            UiAssetSlot::SmallButtonDisabled => ui.theme.small_button_disabled_asset_id.clone(),
+                            UiAssetSlot::MainMenuLogo => dashboard.system_screens_config.logo_asset_id.clone(),
+                            UiAssetSlot::MainMenuPanel => ui.main_menu.panel_asset_id.clone(),
+                            UiAssetSlot::DialogueBox => ui.gameplay.dialogue_box_asset_id.clone(),
+                            UiAssetSlot::Nameplate => ui.gameplay.nameplate_asset_id.clone(),
+                            UiAssetSlot::ChoiceButton => ui.gameplay.choice_button_asset_id.clone(),
+                            UiAssetSlot::ChoiceButtonHover => ui.gameplay.choice_button_hover_asset_id.clone(),
+                            UiAssetSlot::ChoiceButtonDisabled => ui.gameplay.choice_button_disabled_asset_id.clone(),
+                            UiAssetSlot::AdvancePrompt => ui.gameplay.advance_prompt_asset_id.clone(),
+                            UiAssetSlot::AdvancePromptFrame2 => ui.gameplay.advance_prompt_frame2_asset_id.clone(),
+                            UiAssetSlot::AdvancePromptFrame3 => ui.gameplay.advance_prompt_frame3_asset_id.clone(),
+                            UiAssetSlot::PausePanel => ui.pause_settings.pause_panel_asset_id.clone(),
+                            UiAssetSlot::SettingsPanel => ui.pause_settings.settings_panel_asset_id.clone(),
+                            UiAssetSlot::SaveLoadPanel => ui.save_load.panel_asset_id.clone(),
+                            UiAssetSlot::SaveLoadSlotCard => ui.save_load.slot_card_asset_id.clone(),
+                            UiAssetSlot::SaveLoadSlotCardHover => ui.save_load.slot_card_hover_asset_id.clone(),
+                            UiAssetSlot::SaveLoadSlotCardDisabled => ui.save_load.slot_card_disabled_asset_id.clone(),
+                            UiAssetSlot::HistoryPanel => ui.history.panel_asset_id.clone(),
+                            UiAssetSlot::HistoryEntryCard => ui.history.entry_card_asset_id.clone(),
+                            UiAssetSlot::EndingPanel => ui.ending.panel_asset_id.clone(),
+                            UiAssetSlot::EndingBackground => ui.ending.background_asset_id.clone(),
+                        }
+                    }
                 };
                 dashboard.asset_picker_modal = Some(AssetPickerModalState {
                     target,
@@ -695,8 +919,190 @@ impl EditorApp {
                     selected_asset_id: initial_selected,
                 });
             }
+            DashboardMessage::SceneEditorBlocksScrolled(offset) => {
+                dashboard.scene_blocks_scroll_offset = offset;
+            }
+            DashboardMessage::LocaleSyncFromProject => {
+                dashboard.locale_items = blanc_core::localization::collect_project_items(project_dir);
+                dashboard.locale_status_message = Some(format!(
+                    "Synced {} localizable string(s) from project.",
+                    dashboard.locale_items.len()
+                ));
+            }
+            DashboardMessage::LocaleSelectLanguage(code) => {
+                dashboard.locale_selected_code = code;
+                dashboard.locale_status_message = None;
+            }
+            DashboardMessage::LocaleNewCodeChanged(v) => {
+                dashboard.locale_new_code = v;
+            }
+            DashboardMessage::LocaleNewNameChanged(v) => {
+                dashboard.locale_new_name = v;
+            }
+            DashboardMessage::LocaleDefaultCodeChanged(v) => {
+                dashboard.locale_default_code = v;
+            }
+            DashboardMessage::LocaleDefaultNameChanged(v) => {
+                dashboard.locale_default_name = v;
+            }
+            DashboardMessage::LocaleSaveDefaultLanguage => {
+                let code = dashboard.locale_default_code.trim().to_string();
+                let name = dashboard.locale_default_name.trim().to_string();
+                if code.is_empty() {
+                    dashboard.locale_status_message = Some("Default language code cannot be empty.".to_string());
+                } else {
+                    let old_code = dashboard.locale_manifest.default_language.code.to_ascii_lowercase();
+                    let new_code_key = code.to_ascii_lowercase();
+                    if old_code != new_code_key {
+                        if let Some(tbl) = dashboard.locale_tables.remove(&old_code) {
+                            dashboard.locale_tables.insert(new_code_key.clone(), tbl);
+                        }
+                        if dashboard.locale_selected_code.eq_ignore_ascii_case(&old_code) {
+                            dashboard.locale_selected_code = code.clone();
+                        }
+                    }
+                    dashboard.locale_manifest.default_language =
+                        blanc_core::localization::LanguageEntry::new(code.clone(), if name.is_empty() { code.clone() } else { name });
+                    let _ = Self::save_localization(dashboard, project_dir);
+                    dashboard.locale_status_message = Some(format!("Updated default language to '{}'.", code));
+                }
+            }
+            DashboardMessage::LocaleAddLanguage => {
+                let code = dashboard.locale_new_code.trim().to_string();
+                let name = dashboard.locale_new_name.trim().to_string();
+                if code.is_empty() {
+                    dashboard.locale_status_message = Some("Please enter a language code (e.g. id, ja, fr).".to_string());
+                } else if dashboard.locale_manifest.find_language_by_code(&code).is_some() {
+                    dashboard.locale_status_message = Some(format!("Language '{}' already exists.", code));
+                } else {
+                    let entry = blanc_core::localization::LanguageEntry::new(
+                        code.clone(),
+                        if name.is_empty() { code.clone() } else { name },
+                    );
+                    dashboard.locale_manifest.languages.push(entry);
+                    dashboard
+                        .locale_tables
+                        .entry(code.to_ascii_lowercase())
+                        .or_default();
+                    dashboard.locale_selected_code = code.clone();
+                    dashboard.locale_new_code.clear();
+                    dashboard.locale_new_name.clear();
+                    let _ = Self::save_localization(dashboard, project_dir);
+                    dashboard.locale_status_message = Some(format!("Added language '{}'.", code));
+                }
+            }
+            DashboardMessage::LocaleRemoveLanguage(code) => {
+                dashboard
+                    .locale_manifest
+                    .languages
+                    .retain(|l| !l.code.eq_ignore_ascii_case(&code));
+                dashboard.locale_tables.remove(&code.to_ascii_lowercase());
+                let file_path = blanc_core::localization::LocaleStrings::file_path(project_dir, &code);
+                let _ = std::fs::remove_file(file_path);
+                if dashboard.locale_selected_code.eq_ignore_ascii_case(&code) {
+                    dashboard.locale_selected_code = dashboard
+                        .locale_manifest
+                        .languages
+                        .first()
+                        .map(|l| l.code.clone())
+                        .unwrap_or_else(|| dashboard.locale_manifest.default_language.code.clone());
+                }
+                let _ = Self::save_localization(dashboard, project_dir);
+                dashboard.locale_status_message = Some(format!("Removed language '{}'.", code));
+            }
+            DashboardMessage::LocaleSearchChanged(q) => {
+                dashboard.locale_search_query = q;
+            }
+            DashboardMessage::LocaleFilterScopeChanged(scope) => {
+                dashboard.locale_filter_scope = scope;
+            }
+            DashboardMessage::LocaleToggleUntranslatedOnly(val) => {
+                dashboard.locale_untranslated_only = val;
+            }
+            DashboardMessage::LocaleTranslationChanged(key, val) => {
+                let lang_key = dashboard.locale_selected_code.to_ascii_lowercase();
+                let tbl = dashboard.locale_tables.entry(lang_key).or_default();
+                if val.is_empty() {
+                    tbl.entries.remove(&key);
+                } else {
+                    tbl.entries.insert(key, val);
+                }
+            }
+            DashboardMessage::LocaleSaveAll => {
+                match Self::save_localization(dashboard, project_dir) {
+                    Ok(()) => {
+                        dashboard.locale_status_message = Some("Saved localization manifest and all language files.".to_string());
+                    }
+                    Err(err) => {
+                        dashboard.locale_status_message = Some(format!("Failed to save locales: {}", err));
+                    }
+                }
+            }
+            DashboardMessage::LocaleExportCsv => {
+                let lang_code = dashboard.locale_selected_code.clone();
+                let default_name = format!(
+                    "localization_{}.csv",
+                    blanc_core::localization::sanitize_lang_code(&lang_code)
+                );
+                if let Some(save_path) = rfd::FileDialog::new()
+                    .set_file_name(&default_name)
+                    .add_filter("CSV (*.csv)", &["csv"])
+                    .save_file()
+                {
+                    let empty_tbl = blanc_core::localization::LocaleStrings::default();
+                    let tbl = dashboard
+                        .locale_tables
+                        .get(&lang_code.to_ascii_lowercase())
+                        .unwrap_or(&empty_tbl);
+                    let csv = blanc_core::localization::export_csv(&dashboard.locale_items, tbl);
+                    match std::fs::write(&save_path, csv) {
+                        Ok(()) => {
+                            dashboard.locale_status_message = Some(format!(
+                                "Exported {} string(s) for '{}' to {}.",
+                                dashboard.locale_items.len(),
+                                lang_code,
+                                save_path.display()
+                            ));
+                        }
+                        Err(e) => {
+                            dashboard.locale_status_message = Some(format!("Export CSV failed: {}", e));
+                        }
+                    }
+                }
+            }
+            DashboardMessage::LocaleImportCsv => {
+                if let Some(open_path) = rfd::FileDialog::new()
+                    .add_filter("CSV (*.csv)", &["csv"])
+                    .pick_file()
+                {
+                    match std::fs::read_to_string(&open_path) {
+                        Ok(raw) => {
+                            let lang_code = dashboard.locale_selected_code.clone();
+                            let tbl = dashboard
+                                .locale_tables
+                                .entry(lang_code.to_ascii_lowercase())
+                                .or_default();
+                            let count = blanc_core::localization::import_csv(&raw, tbl);
+                            let _ = Self::save_localization(dashboard, project_dir);
+                            dashboard.locale_status_message = Some(format!(
+                                "Imported {} translation(s) into '{}'.",
+                                count, lang_code
+                            ));
+                        }
+                        Err(e) => {
+                            dashboard.locale_status_message = Some(format!("Import CSV failed: {}", e));
+                        }
+                    }
+                }
+            }
             DashboardMessage::CloseAssetPickerModal => {
                 dashboard.asset_picker_modal = None;
+                if dashboard.active_tab == WorkflowTab::SceneEditor {
+                    return iced::widget::scrollable::scroll_to(
+                        iced::widget::scrollable::Id::new("scene_editor_blocks_scroll"),
+                        dashboard.scene_blocks_scroll_offset,
+                    );
+                }
             }
             DashboardMessage::AssetPickerSearchChanged(query) => {
                 if let Some(modal) = &mut dashboard.asset_picker_modal {
@@ -719,8 +1125,8 @@ impl EditorApp {
                                         Some(ActionBlock::Background { asset_id, .. }) => {
                                             *asset_id = asset_id_val;
                                         }
-                                        Some(ActionBlock::Character { character_id, .. }) => {
-                                            *character_id = asset_id_val;
+                                        Some(ActionBlock::Character { sprite_asset_id, .. }) => {
+                                            *sprite_asset_id = Some(asset_id_val);
                                         }
                                         Some(ActionBlock::PlayBgm { asset_id, .. }) => {
                                             *asset_id = asset_id_val;
@@ -739,10 +1145,68 @@ impl EditorApp {
                             AssetPickerTarget::TitleBgm => {
                                 dashboard.system_screens_config.title_bgm_asset_id = Some(asset_id_val);
                             }
+                            AssetPickerTarget::UiAsset(slot) => {
+                                let mut font_load_bytes: Option<Vec<u8>> = None;
+                                if matches!(slot, UiAssetSlot::Font) {
+                                    if let Some(asset) = project.assets.get(&asset_id_val) {
+                                        let full_path = project_dir.join(&asset.relative_path);
+                                        if let Ok(bytes) = std::fs::read(&full_path) {
+                                            if let Some(family) = blanc_core::ui_config::read_ttf_family_name(&bytes) {
+                                                dashboard.system_screens_config.ui_config.theme.font_family = family;
+                                            }
+                                            font_load_bytes = Some(bytes);
+                                        }
+                                    }
+                                }
+                                let ui = &mut dashboard.system_screens_config.ui_config;
+                                match slot {
+                                    UiAssetSlot::Font => ui.theme.font_asset_id = Some(asset_id_val),
+                                    UiAssetSlot::ButtonNormal => ui.theme.button_normal_asset_id = Some(asset_id_val),
+                                    UiAssetSlot::ButtonFocus => ui.theme.button_focus_asset_id = Some(asset_id_val),
+                                    UiAssetSlot::ButtonPressed => ui.theme.button_pressed_asset_id = Some(asset_id_val),
+                                    UiAssetSlot::ButtonDisabled => ui.theme.button_disabled_asset_id = Some(asset_id_val),
+                                    UiAssetSlot::SmallButtonNormal => ui.theme.small_button_normal_asset_id = Some(asset_id_val),
+                                    UiAssetSlot::SmallButtonFocus => ui.theme.small_button_focus_asset_id = Some(asset_id_val),
+                                    UiAssetSlot::SmallButtonPressed => ui.theme.small_button_pressed_asset_id = Some(asset_id_val),
+                                    UiAssetSlot::SmallButtonDisabled => ui.theme.small_button_disabled_asset_id = Some(asset_id_val),
+                                    UiAssetSlot::MainMenuLogo => {
+                                        dashboard.system_screens_config.logo_asset_id = Some(asset_id_val);
+                                    }
+                                    UiAssetSlot::MainMenuPanel => ui.main_menu.panel_asset_id = Some(asset_id_val),
+                                    UiAssetSlot::DialogueBox => ui.gameplay.dialogue_box_asset_id = Some(asset_id_val),
+                                    UiAssetSlot::Nameplate => ui.gameplay.nameplate_asset_id = Some(asset_id_val),
+                                    UiAssetSlot::ChoiceButton => ui.gameplay.choice_button_asset_id = Some(asset_id_val),
+                                    UiAssetSlot::ChoiceButtonHover => ui.gameplay.choice_button_hover_asset_id = Some(asset_id_val),
+                                    UiAssetSlot::ChoiceButtonDisabled => ui.gameplay.choice_button_disabled_asset_id = Some(asset_id_val),
+                                    UiAssetSlot::AdvancePrompt => ui.gameplay.advance_prompt_asset_id = Some(asset_id_val),
+                                    UiAssetSlot::AdvancePromptFrame2 => ui.gameplay.advance_prompt_frame2_asset_id = Some(asset_id_val),
+                                    UiAssetSlot::AdvancePromptFrame3 => ui.gameplay.advance_prompt_frame3_asset_id = Some(asset_id_val),
+                                    UiAssetSlot::PausePanel => ui.pause_settings.pause_panel_asset_id = Some(asset_id_val),
+                                    UiAssetSlot::SettingsPanel => ui.pause_settings.settings_panel_asset_id = Some(asset_id_val),
+                                    UiAssetSlot::SaveLoadPanel => ui.save_load.panel_asset_id = Some(asset_id_val),
+                                    UiAssetSlot::SaveLoadSlotCard => ui.save_load.slot_card_asset_id = Some(asset_id_val),
+                                    UiAssetSlot::SaveLoadSlotCardHover => ui.save_load.slot_card_hover_asset_id = Some(asset_id_val),
+                                    UiAssetSlot::SaveLoadSlotCardDisabled => ui.save_load.slot_card_disabled_asset_id = Some(asset_id_val),
+                                    UiAssetSlot::HistoryPanel => ui.history.panel_asset_id = Some(asset_id_val),
+                                    UiAssetSlot::HistoryEntryCard => ui.history.entry_card_asset_id = Some(asset_id_val),
+                                    UiAssetSlot::EndingPanel => ui.ending.panel_asset_id = Some(asset_id_val),
+                                    UiAssetSlot::EndingBackground => ui.ending.background_asset_id = Some(asset_id_val),
+                                }
+                                if let Some(bytes) = font_load_bytes {
+                                    dashboard.asset_picker_modal = None;
+                                    return iced::font::load(bytes).discard();
+                                }
+                            }
                         }
                     }
                 }
                 dashboard.asset_picker_modal = None;
+                if dashboard.active_tab == WorkflowTab::SceneEditor {
+                    return iced::widget::scrollable::scroll_to(
+                        iced::widget::scrollable::Id::new("scene_editor_blocks_scroll"),
+                        dashboard.scene_blocks_scroll_offset,
+                    );
+                }
             }
             DashboardMessage::ImportAssetFromModal(category) => {
                 let mut dialog = rfd::FileDialog::new();
@@ -811,6 +1275,9 @@ impl EditorApp {
                 dashboard.system_screens_config.default_resolution_width = w;
                 dashboard.system_screens_config.default_resolution_height = h;
             }
+            DashboardMessage::UpdateSceneTransitionMode(mode) => {
+                dashboard.system_screens_config.scene_transition_mode = mode;
+            }
             DashboardMessage::UpdateMasterVolume(v) => {
                 dashboard.system_screens_config.master_volume = v;
             }
@@ -842,6 +1309,373 @@ impl EditorApp {
                         dashboard.settings_status_message = Some(format!("Failed to save settings: {}", err));
                     }
                 }
+            }
+            DashboardMessage::ImportUiPackFolder => {
+                return Task::perform(
+                    async {
+                        let handle = rfd::AsyncFileDialog::new()
+                            .set_title("Select UI Pack PNG Folder")
+                            .pick_folder()
+                            .await;
+                        handle.map(|h| h.path().to_path_buf())
+                    },
+                    |path| AppMessage::Dashboard(DashboardMessage::UiPackFolderSelected(path)),
+                );
+            }
+            DashboardMessage::UiPackFolderSelected(Some(folder)) => {
+                let mut matched_count = 0usize;
+                if let Ok(entries) = std::fs::read_dir(&folder) {
+                    let mut pngs: Vec<PathBuf> = entries
+                        .flatten()
+                        .map(|e| e.path())
+                        .filter(|p| {
+                            p.is_file()
+                                && p.extension()
+                                    .and_then(|s| s.to_str())
+                                    .map(|ext| ext.eq_ignore_ascii_case("png"))
+                                    .unwrap_or(false)
+                        })
+                        .collect();
+                    pngs.sort();
+
+                    let ui = &mut dashboard.system_screens_config.ui_config;
+                    let mut import_and_get_id = |path: &PathBuf| -> Option<String> {
+                        if let Ok(asset) = project.import_asset(project_dir, path, AssetCategory::Ui) {
+                            matched_count += 1;
+                            Some(asset.id.clone())
+                        } else {
+                            None
+                        }
+                    };
+
+                    for path in &pngs {
+                        let stem = path
+                            .file_stem()
+                            .and_then(|s| s.to_str())
+                            .unwrap_or("")
+                            .to_lowercase();
+
+                        if stem.contains("small_button_idle") || stem.contains("small_button_normal") {
+                            ui.theme.small_button_normal_asset_id = import_and_get_id(path);
+                        } else if stem.contains("small_button_hover") && !stem.contains("selected") {
+                            ui.theme.small_button_focus_asset_id = import_and_get_id(path);
+                        } else if stem.contains("small_button_pressed") {
+                            ui.theme.small_button_pressed_asset_id = import_and_get_id(path);
+                        } else if stem.contains("small_button_disabled") {
+                            ui.theme.small_button_disabled_asset_id = import_and_get_id(path);
+                        } else if stem.contains("button_idle") || stem.contains("button_normal") {
+                            ui.theme.button_normal_asset_id = import_and_get_id(path);
+                        } else if (stem.contains("button_hover") || stem.contains("button_focus")) && !stem.contains("selected") {
+                            ui.theme.button_focus_asset_id = import_and_get_id(path);
+                        } else if stem.contains("button_pressed") {
+                            ui.theme.button_pressed_asset_id = import_and_get_id(path);
+                        } else if stem.contains("button_disabled") {
+                            ui.theme.button_disabled_asset_id = import_and_get_id(path);
+                        } else if stem.contains("dialogue_wide") || (stem.contains("dialogue_box") && ui.gameplay.dialogue_box_asset_id.is_none()) {
+                            ui.gameplay.dialogue_box_asset_id = import_and_get_id(path);
+                        } else if stem.contains("nameplate") {
+                            ui.gameplay.nameplate_asset_id = import_and_get_id(path);
+                        } else if stem.contains("choice_idle") || stem.contains("choice_normal") {
+                            ui.gameplay.choice_button_asset_id = import_and_get_id(path);
+                        } else if stem.contains("choice_hover") && !stem.contains("selected") {
+                            ui.gameplay.choice_button_hover_asset_id = import_and_get_id(path);
+                        } else if stem.contains("choice_disabled") {
+                            ui.gameplay.choice_button_disabled_asset_id = import_and_get_id(path);
+                        } else if stem.contains("continue_0") {
+                            ui.gameplay.advance_prompt_asset_id = import_and_get_id(path);
+                        } else if stem.contains("continue_1") {
+                            ui.gameplay.advance_prompt_frame2_asset_id = import_and_get_id(path);
+                        } else if stem.contains("continue_2") {
+                            ui.gameplay.advance_prompt_frame3_asset_id = import_and_get_id(path);
+                        } else if stem.contains("menu_panel") {
+                            if let Some(id) = import_and_get_id(path) {
+                                ui.main_menu.panel_asset_id = Some(id.clone());
+                                ui.save_load.panel_asset_id = Some(id);
+                            }
+                        } else if stem.contains("modal") {
+                            if let Some(id) = import_and_get_id(path) {
+                                ui.pause_settings.pause_panel_asset_id = Some(id.clone());
+                                ui.pause_settings.settings_panel_asset_id = Some(id);
+                            }
+                        } else if stem.contains("save_slot_idle") {
+                            ui.save_load.slot_card_asset_id = import_and_get_id(path);
+                        } else if stem.contains("save_slot_hover") && !stem.contains("selected") {
+                            ui.save_load.slot_card_hover_asset_id = import_and_get_id(path);
+                        } else if stem.contains("save_slot_disabled") {
+                            ui.save_load.slot_card_disabled_asset_id = import_and_get_id(path);
+                        }
+                    }
+
+                    // Auto-adjust text contrast if folder name hints a light theme (e.g. "cream")
+                    let folder_name = folder.file_name().and_then(|s| s.to_str()).unwrap_or("").to_lowercase();
+                    if folder_name.contains("cream") || folder_name.contains("light") {
+                        ui.theme.text_hex = "#3b2f2f".to_string();
+                        ui.theme.button_text_hex = "#3b2f2f".to_string();
+                        ui.theme.button_focus_text_hex = "#1e1b18".to_string();
+                        ui.gameplay.dialogue_text_hex = "#3b2f2f".to_string();
+                        ui.save_load.slot_text_hex = "#3b2f2f".to_string();
+                    }
+
+                    let manifest_filename = format!("{}.{}", project.name.replace(' ', "_"), Project::MANIFEST_EXTENSION);
+                    let _ = project.save_manifest(&project_dir.join(manifest_filename));
+                }
+                dashboard.settings_status_message = Some(format!("Imported & mapped {} UI pack PNGs.", matched_count));
+                return Task::perform(
+                    tokio::time::sleep(std::time::Duration::from_secs(4)),
+                    |_| AppMessage::Dashboard(DashboardMessage::DismissSettingsStatusMessage),
+                );
+            }
+            DashboardMessage::UiPackFolderSelected(None) => {}
+            DashboardMessage::SetExportExeName(name) => {
+                dashboard.export_exe_name = name;
+            }
+            DashboardMessage::SetExportOutputDir(dir) => {
+                dashboard.export_output_dir = dir;
+            }
+            DashboardMessage::BrowseExportOutputDir => {
+                return Task::perform(
+                    async {
+                        let handle = rfd::AsyncFileDialog::new()
+                            .set_title("Select Export Output Folder")
+                            .pick_folder()
+                            .await;
+                        handle.map(|h| h.path().to_path_buf())
+                    },
+                    |path| AppMessage::Dashboard(DashboardMessage::ExportOutputDirSelected(path)),
+                );
+            }
+            DashboardMessage::ExportOutputDirSelected(Some(folder)) => {
+                dashboard.export_output_dir = folder.to_string_lossy().to_string();
+            }
+            DashboardMessage::ExportOutputDirSelected(None) => {}
+            DashboardMessage::SetExportPacked(packed) => {
+                dashboard.export_packed = packed;
+            }
+            DashboardMessage::SetExportSaveMode(mode) => {
+                dashboard.export_save_mode = mode;
+            }
+            DashboardMessage::SetExportBuildKind(kind) => {
+                dashboard.export_build_kind = kind;
+                if kind == blanc_core::installer::ExportBuildKind::Installer {
+                    dashboard.export_save_mode = blanc_core::pack::ExportSaveMode::AppData;
+                }
+            }
+            DashboardMessage::SetInstallerVersion(v) => {
+                dashboard.installer_version = v;
+            }
+            DashboardMessage::SetInstallerPublisher(v) => {
+                dashboard.installer_publisher = v;
+            }
+            DashboardMessage::SetInstallerWelcome(v) => {
+                dashboard.installer_welcome_text = v;
+            }
+            DashboardMessage::SelectInstallerPolicyLang(code) => {
+                let prev_code = dashboard.installer_policy_lang.clone();
+                let prev_text = dashboard.installer_policy_editor.text();
+                dashboard.installer_policy_texts.insert(prev_code, prev_text);
+                dashboard.installer_policy_lang = code.clone();
+                let next_text = dashboard
+                    .installer_policy_texts
+                    .get(&code)
+                    .cloned()
+                    .unwrap_or_default();
+                dashboard.installer_policy_editor = iced::widget::text_editor::Content::with_text(&next_text);
+            }
+            DashboardMessage::InstallerPolicyEditorAction(action) => {
+                dashboard.installer_policy_editor.perform(action);
+                let code = dashboard.installer_policy_lang.clone();
+                let txt = dashboard.installer_policy_editor.text();
+                dashboard.installer_policy_texts.insert(code, txt);
+            }
+            DashboardMessage::ResetInstallerPolicyDefault => {
+                let defaults = blanc_core::installer::default_privacy_and_terms_map();
+                for (k, v) in defaults {
+                    dashboard.installer_policy_texts.insert(k, v);
+                }
+                let cur_txt = dashboard
+                    .installer_policy_texts
+                    .get(&dashboard.installer_policy_lang)
+                    .cloned()
+                    .unwrap_or_default();
+                dashboard.installer_policy_editor = iced::widget::text_editor::Content::with_text(&cur_txt);
+            }
+            DashboardMessage::ToggleAddInstallerPolicyLang => {
+                dashboard.installer_add_lang_open = !dashboard.installer_add_lang_open;
+                if !dashboard.installer_add_lang_open {
+                    dashboard.installer_new_lang_code.clear();
+                    dashboard.installer_new_lang_name.clear();
+                }
+            }
+            DashboardMessage::SetNewPolicyLangCode(v) => {
+                dashboard.installer_new_lang_code = v;
+            }
+            DashboardMessage::SetNewPolicyLangName(v) => {
+                dashboard.installer_new_lang_name = v;
+            }
+            DashboardMessage::ConfirmAddInstallerPolicyLang => {
+                let code = dashboard
+                    .installer_new_lang_code
+                    .trim()
+                    .to_ascii_lowercase();
+                let display_name = dashboard.installer_new_lang_name.trim().to_string();
+                let is_builtin = blanc_core::installer::InstallerLang::ALL
+                    .iter()
+                    .any(|l| l.code() == code);
+                if !code.is_empty()
+                    && !display_name.is_empty()
+                    && !is_builtin
+                    && !dashboard
+                        .installer_custom_policy_langs
+                        .iter()
+                        .any(|c| c.code == code)
+                {
+                    let prev_code = dashboard.installer_policy_lang.clone();
+                    let prev_text = dashboard.installer_policy_editor.text();
+                    dashboard.installer_policy_texts.insert(prev_code, prev_text);
+
+                    dashboard.installer_custom_policy_langs.push(
+                        blanc_core::installer::CustomPolicyLanguage {
+                            code: code.clone(),
+                            display_name,
+                        },
+                    );
+                    dashboard.installer_policy_lang = code;
+                    dashboard.installer_policy_editor =
+                        iced::widget::text_editor::Content::with_text("");
+                    dashboard.installer_add_lang_open = false;
+                    dashboard.installer_new_lang_code.clear();
+                    dashboard.installer_new_lang_name.clear();
+                }
+            }
+            DashboardMessage::RemoveCustomPolicyLang(code) => {
+                dashboard
+                    .installer_custom_policy_langs
+                    .retain(|c| c.code != code);
+                dashboard.installer_policy_texts.remove(&code);
+                if dashboard.installer_policy_lang == code {
+                    let en_code = blanc_core::installer::InstallerLang::En.code().to_string();
+                    dashboard.installer_policy_lang = en_code.clone();
+                    let en_text = dashboard
+                        .installer_policy_texts
+                        .get(&en_code)
+                        .cloned()
+                        .unwrap_or_default();
+                    dashboard.installer_policy_editor =
+                        iced::widget::text_editor::Content::with_text(&en_text);
+                }
+            }
+            DashboardMessage::SetInstallerDesktopShortcut(v) => {
+                dashboard.installer_desktop_shortcut = v;
+            }
+            DashboardMessage::SetInstallerStartMenuShortcut(v) => {
+                dashboard.installer_start_menu_shortcut = v;
+            }
+            DashboardMessage::SetInstallerIncludeLogo(v) => {
+                dashboard.installer_include_logo = v;
+            }
+            DashboardMessage::SetInstallerIncludeBanner(v) => {
+                dashboard.installer_include_banner = v;
+            }
+            DashboardMessage::PickInstallerCustomBanner => {
+                if let Some(path) = rfd::FileDialog::new()
+                    .add_filter("Image", &["png", "jpg", "jpeg", "webp", "bmp"])
+                    .set_title("Choose Wizard Sidebar Image")
+                    .pick_file()
+                {
+                    dashboard.installer_custom_banner_path = Some(path);
+                    dashboard.installer_include_banner = true;
+                }
+            }
+            DashboardMessage::ClearInstallerCustomBanner => {
+                dashboard.installer_custom_banner_path = None;
+            }
+            DashboardMessage::OpenExportFolder => {
+                let out_dir = if dashboard.export_output_dir.trim().is_empty() {
+                    project_dir.join("Exports")
+                } else {
+                    PathBuf::from(dashboard.export_output_dir.trim())
+                };
+                let _ = std::fs::create_dir_all(&out_dir);
+                let _ = Command::new("explorer").arg(&out_dir).spawn();
+            }
+            DashboardMessage::RunExportGame => {
+                if dashboard.export_in_progress {
+                    return Task::none();
+                }
+                Self::auto_save_current_scene(dashboard, project_dir);
+                dashboard.export_in_progress = true;
+                dashboard.export_progress = 0.05;
+                dashboard.export_stage_label = "Preparing export...".to_string();
+                dashboard.export_status_message = None;
+
+                let mut license_translations = dashboard.installer_policy_texts.clone();
+                license_translations.insert(
+                    dashboard.installer_policy_lang.clone(),
+                    dashboard.installer_policy_editor.text(),
+                );
+                let snapshot = ExportJobSnapshot {
+                    export_exe_name: dashboard.export_exe_name.clone(),
+                    export_output_dir: dashboard.export_output_dir.clone(),
+                    export_packed: dashboard.export_packed,
+                    export_save_mode: dashboard.export_save_mode,
+                    export_build_kind: dashboard.export_build_kind,
+                    logo_asset_id: dashboard.system_screens_config.logo_asset_id.clone(),
+                    title_bg_asset_id: dashboard
+                        .system_screens_config
+                        .title_background_asset_id
+                        .clone(),
+                    accent_hex: dashboard
+                        .system_screens_config
+                        .ui_config
+                        .theme
+                        .accent_hex
+                        .clone(),
+                    installer_include_logo: dashboard.installer_include_logo,
+                    installer_include_banner: dashboard.installer_include_banner,
+                    installer_custom_banner_path: dashboard.installer_custom_banner_path.clone(),
+                    installer_publisher: dashboard.installer_publisher.clone(),
+                    installer_version: dashboard.installer_version.clone(),
+                    installer_welcome_text: dashboard.installer_welcome_text.clone(),
+                    installer_desktop_shortcut: dashboard.installer_desktop_shortcut,
+                    installer_start_menu_shortcut: dashboard.installer_start_menu_shortcut,
+                    license_translations,
+                    custom_policy_languages: dashboard.installer_custom_policy_langs.clone(),
+                    project: project.clone(),
+                    project_dir: project_dir.clone(),
+                };
+
+                return Task::run(
+                    iced::stream::channel(16, move |mut sender| async move {
+                        let mut tx = sender.clone();
+                        let handle = tokio::task::spawn_blocking(move || {
+                            Self::export_game_package_with_progress(snapshot, |p, label| {
+                                let _ = tx.try_send(DashboardMessage::ExportProgress(
+                                    p,
+                                    label.to_string(),
+                                ));
+                            })
+                        });
+                        let res = match handle.await {
+                            Ok(r) => r,
+                            Err(e) => Err(format!("Export task failed: {}", e)),
+                        };
+                        let _ = sender.try_send(DashboardMessage::ExportDone(res));
+                    }),
+                    AppMessage::Dashboard,
+                );
+            }
+            DashboardMessage::ExportProgress(p, label) => {
+                dashboard.export_progress = p;
+                dashboard.export_stage_label = label;
+            }
+            DashboardMessage::ExportDone(res) => {
+                dashboard.export_in_progress = false;
+                dashboard.export_progress = if res.is_ok() { 1.0 } else { 0.0 };
+                dashboard.export_stage_label.clear();
+                dashboard.export_status_message = Some(match res {
+                    Ok(summary) => summary,
+                    Err(err) => format!("Export failed: {}", err),
+                });
             }
             DashboardMessage::SetUseCustomLogo(use_custom) => {
                 project.use_custom_logo = use_custom;
@@ -1189,35 +2023,341 @@ impl EditorApp {
                     }
                 }
             }
+            DashboardMessage::UiDesigner(ui_msg) => {
+                if let crate::screens::ui_designer::UiDesignerMessage::ClearAsset(UiAssetSlot::MainMenuLogo) = ui_msg {
+                    dashboard.system_screens_config.logo_asset_id = None;
+                }
+                handle_ui_designer_message(
+                    ui_msg,
+                    &mut dashboard.system_screens_config.ui_config,
+                    &mut dashboard.ui_designer_sub_tab,
+                    &mut dashboard.ui_designer_sections,
+                    &mut dashboard.ui_preview_mode,
+                );
+            }
             DashboardMessage::PlayPreview => {
-                // Launch blanc_runtime as child process
-                let target_dir = project_dir.to_string_lossy().to_string();
-                println!("Launching blanc_runtime for: {}", target_dir);
-
-                let sibling_runtime = std::env::current_exe()
-                    .ok()
-                    .and_then(|exe| exe.parent().map(|dir| {
-                        let name = if cfg!(windows) { "blanc_runtime.exe" } else { "blanc_runtime" };
-                        dir.join(name)
-                    }))
-                    .filter(|p| p.exists());
-
-                let launched = if let Some(runtime_path) = sibling_runtime {
-                    Command::new(runtime_path).arg(&target_dir).spawn()
-                } else {
-                    Command::new("blanc_runtime").arg(&target_dir).spawn()
-                };
-
-                let _ = launched.or_else(|_| {
-                    // Fallback using cargo run in development
-                    Command::new("cargo")
-                        .args(["run", "-p", "blanc_runtime", "--", &target_dir])
-                        .spawn()
-                });
+                Self::launch_runtime_preview(dashboard, project_dir, None);
+            }
+            DashboardMessage::PlayFromCurrentScene => {
+                Self::auto_save_current_scene(dashboard, project_dir);
+                let scene_name = dashboard
+                    .scenes_list
+                    .get(dashboard.selected_scene_index)
+                    .cloned();
+                Self::launch_runtime_preview(dashboard, project_dir, scene_name.as_deref());
             }
         }
 
         Task::none()
+    }
+
+    fn launch_runtime_preview(dashboard: &DashboardState, project_dir: &PathBuf, start_scene: Option<&str>) {
+        // Ensure latest system screen settings are persisted before launching runtime
+        let config_dir = project_dir.join("Settings");
+        let _ = std::fs::create_dir_all(&config_dir);
+        let config_path = config_dir.join("system_screens.bconfig");
+        let _ = dashboard.system_screens_config.save_to_file(&config_path);
+
+        let target_dir = project_dir.to_string_lossy().to_string();
+        let mut runtime_args: Vec<String> = vec![target_dir.clone()];
+        if let Some(scene_name) = start_scene {
+            runtime_args.push("--scene".to_string());
+            runtime_args.push(scene_name.to_string());
+        }
+
+        let sibling_runtime = std::env::current_exe()
+            .ok()
+            .and_then(|exe| exe.parent().map(|dir| {
+                let name = if cfg!(windows) { "blanc_runtime.exe" } else { "blanc_runtime" };
+                dir.join(name)
+            }))
+            .filter(|p| p.exists());
+
+        let launched = if let Some(runtime_path) = sibling_runtime {
+            Command::new(runtime_path).args(&runtime_args).spawn()
+        } else {
+            Command::new("blanc_runtime").args(&runtime_args).spawn()
+        };
+
+        let _ = launched.or_else(|_| {
+            let mut cargo_args = vec!["run", "-p", "blanc_runtime", "--", &target_dir];
+            if let Some(scene_name) = start_scene {
+                cargo_args.push("--scene");
+                cargo_args.push(scene_name);
+            }
+            Command::new("cargo").args(&cargo_args).spawn()
+        });
+    }
+
+    fn export_game_package_with_progress(
+        snap: ExportJobSnapshot,
+        mut on_progress: impl FnMut(f32, &str),
+    ) -> Result<String, String> {
+        let project = &snap.project;
+        let project_dir = &snap.project_dir;
+
+        let raw_exe = if snap.export_exe_name.trim().is_empty() {
+            project.name.as_str()
+        } else {
+            snap.export_exe_name.trim().trim_end_matches(".exe")
+        };
+        let exe_name: String = raw_exe
+            .chars()
+            .map(|c| if c.is_ascii_alphanumeric() || c == '_' || c == '-' { c } else { '_' })
+            .collect();
+        let exe_name = if exe_name.trim_matches('_').is_empty() {
+            "BlancGame".to_string()
+        } else {
+            exe_name
+        };
+
+        let out_dir = if snap.export_output_dir.trim().is_empty() {
+            project_dir.join("Exports")
+        } else {
+            PathBuf::from(snap.export_output_dir.trim())
+        };
+        std::fs::create_dir_all(&out_dir)
+            .map_err(|e| format!("Failed to create output folder: {}", e))?;
+
+        let runtime_name = if cfg!(windows) { "blanc_runtime.exe" } else { "blanc_runtime" };
+        let runtime_src = std::env::current_exe()
+            .ok()
+            .and_then(|exe| exe.parent().map(|dir| dir.join(runtime_name)))
+            .filter(|p| p.exists())
+            .ok_or_else(|| {
+                format!(
+                    "{} not found next to editor executable. Please build blanc_runtime first.",
+                    runtime_name
+                )
+            })?;
+
+        let exe_ext = if cfg!(windows) { ".exe" } else { "" };
+        let game_exe_filename = format!("{}{}", exe_name, exe_ext);
+
+        on_progress(0.12, "Collecting project files & assets...");
+        let mut files: Vec<(String, Vec<u8>)> = Vec::new();
+        Self::collect_project_files(project_dir, project_dir, &mut files)?;
+
+        let effective_save_mode = if snap.export_build_kind == blanc_core::installer::ExportBuildKind::Installer {
+            blanc_core::pack::ExportSaveMode::AppData
+        } else {
+            snap.export_save_mode
+        };
+
+        let meta = blanc_core::pack::ExportMetadata {
+            save_mode: effective_save_mode,
+            game_title: project.name.clone(),
+        };
+        let meta_bytes = serde_json::to_vec_pretty(&meta)
+            .map_err(|e| format!("Failed to serialize export metadata: {}", e))?;
+
+        let project_logo_png = snap
+            .logo_asset_id
+            .as_deref()
+            .and_then(|id| project.assets.get(id))
+            .map(|a| project_dir.join(&a.relative_path))
+            .or_else(|| project.custom_logo_path.as_ref().map(|p| project_dir.join(p)))
+            .and_then(|p| std::fs::read(p).ok());
+
+        if snap.export_build_kind == blanc_core::installer::ExportBuildKind::Installer {
+            let installer_name = if cfg!(windows) { "blanc_installer.exe" } else { "blanc_installer" };
+            let installer_src = std::env::current_exe()
+                .ok()
+                .and_then(|exe| exe.parent().map(|dir| dir.join(installer_name)))
+                .filter(|p| p.exists())
+                .ok_or_else(|| {
+                    format!(
+                        "{} not found next to editor executable. Please build blanc_installer first.",
+                        installer_name
+                    )
+                })?;
+
+            on_progress(0.32, "Embedding application icon...");
+            let tmp_stub = std::env::temp_dir().join(format!("blanc_tmp_inst_{}{}", uuid::Uuid::new_v4(), exe_ext));
+            std::fs::copy(&installer_src, &tmp_stub)
+                .map_err(|e| format!("Failed to stage installer stub: {}", e))?;
+            let stub_embed_res = blanc_core::win_icon::embed_png_icon_into_exe(&tmp_stub, project_logo_png.as_deref());
+            let stub_bytes = std::fs::read(&tmp_stub)
+                .map_err(|e| format!("Failed to read installer stub: {}", e));
+            let _ = std::fs::remove_file(&tmp_stub);
+            stub_embed_res?;
+            let stub_bytes = stub_bytes?;
+
+            let tmp_runtime = std::env::temp_dir().join(format!("blanc_tmp_rt_{}{}", uuid::Uuid::new_v4(), exe_ext));
+            std::fs::copy(&runtime_src, &tmp_runtime)
+                .map_err(|e| format!("Failed to stage runtime binary: {}", e))?;
+            let rt_embed_res = blanc_core::win_icon::embed_png_icon_into_exe(&tmp_runtime, project_logo_png.as_deref());
+            let runtime_bytes = std::fs::read(&tmp_runtime)
+                .map_err(|e| format!("Failed to read runtime binary: {}", e));
+            let _ = std::fs::remove_file(&tmp_runtime);
+            rt_embed_res?;
+            let runtime_bytes = runtime_bytes?;
+
+            let mut installer_files: Vec<(String, Vec<u8>)> = vec![
+                (game_exe_filename.clone(), runtime_bytes),
+            ];
+
+            if snap.export_packed {
+                on_progress(0.55, "Packing game data (.bpack)...");
+                files.push((blanc_core::pack::EXPORT_META_ENTRY.to_string(), meta_bytes));
+                let temp_pack = std::env::temp_dir().join(format!("blanc_tmp_pack_{}.bpack", uuid::Uuid::new_v4()));
+                blanc_core::pack::write_bpack(&temp_pack, &files)?;
+                let pack_bytes = std::fs::read(&temp_pack)
+                    .map_err(|e| format!("Failed to read temporary bpack: {}", e))?;
+                let _ = std::fs::remove_file(&temp_pack);
+                installer_files.push(("game.bpack".to_string(), pack_bytes));
+            } else {
+                on_progress(0.55, "Staging GameData files...");
+                for (rel, bytes) in files {
+                    installer_files.push((format!("GameData/{}", rel), bytes));
+                }
+                installer_files.push((
+                    format!("GameData/{}", blanc_core::pack::EXPORT_META_ENTRY),
+                    meta_bytes,
+                ));
+            }
+
+            let logo_png = if snap.installer_include_logo {
+                project_logo_png.clone()
+            } else {
+                None
+            };
+
+            let banner_png = if snap.installer_include_banner {
+                snap.installer_custom_banner_path
+                    .as_ref()
+                    .and_then(|p| std::fs::read(p).ok())
+                    .or_else(|| {
+                        snap.title_bg_asset_id
+                            .as_deref()
+                            .and_then(|id| project.assets.get(id))
+                            .map(|a| project_dir.join(&a.relative_path))
+                            .and_then(|p| std::fs::read(p).ok())
+                    })
+            } else {
+                None
+            };
+
+            let publisher = if snap.installer_publisher.trim().is_empty() {
+                project.author.clone()
+            } else {
+                snap.installer_publisher.trim().to_string()
+            };
+            let version = if snap.installer_version.trim().is_empty() {
+                "1.0.0".to_string()
+            } else {
+                snap.installer_version.trim().to_string()
+            };
+
+            let license_text = snap
+                .license_translations
+                .get(blanc_core::installer::InstallerLang::En.code())
+                .cloned()
+                .unwrap_or_default();
+
+            let inst_cfg = blanc_core::installer::InstallerConfig {
+                game_title: project.name.clone(),
+                version,
+                publisher,
+                welcome_text: snap.installer_welcome_text.clone(),
+                license_text,
+                license_translations: snap.license_translations,
+                custom_policy_languages: snap.custom_policy_languages,
+                default_install_subdir: exe_name.clone(),
+                create_desktop_shortcut_default: snap.installer_desktop_shortcut,
+                create_start_menu_shortcut_default: snap.installer_start_menu_shortcut,
+                accent_hex: snap.accent_hex,
+                logo_png,
+                banner_png,
+            };
+
+            on_progress(0.82, "Building Setup.exe installer...");
+            let setup_filename = format!("{}_Setup{}", exe_name, exe_ext);
+            let setup_dest = out_dir.join(&setup_filename);
+            blanc_core::installer::write_installer_exe(
+                &stub_bytes,
+                &setup_dest,
+                &inst_cfg,
+                &game_exe_filename,
+                &installer_files,
+            )?;
+
+            on_progress(1.0, "Export complete!");
+            return Ok(format!(
+                "Export succeeded! Created standalone installer {}.",
+                setup_filename
+            ));
+        }
+
+        on_progress(0.35, "Copying runtime & embedding icon...");
+        let exe_dest = out_dir.join(&game_exe_filename);
+        std::fs::copy(&runtime_src, &exe_dest)
+            .map_err(|e| format!("Failed to copy runtime binary: {}", e))?;
+        blanc_core::win_icon::embed_png_icon_into_exe(&exe_dest, project_logo_png.as_deref())?;
+
+        if snap.export_packed {
+            on_progress(0.70, "Packing game.bpack...");
+            files.push((blanc_core::pack::EXPORT_META_ENTRY.to_string(), meta_bytes));
+            let pack_path = out_dir.join("game.bpack");
+            blanc_core::pack::write_bpack(&pack_path, &files)?;
+            on_progress(1.0, "Export complete!");
+            Ok(format!(
+                "Export succeeded! Created {}{} + encrypted game.bpack ({} files).",
+                exe_name,
+                exe_ext,
+                files.len()
+            ))
+        } else {
+            on_progress(0.70, "Writing GameData folder...");
+            let data_dir = out_dir.join("GameData");
+            std::fs::create_dir_all(&data_dir)
+                .map_err(|e| format!("Failed to create GameData folder: {}", e))?;
+            for (rel, bytes) in &files {
+                let target = data_dir.join(rel);
+                if let Some(parent) = target.parent() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+                std::fs::write(&target, bytes)
+                    .map_err(|e| format!("Failed to write {}: {}", rel, e))?;
+            }
+            std::fs::write(data_dir.join(blanc_core::pack::EXPORT_META_ENTRY), &meta_bytes)
+                .map_err(|e| format!("Failed to write export metadata: {}", e))?;
+            on_progress(1.0, "Export complete!");
+            Ok(format!(
+                "Export succeeded! Created {}{} + GameData/ ({} files).",
+                exe_name,
+                exe_ext,
+                files.len()
+            ))
+        }
+    }
+
+    fn collect_project_files(
+        root: &std::path::Path,
+        dir: &std::path::Path,
+        out: &mut Vec<(String, Vec<u8>)>,
+    ) -> Result<(), String> {
+        let entries = std::fs::read_dir(dir)
+            .map_err(|e| format!("Failed to read {}: {}", dir.display(), e))?;
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let name = entry.file_name().to_string_lossy().to_string();
+            if path.is_dir() {
+                if matches!(name.as_str(), "Saves" | "Exports" | ".git" | "target") {
+                    continue;
+                }
+                Self::collect_project_files(root, &path, out)?;
+            } else if path.is_file() {
+                let rel = path
+                    .strip_prefix(root)
+                    .map_err(|e| format!("Path prefix error: {}", e))?;
+                let rel_norm = rel.to_string_lossy().replace('\\', "/");
+                let bytes = std::fs::read(&path)
+                    .map_err(|e| format!("Failed to read {}: {}", path.display(), e))?;
+                out.push((rel_norm, bytes));
+            }
+        }
+        Ok(())
     }
 
     pub fn view(&self) -> Element<'_, AppMessage> {
