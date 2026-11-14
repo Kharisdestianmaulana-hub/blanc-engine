@@ -5,10 +5,11 @@
 <h1 align="center">Blanc Engine</h1>
 
 <p align="center">
-  An open-source visual novel creation suite &amp; runtime engine written in <strong>Rust</strong>.
+  An open-source, <strong>no-code</strong> visual novel creation suite &amp; runtime engine built in <strong>Rust</strong>.
 </p>
 
 <p align="center">
+  <img src="https://img.shields.io/badge/Workflow-No--Code-blueviolet" alt="No-Code Workflow" />
   <img src="https://img.shields.io/badge/Rust-2021%20Edition-orange?logo=rust" alt="Rust 2021" />
   <img src="https://img.shields.io/badge/GUI-iced%200.13-blue" alt="iced 0.13" />
   <img src="https://img.shields.io/badge/License-GPL--3.0--or--later-green" alt="GPL-3.0-or-later" />
@@ -18,7 +19,7 @@
 
 ## Overview
 
-**Blanc Engine** is a desktop-first visual novel engine designed to take a story from screenplay to a distributable standalone game. It provides an integrated **Visual Editor**, a **Standalone Runtime Player**, an encrypted **`.bpack` Asset Packer**, a developer-defined **Multi-Language Localization System**, and a built-in **Windows Setup Wizard & Uninstaller** — all in one Rust workspace.
+**Blanc Engine** is a **no-code**, desktop-first visual novel engine designed to take a story from screenplay to a distributable standalone game — **without writing a single line of code**. Everything from writing dialogue and wiring branching choices to customizing menus, translating languages, and packaging a Windows installer is done visually inside one integrated suite.
 
 ---
 

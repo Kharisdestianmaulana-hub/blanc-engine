@@ -1,5 +1,7 @@
 # Blanc Engine User Guide
 
+**Blanc Engine is a no-code visual novel engine.** Writers and creators can build branching stories, design custom UIs, localize into multiple languages, and export a standalone Windows `Setup.exe` completely through visual tools — no programming required.
+
 This guide covers the core workflow for creating, localizing, and distributing a visual novel with **Blanc Engine**.
 
 ---
