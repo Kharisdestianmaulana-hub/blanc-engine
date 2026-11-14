@@ -3225,11 +3225,8 @@ impl DashboardState {
             );
         }
 
-        // Section 2: System Nodes Library (Pendekatan A)
+        // Section 2: Ending & Flow Outcome Nodes (built-in Pause/Settings/SaveLoad are automatic in runtime)
         let system_library_defs = [
-            ("pause_menu", "Pause / In-Game Menu", "system_pause_menu"),
-            ("settings", "In-Game Settings", "system_settings"),
-            ("save_load", "Save & Load Screen", "system_save_load"),
             ("return_to_title", "Return to Title", "ending_return_to_title"),
             ("credits", "Credits Roll", "credits"),
             ("game_over", "Game Over Screen", "game_over"),
@@ -3335,7 +3332,7 @@ impl DashboardState {
                 search_input,
                 scenes_list_col,
                 Space::with_height(SPACE_2),
-                text("System Nodes (Library):")
+                text("Ending & Flow Nodes:")
                     .size(LABEL_SM)
                     .color(iced::Color::from_rgb8(
                         TEXT_MUTED.r,
