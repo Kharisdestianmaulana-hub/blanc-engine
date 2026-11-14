@@ -108,7 +108,11 @@ cargo test --workspace
 
 ## Documentation
 
-Additional design and specification documents are included in this repository:
+Additional guides and specification documents are included in this repository:
+- [`docs/USER_GUIDE.md`](docs/USER_GUIDE.md) — Step-by-step creator guide (Scripting, UI Designer, Localization & CSV, Exporting)
+- [`CHANGELOG.md`](CHANGELOG.md) — Release history & notable changes
+- [`CONTRIBUTING.md`](CONTRIBUTING.md) — Development setup & pull request guidelines
+- [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md) — Community standards
 - [`PRD.md`](PRD.md) — Product Requirements Document
 - [`SRS.md`](SRS.md) — Software Requirements Specification
 - [`Design_System.md`](Design_System.md) — UI & Visual Design System
@@ -117,16 +121,10 @@ Additional design and specification documents are included in this repository:
 
 ## Contributing
 
-Contributions, bug reports, and feature suggestions are welcome!
-
-1. Fork the repository
-2. Create your feature branch (`git checkout -b feature/my-feature`)
-3. Commit your changes (`git commit -m "Add my feature"`)
-4. Push to the branch (`git push origin feature/my-feature`)
-5. Open a Pull Request
+Contributions, bug reports, and feature suggestions are welcome! Please read [`CONTRIBUTING.md`](CONTRIBUTING.md) and [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md) before opening an issue or pull request.
 
 ---
 
 ## License
 
-This project is licensed under the **GNU General Public License v3.0 or later (`GPL-3.0-or-later`)** — see [`Cargo.toml`](Cargo.toml) for details.
+This project is licensed under the **GNU General Public License v3.0 or later (`GPL-3.0-or-later`)** — see [`LICENSE`](LICENSE) and [`Cargo.toml`](Cargo.toml) for details.
