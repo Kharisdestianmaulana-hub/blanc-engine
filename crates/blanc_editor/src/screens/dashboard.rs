@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use iced::widget::{
-    button, canvas, checkbox, column, container, image, pick_list, progress_bar, row, scrollable,
+    button, canvas, column, container, image, pick_list, progress_bar, row, scrollable,
     stack, text, text_editor, text_input, Space,
 };
 use iced::{Alignment, Element, Length};
@@ -121,6 +121,7 @@ pub enum DashboardMessage {
     UpdateSpeakerName(usize, String),
     UpdateDialogueText(usize, String),
     UpdateDialogueNameplatePosition(usize, Option<CharacterPosition>),
+    ClearBlockVoice(usize),
     UpdateChoicePrompt(usize, String),
 
     // Custom Modal Asset Picker messages
@@ -140,6 +141,7 @@ pub enum DashboardMessage {
     UpdateMasterVolume(f32),
     UpdateBgmVolume(f32),
     UpdateSfxVolume(f32),
+    UpdateVoiceVolume(f32),
     UpdateTextSpeed(f32),
     UpdateAutoForwardDelay(f32),
     UpdateSceneTransitionMode(SceneTransitionMode),
@@ -221,6 +223,9 @@ pub enum DashboardMessage {
     LocaleSaveAll,
     LocaleExportCsv,
     LocaleImportCsv,
+    LocaleToggleDefaultEditor,
+    LocaleToggleAddForm,
+    LocaleFillPresetLanguage(String, String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -366,6 +371,8 @@ pub struct DashboardState {
     pub locale_filter_scope: LocaleFilterScope,
     pub locale_untranslated_only: bool,
     pub locale_status_message: Option<String>,
+    pub locale_show_default_editor: bool,
+    pub locale_show_add_form: bool,
 }
 
 impl DashboardState {
@@ -584,6 +591,8 @@ impl DashboardState {
             locale_filter_scope: LocaleFilterScope::All,
             locale_untranslated_only: false,
             locale_status_message: None,
+            locale_show_default_editor: false,
+            locale_show_add_form: false,
         }
     }
 
@@ -707,6 +716,8 @@ impl Default for DashboardState {
             locale_filter_scope: LocaleFilterScope::All,
             locale_untranslated_only: false,
             locale_status_message: None,
+            locale_show_default_editor: false,
+            locale_show_add_form: false,
         }
     }
 }
@@ -1012,7 +1023,7 @@ impl DashboardState {
                 AssetCategory::Background => icon_image(),
                 AssetCategory::Character | AssetCategory::CharacterExpression => icon_user(),
                 AssetCategory::Bgm => icon_music(),
-                AssetCategory::Sfx => icon_volume(),
+                AssetCategory::Sfx | AssetCategory::Voice => icon_volume(),
                 AssetCategory::Font => icon_type(),
                 AssetCategory::Ui | AssetCategory::Other => icon_blocks(),
             };
@@ -1056,6 +1067,7 @@ impl DashboardState {
                     AssetCategory::CharacterExpression => "Facial expression variants for character sprites",
                     AssetCategory::Bgm => "Background music tracks (Seamless looping OGG/WAV/MP3)",
                     AssetCategory::Sfx => "Short sound effects (WAV/OGG/MP3)",
+                    AssetCategory::Voice => "Character voice-over lines (OGG/WAV/MP3)",
                     AssetCategory::Font => "TrueType and OpenType fonts (TTF/OTF)",
                     AssetCategory::Ui => "Custom UI frames, button textures, and dialogue boxes",
                     AssetCategory::Other => "General files and miscellaneous game assets",
@@ -1251,7 +1263,7 @@ impl DashboardState {
     }
 
     fn asset_is_audio(cat: AssetCategory) -> bool {
-        matches!(cat, AssetCategory::Bgm | AssetCategory::Sfx)
+        matches!(cat, AssetCategory::Bgm | AssetCategory::Sfx | AssetCategory::Voice)
     }
 
     fn view_asset_card<'a>(&'a self, asset: &'a Asset, project_dir: &'a PathBuf) -> Element<'a, DashboardMessage> {
@@ -1280,7 +1292,7 @@ impl DashboardState {
                 AssetCategory::Background => icon_image(),
                 AssetCategory::Character | AssetCategory::CharacterExpression => icon_user(),
                 AssetCategory::Bgm => icon_music(),
-                AssetCategory::Sfx => icon_volume(),
+                AssetCategory::Sfx | AssetCategory::Voice => icon_volume(),
                 AssetCategory::Font => icon_type(),
                 AssetCategory::Ui | AssetCategory::Other => icon_blocks(),
             };
@@ -2412,7 +2424,7 @@ impl DashboardState {
                     .into(),
                 )
             }
-            ActionBlock::Dialogue { speaker, text: spoken_text, nameplate_position, .. } => {
+            ActionBlock::Dialogue { speaker, text: spoken_text, nameplate_position, voice_asset_id } => {
                 let speaker_input = text_input("Speaker", speaker)
                     .on_input(move |val| DashboardMessage::UpdateSpeakerName(idx, val))
                     .padding(SPACE_1)
@@ -2452,10 +2464,45 @@ impl DashboardState {
                 .spacing(SPACE_2)
                 .align_y(Alignment::Center);
 
+                let vo_label = voice_asset_id
+                    .as_deref()
+                    .map(|id| format!("VO: {}", id))
+                    .unwrap_or_else(|| "Select Voice (VO)...".to_string());
+
+                let btn_pick_vo = button(
+                    row![icon_volume(), text(vo_label).size(LABEL_SM)]
+                        .spacing(SPACE_1)
+                        .align_y(Alignment::Center),
+                )
+                .padding([2.0, 8.0])
+                .style(if voice_asset_id.is_some() { primary_button_style } else { secondary_button_style })
+                .on_press(DashboardMessage::OpenAssetPickerModal {
+                    target: AssetPickerTarget::Block(idx),
+                    category: AssetCategory::Voice,
+                });
+
+                let mut vo_row = row![
+                    text("Voice:")
+                        .size(LABEL_SM)
+                        .color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b)),
+                    btn_pick_vo,
+                ]
+                .spacing(SPACE_2)
+                .align_y(Alignment::Center);
+
+                if voice_asset_id.is_some() {
+                    vo_row = vo_row.push(
+                        button(icon_close())
+                            .padding([2.0, 6.0])
+                            .style(danger_icon_button_style)
+                            .on_press(DashboardMessage::ClearBlockVoice(idx)),
+                    );
+                }
+
                 (
                     "Dialogue",
                     icon_message(),
-                    column![inputs_row, nameplate_row].spacing(SPACE_2).into(),
+                    column![inputs_row, nameplate_row, vo_row].spacing(SPACE_2).into(),
                 )
             }
             ActionBlock::Background { asset_id, transition } => {
@@ -2773,6 +2820,7 @@ impl DashboardState {
             AssetCategory::CharacterExpression => ("Select Character Expression", "Expressions"),
             AssetCategory::Bgm => ("Select Background Music (BGM)", "BGM"),
             AssetCategory::Sfx => ("Select Sound Effect (SFX)", "SFX"),
+            AssetCategory::Voice => ("Select Voice Over (VO)", "Voice"),
             AssetCategory::Font => ("Select Font Asset", "Fonts"),
             AssetCategory::Ui => ("Select UI Asset", "UI"),
             AssetCategory::Other => ("Select Asset", "Other"),
@@ -4062,6 +4110,46 @@ impl DashboardState {
         .spacing(SPACE_2)
         .align_y(Alignment::Center);
 
+        // Voice Volume Row
+        let voice_vol = self.system_screens_config.voice_volume;
+        let voice_fill = (voice_vol.clamp(0.0, 1.0) * 140.0) as f32;
+        let voice_bar = container(
+            row![
+                container(Space::with_width(Length::Fixed(voice_fill)))
+                    .height(Length::Fixed(6.0))
+                    .style(meter_fill_style)
+            ]
+        )
+        .width(Length::Fixed(140.0))
+        .height(Length::Fixed(6.0))
+        .style(meter_bg_style);
+
+        let voice_badge = container(
+            text(format!("{:.0}%", voice_vol * 100.0))
+                .size(LABEL_SM)
+                .color(if voice_vol == 0.0 { iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b) } else { iced::Color::from_rgb8(ACCENT_PRIMARY.r, ACCENT_PRIMARY.g, ACCENT_PRIMARY.b) })
+        )
+        .width(48)
+        .align_x(Alignment::Center);
+
+        let is_v_100 = (voice_vol - 1.0).abs() < 0.01;
+        let is_v_80 = (voice_vol - 0.8).abs() < 0.01;
+        let is_v_50 = (voice_vol - 0.5).abs() < 0.01;
+        let is_v_0 = voice_vol == 0.0;
+
+        let voice_vol_row = row![
+            container(row![icon_volume(), text("Voice Over (VO)").size(LABEL_SM)].spacing(SPACE_2).align_y(Alignment::Center)).width(170),
+            voice_bar,
+            voice_badge,
+            Space::with_width(SPACE_2),
+            button(text("100%").size(LABEL_SM)).padding([SPACE_1, SPACE_3]).style(if is_v_100 { primary_button_style } else { secondary_button_style }).on_press(DashboardMessage::UpdateVoiceVolume(1.0)),
+            button(text("80%").size(LABEL_SM)).padding([SPACE_1, SPACE_3]).style(if is_v_80 { primary_button_style } else { secondary_button_style }).on_press(DashboardMessage::UpdateVoiceVolume(0.8)),
+            button(text("50%").size(LABEL_SM)).padding([SPACE_1, SPACE_3]).style(if is_v_50 { primary_button_style } else { secondary_button_style }).on_press(DashboardMessage::UpdateVoiceVolume(0.5)),
+            button(text("Mute").size(LABEL_SM)).padding([SPACE_1, SPACE_3]).style(if is_v_0 { primary_button_style } else { secondary_button_style }).on_press(DashboardMessage::UpdateVoiceVolume(0.0)),
+        ]
+        .spacing(SPACE_2)
+        .align_y(Alignment::Center);
+
         let card3 = container(
             column![
                 card3_title,
@@ -4069,6 +4157,7 @@ impl DashboardState {
                 master_row,
                 bgm_vol_row,
                 sfx_vol_row,
+                voice_vol_row,
             ]
             .spacing(SPACE_3),
         )
@@ -4176,7 +4265,7 @@ impl DashboardState {
 
         let item_engine = row![
             text("Engine: ").size(LABEL_SM).color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b)),
-            text("Blanc Engine 0.1.0-alpha")
+            text("Blanc Engine 0.1.0-beta")
                 .size(BODY_SM)
                 .color(iced::Color::from_rgb8(ACCENT_PRIMARY.r, ACCENT_PRIMARY.g, ACCENT_PRIMARY.b)),
         ]
@@ -4952,9 +5041,29 @@ impl DashboardState {
     // LOCALIZATION TAB
     // ==========================================
     fn view_localization_content(&self) -> Element<'_, DashboardMessage> {
-        let total_items = self.locale_items.len().max(1);
+        let total_items = self.locale_items.len();
+        let total_items_denom = total_items.max(1);
         let selected_key = self.locale_selected_code.to_ascii_lowercase();
         let active_table = self.locale_tables.get(&selected_key);
+
+        let active_lang_entry = self
+            .locale_manifest
+            .all_languages()
+            .into_iter()
+            .find(|l| l.code.eq_ignore_ascii_case(&self.locale_selected_code));
+        let active_lang_name = active_lang_entry
+            .as_ref()
+            .map(|l| l.display_name.clone())
+            .unwrap_or_else(|| self.locale_selected_code.clone());
+        let active_translated = active_table
+            .map(|tbl| {
+                self.locale_items
+                    .iter()
+                    .filter(|it| tbl.entries.get(&it.key).map(|v| !v.is_empty()).unwrap_or(false))
+                    .count()
+            })
+            .unwrap_or(0);
+        let active_pct = (active_translated * 100) / total_items_denom;
 
         let header = container(
             row![
@@ -4962,7 +5071,7 @@ impl DashboardState {
                     text("Localization & Multi-Language")
                         .size(HEADING_MD)
                         .color(iced::Color::from_rgb8(TEXT_PRIMARY.r, TEXT_PRIMARY.g, TEXT_PRIMARY.b)),
-                    text("Add any number of languages for your game. Translate UI labels, character names, and scene scripts.")
+                    text("Manage game languages and translate UI labels, character names, and scene dialogue.")
                         .size(BODY_SM)
                         .color(iced::Color::from_rgb8(TEXT_SECONDARY.r, TEXT_SECONDARY.g, TEXT_SECONDARY.b)),
                 ]
@@ -4992,75 +5101,142 @@ impl DashboardState {
             .spacing(SPACE_4)
             .align_y(Alignment::Center),
         )
-        .padding(SPACE_4)
+        .padding([SPACE_3, SPACE_4])
         .width(Length::Fill)
         .style(card_container_style);
 
-        // Left pane: Default language + Add language + Languages list
-        let default_lang_card = container(
-            column![
-                text("Source / Default Language")
+        // Left sidebar: Unified panel (Compact Default bar + Collapsible Add + Languages list)
+        let mut default_section = column![
+            row![
+                column![
+                    text("SOURCE LANGUAGE")
+                        .size(10)
+                        .color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b)),
+                    text(format!(
+                        "{} ({})",
+                        self.locale_manifest.default_language.display_name,
+                        self.locale_manifest.default_language.code
+                    ))
                     .size(LABEL_MD)
                     .color(iced::Color::from_rgb8(TEXT_PRIMARY.r, TEXT_PRIMARY.g, TEXT_PRIMARY.b)),
-                row![
-                    text_input("Code (e.g. en)", &self.locale_default_code)
-                        .on_input(DashboardMessage::LocaleDefaultCodeChanged)
-                        .size(BODY_SM)
-                        .padding(SPACE_2)
-                        .width(Length::Fixed(80.0))
-                        .style(input_field_style),
-                    text_input("Display Name", &self.locale_default_name)
-                        .on_input(DashboardMessage::LocaleDefaultNameChanged)
-                        .size(BODY_SM)
-                        .padding(SPACE_2)
-                        .width(Length::Fill)
-                        .style(input_field_style),
                 ]
-                .spacing(SPACE_2),
-                button(text("Update Default").size(LABEL_SM))
-                    .padding([SPACE_1, SPACE_3])
-                    .style(secondary_button_style)
-                    .on_press(DashboardMessage::LocaleSaveDefaultLanguage),
+                .spacing(2)
+                .width(Length::Fill),
+                button(text(if self.locale_show_default_editor { "Close" } else { "Edit" }).size(LABEL_SM))
+                    .padding([4, 10])
+                    .style(subtle_button_style)
+                    .on_press(DashboardMessage::LocaleToggleDefaultEditor),
             ]
-            .spacing(SPACE_2),
-        )
-        .padding(SPACE_3)
-        .width(Length::Fill)
-        .style(card_container_style);
+            .align_y(Alignment::Center)
+            .width(Length::Fill),
+        ]
+        .spacing(SPACE_2);
 
-        let add_lang_card = container(
-            column![
-                text("Add Language")
-                    .size(LABEL_MD)
-                    .color(iced::Color::from_rgb8(TEXT_PRIMARY.r, TEXT_PRIMARY.g, TEXT_PRIMARY.b)),
-                row![
-                    text_input("Code (id, ja...)", &self.locale_new_code)
-                        .on_input(DashboardMessage::LocaleNewCodeChanged)
-                        .size(BODY_SM)
-                        .padding(SPACE_2)
-                        .width(Length::Fixed(95.0))
-                        .style(input_field_style),
-                    text_input("Name (e.g. 日本語)", &self.locale_new_name)
-                        .on_input(DashboardMessage::LocaleNewNameChanged)
-                        .size(BODY_SM)
-                        .padding(SPACE_2)
-                        .width(Length::Fill)
-                        .style(input_field_style),
-                ]
-                .spacing(SPACE_2),
-                button(text("+ Add Language").size(LABEL_SM))
-                    .padding([SPACE_2, SPACE_3])
-                    .width(Length::Fill)
-                    .style(primary_button_style)
-                    .on_press(DashboardMessage::LocaleAddLanguage),
+        if self.locale_show_default_editor {
+            default_section = default_section.push(
+                container(
+                    column![
+                        row![
+                            text_input("Code (en)", &self.locale_default_code)
+                                .on_input(DashboardMessage::LocaleDefaultCodeChanged)
+                                .size(BODY_SM)
+                                .padding(SPACE_2)
+                                .width(Length::Fixed(76.0))
+                                .style(input_field_style),
+                            text_input("Display Name", &self.locale_default_name)
+                                .on_input(DashboardMessage::LocaleDefaultNameChanged)
+                                .size(BODY_SM)
+                                .padding(SPACE_2)
+                                .width(Length::Fill)
+                                .style(input_field_style),
+                        ]
+                        .spacing(SPACE_2),
+                        button(text("Save Default Language").size(LABEL_SM))
+                            .padding([SPACE_1, SPACE_3])
+                            .width(Length::Fill)
+                            .style(primary_button_style)
+                            .on_press(DashboardMessage::LocaleSaveDefaultLanguage),
+                    ]
+                    .spacing(SPACE_2),
+                )
+                .padding(SPACE_2)
+                .width(Length::Fill)
+                .style(code_container_style),
+            );
+        }
+
+        let mut languages_header_col = column![
+            row![
+                text("LANGUAGES")
+                    .size(11)
+                    .color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b)),
+                Space::new(Length::Fill, Length::Shrink),
+                button(text(if self.locale_show_add_form { "Cancel" } else { "+ Add" }).size(LABEL_SM))
+                    .padding([4, 10])
+                    .style(if self.locale_show_add_form { subtle_button_style } else { primary_button_style })
+                    .on_press(DashboardMessage::LocaleToggleAddForm),
             ]
-            .spacing(SPACE_2),
-        )
-        .padding(SPACE_3)
-        .width(Length::Fill)
-        .style(card_container_style);
+            .align_y(Alignment::Center)
+            .width(Length::Fill),
+        ]
+        .spacing(SPACE_2);
 
-        let mut lang_list_col = column![].spacing(SPACE_2).width(Length::Fill);
+        if self.locale_show_add_form {
+            let presets = [
+                ("id", "Indonesian"),
+                ("ja", "日本語"),
+                ("zh", "中文"),
+                ("ko", "한국어"),
+                ("es", "Español"),
+            ];
+            let mut preset_row = row![].spacing(4);
+            for (code, name) in presets {
+                preset_row = preset_row.push(
+                    button(text(code.to_ascii_uppercase()).size(10))
+                        .padding([3, 7])
+                        .style(subtle_button_style)
+                        .on_press(DashboardMessage::LocaleFillPresetLanguage(
+                            code.to_string(),
+                            name.to_string(),
+                        )),
+                );
+            }
+
+            languages_header_col = languages_header_col.push(
+                container(
+                    column![
+                        text("Quick presets:").size(10).color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b)),
+                        preset_row,
+                        row![
+                            text_input("Code", &self.locale_new_code)
+                                .on_input(DashboardMessage::LocaleNewCodeChanged)
+                                .size(BODY_SM)
+                                .padding(SPACE_2)
+                                .width(Length::Fixed(76.0))
+                                .style(input_field_style),
+                            text_input("Name (e.g. Indonesian)", &self.locale_new_name)
+                                .on_input(DashboardMessage::LocaleNewNameChanged)
+                                .size(BODY_SM)
+                                .padding(SPACE_2)
+                                .width(Length::Fill)
+                                .style(input_field_style),
+                        ]
+                        .spacing(SPACE_2),
+                        button(text("Create Language").size(LABEL_SM))
+                            .padding([SPACE_1, SPACE_3])
+                            .width(Length::Fill)
+                            .style(primary_button_style)
+                            .on_press(DashboardMessage::LocaleAddLanguage),
+                    ]
+                    .spacing(SPACE_2),
+                )
+                .padding(SPACE_2)
+                .width(Length::Fill)
+                .style(code_container_style),
+            );
+        }
+
+        let mut lang_list_col = column![].spacing(SPACE_1).width(Length::Fill);
         for lang in self.locale_manifest.all_languages() {
             let is_default = lang
                 .code
@@ -5076,32 +5252,74 @@ impl DashboardState {
                         .count()
                 })
                 .unwrap_or(0);
-            let pct = (translated_count * 100) / total_items;
+            let pct = (translated_count * 100) / total_items_denom;
+            let bar_total_w = 190.0f32;
+            let bar_fill_w = ((pct as f32 / 100.0) * bar_total_w).clamp(0.0, bar_total_w);
+
+            let mut title_row = row![
+                text(lang.display_name.clone())
+                    .size(LABEL_MD)
+                    .color(iced::Color::from_rgb8(TEXT_PRIMARY.r, TEXT_PRIMARY.g, TEXT_PRIMARY.b)),
+                container(
+                    text(lang.code.to_ascii_uppercase())
+                        .size(10)
+                        .color(iced::Color::from_rgb8(TEXT_SECONDARY.r, TEXT_SECONDARY.g, TEXT_SECONDARY.b)),
+                )
+                .padding([1, 6])
+                .style(badge_container_style),
+            ]
+            .spacing(SPACE_1)
+            .align_y(Alignment::Center);
+
+            if is_default {
+                title_row = title_row.push(
+                    container(
+                        text("DEFAULT")
+                            .size(9)
+                            .color(iced::Color::from_rgb8(ACCENT_PRIMARY.r, ACCENT_PRIMARY.g, ACCENT_PRIMARY.b)),
+                    )
+                    .padding([1, 5])
+                    .style(badge_container_style),
+                );
+            }
+
+            let progress_bar = container(
+                row![
+                    container(Space::new(Length::Fixed(bar_fill_w), Length::Fixed(4.0)))
+                        .height(Length::Fixed(4.0))
+                        .style(meter_fill_style),
+                ],
+            )
+            .width(Length::Fixed(bar_total_w))
+            .height(Length::Fixed(4.0))
+            .style(meter_bg_style);
 
             let info_col = column![
-                text(format!(
-                    "{} ({}){}",
-                    lang.display_name,
-                    lang.code,
-                    if is_default { " • Default" } else { "" }
-                ))
-                .size(LABEL_MD)
-                .color(iced::Color::from_rgb8(TEXT_PRIMARY.r, TEXT_PRIMARY.g, TEXT_PRIMARY.b)),
-                text(format!(
-                    "{} / {} translated ({}%)",
-                    translated_count,
-                    self.locale_items.len(),
-                    pct
-                ))
-                .size(LABEL_SM)
-                .color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b)),
+                title_row,
+                row![
+                    progress_bar,
+                    Space::new(Length::Fill, Length::Shrink),
+                    text(format!("{}%", pct))
+                        .size(10)
+                        .color(if pct == 100 {
+                            iced::Color::from_rgb8(STATUS_SUCCESS.r, STATUS_SUCCESS.g, STATUS_SUCCESS.b)
+                        } else {
+                            iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b)
+                        }),
+                ]
+                .spacing(SPACE_1)
+                .align_y(Alignment::Center)
+                .width(Length::Fill),
+                text(format!("{} / {} strings", translated_count, total_items))
+                    .size(10)
+                    .color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b)),
             ]
-            .spacing(2)
+            .spacing(4)
             .width(Length::Fill);
 
             let mut card_row = row![
                 button(info_col)
-                    .padding(SPACE_2)
+                    .padding([SPACE_2, SPACE_3])
                     .width(Length::Fill)
                     .style(sidebar_button_style(is_selected))
                     .on_press(DashboardMessage::LocaleSelectLanguage(lang.code.clone())),
@@ -5112,7 +5330,7 @@ impl DashboardState {
             if !is_default {
                 card_row = card_row.push(
                     button(text("×").size(LABEL_MD))
-                        .padding([SPACE_2, SPACE_3])
+                        .padding([SPACE_2, SPACE_2])
                         .style(danger_icon_button_style)
                         .on_press(DashboardMessage::LocaleRemoveLanguage(lang.code.clone())),
                 );
@@ -5121,29 +5339,25 @@ impl DashboardState {
             lang_list_col = lang_list_col.push(card_row);
         }
 
-        let left_pane = column![
-            default_lang_card,
-            add_lang_card,
-            container(
-                column![
-                    text("Configured Languages")
-                        .size(LABEL_MD)
-                        .color(iced::Color::from_rgb8(TEXT_PRIMARY.r, TEXT_PRIMARY.g, TEXT_PRIMARY.b)),
-                    scrollable(lang_list_col).height(Length::Fill),
-                ]
-                .spacing(SPACE_2)
-                .height(Length::Fill),
-            )
-            .padding(SPACE_3)
-            .width(Length::Fill)
+        let left_pane = container(
+            column![
+                container(default_section)
+                    .padding(SPACE_3)
+                    .width(Length::Fill)
+                    .style(card_container_style),
+                languages_header_col,
+                scrollable(lang_list_col).height(Length::Fill).width(Length::Fill),
+            ]
+            .spacing(SPACE_3)
             .height(Length::Fill)
-            .style(card_container_style),
-        ]
-        .spacing(SPACE_3)
-        .width(Length::Fixed(320.0))
-        .height(Length::Fill);
+            .width(Length::Fill),
+        )
+        .padding(SPACE_3)
+        .width(Length::Fixed(296.0))
+        .height(Length::Fill)
+        .style(sidebar_container_style);
 
-        // Right pane: Filters + Translation table
+        // Right pane: Clean translation workspace without nested cards
         let mut scopes = vec![
             LocaleFilterScope::All,
             LocaleFilterScope::Ui,
@@ -5173,19 +5387,53 @@ impl DashboardState {
                 Some(self.locale_filter_scope.clone()),
                 DashboardMessage::LocaleFilterScopeChanged,
             )
-            .width(Length::Fixed(320.0))
+            .width(Length::Fixed(220.0))
             .padding([6, 10]),
-            checkbox("Untranslated Only", self.locale_untranslated_only)
-                .on_toggle(DashboardMessage::LocaleToggleUntranslatedOnly)
-                .size(16)
-                .text_size(LABEL_SM),
+            container(
+                row![
+                    button(text("All").size(LABEL_SM))
+                        .padding([5, 10])
+                        .style(if !self.locale_untranslated_only { primary_button_style } else { subtle_button_style })
+                        .on_press(DashboardMessage::LocaleToggleUntranslatedOnly(false)),
+                    button(text("Untranslated").size(LABEL_SM))
+                        .padding([5, 10])
+                        .style(if self.locale_untranslated_only { primary_button_style } else { subtle_button_style })
+                        .on_press(DashboardMessage::LocaleToggleUntranslatedOnly(true)),
+                ]
+                .spacing(2),
+            )
+            .padding(2)
+            .style(code_container_style),
         ]
-        .spacing(SPACE_3)
+        .spacing(SPACE_2)
         .align_y(Alignment::Center)
         .width(Length::Fill);
 
+        let table_header = container(
+            row![
+                text(format!(
+                    "SOURCE ({})",
+                    self.locale_manifest.default_language.code.to_ascii_uppercase()
+                ))
+                .size(10)
+                .color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b))
+                .width(Length::FillPortion(1)),
+                text(format!(
+                    "TRANSLATION ({})",
+                    self.locale_selected_code.to_ascii_uppercase()
+                ))
+                .size(10)
+                .color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b))
+                .width(Length::FillPortion(1)),
+            ]
+            .spacing(SPACE_3),
+        )
+        .padding([SPACE_1, SPACE_3])
+        .width(Length::Fill)
+        .style(code_container_style);
+
         let query = self.locale_search_query.trim().to_ascii_lowercase();
-        let mut rows_col = column![].spacing(SPACE_2).width(Length::Fill);
+        let mut rows_col = column![].spacing(SPACE_1).width(Length::Fill);
         let mut shown_count = 0usize;
 
         for item in &self.locale_items {
@@ -5222,19 +5470,31 @@ impl DashboardState {
 
             shown_count += 1;
             let key_clone = item.key.clone();
-            let row_card = container(
+            let is_translated = !trans_val.trim().is_empty();
+            let status_color = if is_translated {
+                iced::Color::from_rgb8(STATUS_SUCCESS.r, STATUS_SUCCESS.g, STATUS_SUCCESS.b)
+            } else {
+                iced::Color::from_rgb8(STATUS_WARNING.r, STATUS_WARNING.g, STATUS_WARNING.b)
+            };
+
+            let row_item = container(
                 column![
                     row![
+                        text("●").size(10).color(status_color),
                         container(
                             text(&item.context_label)
-                                .size(LABEL_SM)
+                                .size(10)
                                 .color(iced::Color::from_rgb8(ACCENT_PRIMARY.r, ACCENT_PRIMARY.g, ACCENT_PRIMARY.b)),
                         )
-                        .padding([2, 8])
+                        .padding([1, 7])
                         .style(badge_container_style),
                         text(&item.key)
                             .size(11)
                             .color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b)),
+                        Space::new(Length::Fill, Length::Shrink),
+                        text(if is_translated { "Translated" } else { "Fallback" })
+                            .size(10)
+                            .color(status_color),
                     ]
                     .spacing(SPACE_2)
                     .align_y(Alignment::Center),
@@ -5244,10 +5504,10 @@ impl DashboardState {
                                 .size(BODY_SM)
                                 .color(iced::Color::from_rgb8(TEXT_SECONDARY.r, TEXT_SECONDARY.g, TEXT_SECONDARY.b)),
                         )
-                        .padding(SPACE_2)
+                        .padding([SPACE_2, SPACE_2])
                         .width(Length::FillPortion(1))
                         .style(code_container_style),
-                        text_input("Translation (empty = fallback to source)...", trans_val)
+                        text_input("Enter translation (empty = fallback to source)...", trans_val)
                             .on_input(move |v| DashboardMessage::LocaleTranslationChanged(key_clone.clone(), v))
                             .size(BODY_SM)
                             .padding(SPACE_2)
@@ -5259,11 +5519,11 @@ impl DashboardState {
                 ]
                 .spacing(SPACE_2),
             )
-            .padding(SPACE_3)
+            .padding([SPACE_2, SPACE_3])
             .width(Length::Fill)
-            .style(card_container_style);
+            .style(code_container_style);
 
-            rows_col = rows_col.push(row_card);
+            rows_col = rows_col.push(row_item);
         }
 
         if shown_count == 0 {
@@ -5282,9 +5542,24 @@ impl DashboardState {
         let right_pane = container(
             column![
                 row![
-                    text(format!("Editing Language: {}", self.locale_selected_code))
-                        .size(LABEL_MD)
-                        .color(iced::Color::from_rgb8(TEXT_PRIMARY.r, TEXT_PRIMARY.g, TEXT_PRIMARY.b)),
+                    row![
+                        text(format!("{} ({})", active_lang_name, self.locale_selected_code))
+                            .size(HEADING_SM)
+                            .color(iced::Color::from_rgb8(TEXT_PRIMARY.r, TEXT_PRIMARY.g, TEXT_PRIMARY.b)),
+                        container(
+                            text(format!("{}/{} translated · {}%", active_translated, total_items, active_pct))
+                                .size(LABEL_SM)
+                                .color(if active_pct == 100 {
+                                    iced::Color::from_rgb8(STATUS_SUCCESS.r, STATUS_SUCCESS.g, STATUS_SUCCESS.b)
+                                } else {
+                                    iced::Color::from_rgb8(ACCENT_PRIMARY.r, ACCENT_PRIMARY.g, ACCENT_PRIMARY.b)
+                                }),
+                        )
+                        .padding([2, 8])
+                        .style(badge_container_style),
+                    ]
+                    .spacing(SPACE_2)
+                    .align_y(Alignment::Center),
                     Space::new(Length::Fill, Length::Shrink),
                     text(format!("Showing {} string(s)", shown_count))
                         .size(LABEL_SM)
@@ -5293,9 +5568,10 @@ impl DashboardState {
                 .align_y(Alignment::Center)
                 .width(Length::Fill),
                 filter_bar,
+                table_header,
                 scrollable(rows_col).height(Length::Fill).width(Length::Fill),
             ]
-            .spacing(SPACE_3)
+            .spacing(SPACE_2)
             .height(Length::Fill)
             .width(Length::Fill),
         )

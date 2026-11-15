@@ -17,3 +17,5 @@ desktop.ini
 # Blanc Engine local cache & backups
 /Backups/
 /Builds/
+/dist/
+*.exe

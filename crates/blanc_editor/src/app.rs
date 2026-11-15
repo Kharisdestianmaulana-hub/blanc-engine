@@ -53,6 +53,28 @@ pub enum CurrentScreen {
 
 impl Default for CurrentScreen {
     fn default() -> Self {
+        let cfg = crate::screens::welcome::HubConfig::load();
+        if cfg.reopen_last_project {
+            if let Some(last) = cfg.recent_projects.first() {
+                if last.path.exists() {
+                    if let Ok(project) = Project::load_from_manifest(&last.path) {
+                        let project_dir = last.path.parent().unwrap_or(&last.path).to_path_buf();
+                        let mut dashboard = DashboardState::init_for_project(&project_dir);
+                        dashboard.installer_publisher = project.author.clone();
+                        if dashboard.export_output_dir.trim().is_empty() {
+                            if let Some(exp) = &cfg.default_export_folder {
+                                dashboard.export_output_dir = exp.to_string_lossy().to_string();
+                            }
+                        }
+                        return Self::Workspace {
+                            project,
+                            project_dir,
+                            dashboard,
+                        };
+                    }
+                }
+            }
+        }
         Self::Welcome(WelcomeState::new())
     }
 }
@@ -102,6 +124,9 @@ impl EditorApp {
                 if state.selected_folder.is_none() {
                     state.selected_folder = state.config.default_folder.clone();
                 }
+                if !state.config.default_author.trim().is_empty() {
+                    state.input_author = state.config.default_author.clone();
+                }
             }
             WelcomeMessage::CancelCreateModal => {
                 state.is_creating_project = false;
@@ -143,6 +168,34 @@ impl EditorApp {
 
                         let mut dashboard = DashboardState::init_for_project(&target_dir);
                         dashboard.installer_publisher = project.author.clone();
+                        let (res_w, res_h) = state.config.default_resolution;
+                        dashboard.system_screens_config.default_resolution_width = res_w;
+                        dashboard.system_screens_config.default_resolution_height = res_h;
+                        let config_dir = target_dir.join("Settings");
+                        let _ = std::fs::create_dir_all(&config_dir);
+                        let _ = dashboard
+                            .system_screens_config
+                            .save_to_file(&config_dir.join("system_screens.bconfig"));
+
+                        let def_lang = state.config.default_language_code.trim();
+                        if !def_lang.is_empty() {
+                            let lang_name = match def_lang.to_ascii_lowercase().as_str() {
+                                "id" => "Indonesian",
+                                "ja" => "日本語",
+                                _ => "English",
+                            };
+                            dashboard.locale_manifest.default_language =
+                                blanc_core::localization::LanguageEntry::new(def_lang, lang_name);
+                            dashboard.locale_default_code = def_lang.to_string();
+                            dashboard.locale_default_name = lang_name.to_string();
+                            dashboard.locale_selected_code = def_lang.to_string();
+                            let _ = Self::save_localization(&dashboard, &target_dir);
+                        }
+                        if dashboard.export_output_dir.trim().is_empty() {
+                            if let Some(exp) = &state.config.default_export_folder {
+                                dashboard.export_output_dir = exp.to_string_lossy().to_string();
+                            }
+                        }
                         self.screen = CurrentScreen::Workspace {
                             project,
                             project_dir: target_dir.clone(),
@@ -165,6 +218,11 @@ impl EditorApp {
                             state.config.add_recent(&project.name, &project.author, file_path);
                             let mut dashboard = DashboardState::init_for_project(&project_dir);
                             dashboard.installer_publisher = project.author.clone();
+                            if dashboard.export_output_dir.trim().is_empty() {
+                                if let Some(exp) = &state.config.default_export_folder {
+                                    dashboard.export_output_dir = exp.to_string_lossy().to_string();
+                                }
+                            }
                             self.screen = CurrentScreen::Workspace {
                                 project,
                                 project_dir: project_dir.clone(),
@@ -184,6 +242,11 @@ impl EditorApp {
                         state.config.add_recent(&project.name, &project.author, path);
                         let mut dashboard = DashboardState::init_for_project(&project_dir);
                         dashboard.installer_publisher = project.author.clone();
+                        if dashboard.export_output_dir.trim().is_empty() {
+                            if let Some(exp) = &state.config.default_export_folder {
+                                dashboard.export_output_dir = exp.to_string_lossy().to_string();
+                            }
+                        }
                         self.screen = CurrentScreen::Workspace {
                             project,
                             project_dir: project_dir.clone(),
@@ -215,6 +278,244 @@ impl EditorApp {
                     state.config.default_folder = Some(folder.clone());
                     state.selected_folder = Some(folder);
                     state.config.save();
+                    state.settings_status_message = Some("Default project directory updated.".to_string());
+                }
+            }
+            WelcomeMessage::OpenDefaultFolder => {
+                let target = state.config.default_folder.clone().or_else(|| {
+                    std::env::var("USERPROFILE")
+                        .map(|p| PathBuf::from(p).join("Documents"))
+                        .ok()
+                });
+                if let Some(dir) = target {
+                    #[cfg(target_os = "windows")]
+                    let _ = Command::new("explorer").arg(dir).spawn();
+                    #[cfg(target_os = "macos")]
+                    let _ = Command::new("open").arg(dir).spawn();
+                    #[cfg(target_os = "linux")]
+                    let _ = Command::new("xdg-open").arg(dir).spawn();
+                }
+            }
+            WelcomeMessage::ChangeDefaultExportFolder => {
+                if let Some(folder) = rfd::FileDialog::new().pick_folder() {
+                    state.config.default_export_folder = Some(folder);
+                    state.config.save();
+                    state.settings_status_message = Some("Default export directory updated.".to_string());
+                }
+            }
+            WelcomeMessage::ClearDefaultExportFolder => {
+                state.config.default_export_folder = None;
+                state.config.save();
+                state.settings_status_message = Some("Default export directory cleared.".to_string());
+            }
+            WelcomeMessage::OpenConfigFolder => {
+                let cfg_path = crate::screens::welcome::HubConfig::config_path();
+                if let Some(dir) = cfg_path.parent() {
+                    let _ = std::fs::create_dir_all(dir);
+                    #[cfg(target_os = "windows")]
+                    let _ = Command::new("explorer").arg(dir).spawn();
+                    #[cfg(target_os = "macos")]
+                    let _ = Command::new("open").arg(dir).spawn();
+                    #[cfg(target_os = "linux")]
+                    let _ = Command::new("xdg-open").arg(dir).spawn();
+                }
+            }
+            WelcomeMessage::ClearRecentProjects => {
+                state.config.recent_projects.clear();
+                state.config.save();
+                state.settings_status_message = Some("Recent projects history cleared.".to_string());
+            }
+            WelcomeMessage::ResetHubPreferences => {
+                let recents = state.config.recent_projects.clone();
+                let onboarded = state.config.onboarding_completed;
+                state.config = crate::screens::welcome::HubConfig::default();
+                state.config.recent_projects = recents;
+                state.config.onboarding_completed = onboarded;
+                state.selected_folder = state.config.default_folder.clone();
+                state.input_author = state.config.default_author.clone();
+                state.config.save();
+                state.settings_status_message = Some("Global preferences reset to defaults (recent projects kept).".to_string());
+            }
+            WelcomeMessage::DefaultAuthorChanged(val) => {
+                state.config.default_author = val.clone();
+                state.input_author = val;
+                state.config.save();
+            }
+            WelcomeMessage::SetDefaultResolution(w, h) => {
+                state.config.default_resolution = (w, h);
+                state.config.save();
+                state.settings_status_message = Some(format!("Default new-project resolution set to {}×{}.", w, h));
+            }
+            WelcomeMessage::SetDefaultLanguageCode(code) => {
+                state.config.default_language_code = code.clone();
+                state.config.save();
+                state.settings_status_message = Some(format!("Default source language set to '{}'.", code));
+            }
+            WelcomeMessage::ToggleAutoSaveOnPlayPreview(val) => {
+                state.config.auto_save_on_play_preview = val;
+                state.config.save();
+            }
+            WelcomeMessage::ToggleReopenLastProject(val) => {
+                state.config.reopen_last_project = val;
+                state.config.save();
+            }
+            WelcomeMessage::ToggleConfirmBeforeDelete(val) => {
+                state.config.confirm_before_delete = val;
+                state.config.save();
+            }
+            WelcomeMessage::OnboardingNextStep => {
+                if state.onboarding_step < 2 {
+                    state.onboarding_step += 1;
+                }
+            }
+            WelcomeMessage::OnboardingPrevStep => {
+                if state.onboarding_step > 0 {
+                    state.onboarding_step -= 1;
+                }
+            }
+            WelcomeMessage::OnboardingSkip | WelcomeMessage::OnboardingFinishToHub => {
+                state.config.onboarding_completed = true;
+                state.config.save();
+                state.show_onboarding = false;
+                state.active_tab = crate::screens::welcome::HubTab::Projects;
+            }
+            WelcomeMessage::OnboardingFinishCreateProject => {
+                state.config.onboarding_completed = true;
+                state.config.save();
+                state.show_onboarding = false;
+                state.active_tab = crate::screens::welcome::HubTab::Projects;
+                state.is_creating_project = true;
+                state.error_message = None;
+                if state.selected_folder.is_none() {
+                    state.selected_folder = state.config.default_folder.clone();
+                }
+                if !state.config.default_author.trim().is_empty() {
+                    state.input_author = state.config.default_author.clone();
+                }
+            }
+            WelcomeMessage::ReplayOnboarding => {
+                state.onboarding_step = 0;
+                state.show_onboarding = true;
+            }
+            WelcomeMessage::SubmitTitleChanged(v) => {
+                state.submit_title = v;
+            }
+            WelcomeMessage::SubmitAuthorChanged(v) => {
+                state.submit_author = v;
+            }
+            WelcomeMessage::SubmitStatusChanged(s) => {
+                state.submit_status = s;
+            }
+            WelcomeMessage::SubmitGenreChanged(v) => {
+                state.submit_genre = v;
+            }
+            WelcomeMessage::SubmitCoverUrlChanged(v) => {
+                state.submit_cover_url = v;
+            }
+            WelcomeMessage::SubmitGameUrlChanged(v) => {
+                state.submit_game_url = v;
+            }
+            WelcomeMessage::SubmitDescriptionChanged(v) => {
+                state.submit_description = v;
+            }
+            WelcomeMessage::SubmitFillFromRecent => {
+                if let Some(recent) = state.config.recent_projects.first() {
+                    state.submit_title = recent.name.clone();
+                    state.submit_author = recent.author.clone();
+                }
+            }
+            WelcomeMessage::SubmitResetForm => {
+                state.submit_title.clear();
+                state.submit_author = if state.config.default_author.trim().is_empty() {
+                    "Creator".to_string()
+                } else {
+                    state.config.default_author.clone()
+                };
+                state.submit_status = crate::screens::welcome::GameSubmitStatus::Released;
+                state.submit_genre.clear();
+                state.submit_cover_url.clear();
+                state.submit_game_url.clear();
+                state.submit_description.clear();
+                state.submit_feedback = None;
+            }
+            WelcomeMessage::SubmitGameClicked => {
+                let title = state.submit_title.trim().to_string();
+                let author = state.submit_author.trim().to_string();
+                let status = state.submit_status.as_form_value();
+                let genre = state.submit_genre.trim().to_string();
+                let cover = state.submit_cover_url.trim().to_string();
+                let game_url = state.submit_game_url.trim().to_string();
+                let description = state.submit_description.trim().to_string();
+
+                let is_http = |u: &str| u.starts_with("https://") || u.starts_with("http://");
+
+                if title.is_empty()
+                    || author.is_empty()
+                    || genre.is_empty()
+                    || cover.is_empty()
+                    || game_url.is_empty()
+                    || description.is_empty()
+                {
+                    state.submit_feedback = Some((false, "Please fill in all required (*) fields.".to_string()));
+                    return Task::none();
+                }
+                if !is_http(&cover) {
+                    state.submit_feedback = Some((false, "Cover Image URL must start with https:// or http://".to_string()));
+                    return Task::none();
+                }
+                if !is_http(&game_url) {
+                    state.submit_feedback = Some((false, "Game / Download URL must start with https:// or http://".to_string()));
+                    return Task::none();
+                }
+
+                state.submit_in_progress = true;
+                state.submit_feedback = None;
+
+                return Task::perform(
+                    async move {
+                        let res = tokio::task::spawn_blocking(move || -> Result<(), String> {
+                            const FORM_ACTION_URL: &str = "https://docs.google.com/forms/d/e/1FAIpQLSfX7ScWucadKsJ9BJ3rEfILWfAh6baSW9ISZy8YiWNd6KlzqQ/formResponse";
+                            let resp = ureq::post(FORM_ACTION_URL)
+                                .send_form(&[
+                                    ("entry.897757391", title.as_str()),
+                                    ("entry.203269822", author.as_str()),
+                                    ("entry.771996666", status),
+                                    ("entry.1232348967", genre.as_str()),
+                                    ("entry.908982358", cover.as_str()),
+                                    ("entry.153994697", game_url.as_str()),
+                                    ("entry.255430852", description.as_str()),
+                                ])
+                                .map_err(|e| format!("Network error while submitting: {}", e))?;
+                            if resp.status() >= 400 {
+                                return Err(format!("Server returned status {}. Please try again.", resp.status()));
+                            }
+                            Ok(())
+                        })
+                        .await
+                        .map_err(|e| format!("Submit task failed: {}", e))?;
+                        res
+                    },
+                    |res| AppMessage::Welcome(WelcomeMessage::SubmitGameCompleted(res)),
+                );
+            }
+            WelcomeMessage::SubmitGameCompleted(res) => {
+                state.submit_in_progress = false;
+                match res {
+                    Ok(()) => {
+                        state.submit_title.clear();
+                        state.submit_genre.clear();
+                        state.submit_cover_url.clear();
+                        state.submit_game_url.clear();
+                        state.submit_description.clear();
+                        state.submit_status = crate::screens::welcome::GameSubmitStatus::Released;
+                        state.submit_feedback = Some((
+                            true,
+                            "Game submitted successfully! It will appear in the showcase once approved.".to_string(),
+                        ));
+                    }
+                    Err(err) => {
+                        state.submit_feedback = Some((false, err));
+                    }
                 }
             }
         }
@@ -322,6 +623,9 @@ impl EditorApp {
                     }
                     AssetCategory::Sfx => {
                         dialog = dialog.add_filter("SFX Audio (*.wav, *.ogg, *.mp3)", &["wav", "ogg", "mp3"]);
+                    }
+                    AssetCategory::Voice => {
+                        dialog = dialog.add_filter("Voice Audio (*.ogg, *.wav, *.mp3)", &["ogg", "wav", "mp3"]);
                     }
                     AssetCategory::Font => {
                         dialog = dialog.add_filter("Fonts (*.ttf, *.otf)", &["ttf", "otf"]);
@@ -847,6 +1151,14 @@ impl EditorApp {
                 }
                 Self::auto_save_current_scene(dashboard, project_dir);
             }
+            DashboardMessage::ClearBlockVoice(idx) => {
+                if let Some(scene) = &mut dashboard.current_scene {
+                    if let Some(ActionBlock::Dialogue { voice_asset_id, .. }) = scene.blocks.get_mut(idx) {
+                        *voice_asset_id = None;
+                    }
+                }
+                Self::auto_save_current_scene(dashboard, project_dir);
+            }
             DashboardMessage::UpdateChoicePrompt(idx, pmt) => {
                 if let Some(scene) = &mut dashboard.current_scene {
                     if let Some(ActionBlock::Choice { prompt, .. }) = scene.blocks.get_mut(idx) {
@@ -865,6 +1177,7 @@ impl EditorApp {
                                 }
                                 Some(ActionBlock::PlayBgm { asset_id, .. }) => Some(asset_id.clone()),
                                 Some(ActionBlock::PlaySfx { asset_id, .. }) => Some(asset_id.clone()),
+                                Some(ActionBlock::Dialogue { voice_asset_id, .. }) => voice_asset_id.clone(),
                                 _ => None,
                             }
                         } else {
@@ -889,6 +1202,9 @@ impl EditorApp {
                             UiAssetSlot::SmallButtonFocus => ui.theme.small_button_focus_asset_id.clone(),
                             UiAssetSlot::SmallButtonPressed => ui.theme.small_button_pressed_asset_id.clone(),
                             UiAssetSlot::SmallButtonDisabled => ui.theme.small_button_disabled_asset_id.clone(),
+                            UiAssetSlot::SliderTrack => ui.theme.slider_track_asset_id.clone(),
+                            UiAssetSlot::SliderFill => ui.theme.slider_fill_asset_id.clone(),
+                            UiAssetSlot::SliderHandle => ui.theme.slider_handle_asset_id.clone(),
                             UiAssetSlot::MainMenuLogo => dashboard.system_screens_config.logo_asset_id.clone(),
                             UiAssetSlot::MainMenuPanel => ui.main_menu.panel_asset_id.clone(),
                             UiAssetSlot::DialogueBox => ui.gameplay.dialogue_box_asset_id.clone(),
@@ -963,6 +1279,7 @@ impl EditorApp {
                     }
                     dashboard.locale_manifest.default_language =
                         blanc_core::localization::LanguageEntry::new(code.clone(), if name.is_empty() { code.clone() } else { name });
+                    dashboard.locale_show_default_editor = false;
                     let _ = Self::save_localization(dashboard, project_dir);
                     dashboard.locale_status_message = Some(format!("Updated default language to '{}'.", code));
                 }
@@ -987,9 +1304,26 @@ impl EditorApp {
                     dashboard.locale_selected_code = code.clone();
                     dashboard.locale_new_code.clear();
                     dashboard.locale_new_name.clear();
+                    dashboard.locale_show_add_form = false;
                     let _ = Self::save_localization(dashboard, project_dir);
                     dashboard.locale_status_message = Some(format!("Added language '{}'.", code));
                 }
+            }
+            DashboardMessage::LocaleToggleDefaultEditor => {
+                dashboard.locale_show_default_editor = !dashboard.locale_show_default_editor;
+                if dashboard.locale_show_default_editor {
+                    dashboard.locale_show_add_form = false;
+                }
+            }
+            DashboardMessage::LocaleToggleAddForm => {
+                dashboard.locale_show_add_form = !dashboard.locale_show_add_form;
+                if dashboard.locale_show_add_form {
+                    dashboard.locale_show_default_editor = false;
+                }
+            }
+            DashboardMessage::LocaleFillPresetLanguage(code, name) => {
+                dashboard.locale_new_code = code;
+                dashboard.locale_new_name = name;
             }
             DashboardMessage::LocaleRemoveLanguage(code) => {
                 dashboard
@@ -1134,6 +1468,9 @@ impl EditorApp {
                                         Some(ActionBlock::PlaySfx { asset_id, .. }) => {
                                             *asset_id = asset_id_val;
                                         }
+                                        Some(ActionBlock::Dialogue { voice_asset_id, .. }) => {
+                                            *voice_asset_id = Some(asset_id_val);
+                                        }
                                         _ => {}
                                     }
                                 }
@@ -1158,6 +1495,24 @@ impl EditorApp {
                                         }
                                     }
                                 }
+                                let slider_img_height = |asset_id: &str| -> Option<f32> {
+                                    project.assets.get(asset_id).and_then(|asset| {
+                                        let full_path = project_dir.join(&asset.relative_path);
+                                        image::image_dimensions(&full_path)
+                                            .ok()
+                                            .map(|(_w, h)| h as f32)
+                                    })
+                                };
+                                let track_auto_h = if matches!(slot, UiAssetSlot::SliderTrack) {
+                                    slider_img_height(&asset_id_val)
+                                } else {
+                                    None
+                                };
+                                let handle_auto_h = if matches!(slot, UiAssetSlot::SliderHandle) {
+                                    slider_img_height(&asset_id_val)
+                                } else {
+                                    None
+                                };
                                 let ui = &mut dashboard.system_screens_config.ui_config;
                                 match slot {
                                     UiAssetSlot::Font => ui.theme.font_asset_id = Some(asset_id_val),
@@ -1169,6 +1524,15 @@ impl EditorApp {
                                     UiAssetSlot::SmallButtonFocus => ui.theme.small_button_focus_asset_id = Some(asset_id_val),
                                     UiAssetSlot::SmallButtonPressed => ui.theme.small_button_pressed_asset_id = Some(asset_id_val),
                                     UiAssetSlot::SmallButtonDisabled => ui.theme.small_button_disabled_asset_id = Some(asset_id_val),
+                                    UiAssetSlot::SliderTrack => {
+                                        ui.theme.slider_track_asset_id = Some(asset_id_val);
+                                        ui.theme.slider_track_height = track_auto_h.unwrap_or(28.0).clamp(2.0, 128.0);
+                                    }
+                                    UiAssetSlot::SliderFill => ui.theme.slider_fill_asset_id = Some(asset_id_val),
+                                    UiAssetSlot::SliderHandle => {
+                                        ui.theme.slider_handle_asset_id = Some(asset_id_val);
+                                        ui.theme.slider_handle_size = handle_auto_h.unwrap_or(34.0).clamp(8.0, 128.0);
+                                    }
                                     UiAssetSlot::MainMenuLogo => {
                                         dashboard.system_screens_config.logo_asset_id = Some(asset_id_val);
                                     }
@@ -1222,6 +1586,9 @@ impl EditorApp {
                     }
                     AssetCategory::Sfx => {
                         dialog = dialog.add_filter("SFX Audio (*.wav, *.ogg, *.mp3)", &["wav", "ogg", "mp3"]);
+                    }
+                    AssetCategory::Voice => {
+                        dialog = dialog.add_filter("Voice Audio (*.ogg, *.wav, *.mp3)", &["ogg", "wav", "mp3"]);
                     }
                     AssetCategory::Font => {
                         dialog = dialog.add_filter("Fonts (*.ttf, *.otf)", &["ttf", "otf"]);
@@ -1286,6 +1653,9 @@ impl EditorApp {
             }
             DashboardMessage::UpdateSfxVolume(v) => {
                 dashboard.system_screens_config.sfx_volume = v;
+            }
+            DashboardMessage::UpdateVoiceVolume(v) => {
+                dashboard.system_screens_config.voice_volume = v;
             }
             DashboardMessage::UpdateTextSpeed(s) => {
                 dashboard.system_screens_config.text_speed = s;
@@ -2036,6 +2406,9 @@ impl EditorApp {
                 );
             }
             DashboardMessage::PlayPreview => {
+                if crate::screens::welcome::HubConfig::load().auto_save_on_play_preview {
+                    Self::auto_save_current_scene(dashboard, project_dir);
+                }
                 Self::launch_runtime_preview(dashboard, project_dir, None);
             }
             DashboardMessage::PlayFromCurrentScene => {
@@ -2049,6 +2422,54 @@ impl EditorApp {
         }
 
         Task::none()
+    }
+
+    #[cfg(feature = "bundle-binaries")]
+    fn ensure_bundled_binary(filename: &str, bytes: &[u8]) -> Option<PathBuf> {
+        let base = std::env::var("LOCALAPPDATA")
+            .or_else(|_| std::env::var("APPDATA"))
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| std::env::temp_dir());
+        let dir = base
+            .join("BlancEngine")
+            .join("bin")
+            .join(env!("CARGO_PKG_VERSION"));
+        std::fs::create_dir_all(&dir).ok()?;
+        let target = dir.join(filename);
+        let needs_write = match std::fs::metadata(&target) {
+            Ok(meta) => meta.len() != bytes.len() as u64,
+            Err(_) => true,
+        };
+        if needs_write {
+            std::fs::write(&target, bytes).ok()?;
+        }
+        Some(target)
+    }
+
+    fn ensure_bundled_runtime_extracted() -> Option<PathBuf> {
+        #[cfg(feature = "bundle-binaries")]
+        {
+            let name = if cfg!(windows) { "blanc_runtime.exe" } else { "blanc_runtime" };
+            let bytes = include_bytes!(env!("BLANC_BUNDLED_RUNTIME"));
+            return Self::ensure_bundled_binary(name, bytes);
+        }
+        #[cfg(not(feature = "bundle-binaries"))]
+        {
+            None
+        }
+    }
+
+    fn ensure_bundled_installer_extracted() -> Option<PathBuf> {
+        #[cfg(feature = "bundle-binaries")]
+        {
+            let name = if cfg!(windows) { "blanc_installer.exe" } else { "blanc_installer" };
+            let bytes = include_bytes!(env!("BLANC_BUNDLED_INSTALLER"));
+            return Self::ensure_bundled_binary(name, bytes);
+        }
+        #[cfg(not(feature = "bundle-binaries"))]
+        {
+            None
+        }
     }
 
     fn launch_runtime_preview(dashboard: &DashboardState, project_dir: &PathBuf, start_scene: Option<&str>) {
@@ -2071,7 +2492,8 @@ impl EditorApp {
                 let name = if cfg!(windows) { "blanc_runtime.exe" } else { "blanc_runtime" };
                 dir.join(name)
             }))
-            .filter(|p| p.exists());
+            .filter(|p| p.exists())
+            .or_else(Self::ensure_bundled_runtime_extracted);
 
         let launched = if let Some(runtime_path) = sibling_runtime {
             Command::new(runtime_path).args(&runtime_args).spawn()
@@ -2124,6 +2546,7 @@ impl EditorApp {
             .ok()
             .and_then(|exe| exe.parent().map(|dir| dir.join(runtime_name)))
             .filter(|p| p.exists())
+            .or_else(Self::ensure_bundled_runtime_extracted)
             .ok_or_else(|| {
                 format!(
                     "{} not found next to editor executable. Please build blanc_runtime first.",
@@ -2165,6 +2588,7 @@ impl EditorApp {
                 .ok()
                 .and_then(|exe| exe.parent().map(|dir| dir.join(installer_name)))
                 .filter(|p| p.exists())
+                .or_else(Self::ensure_bundled_installer_extracted)
                 .ok_or_else(|| {
                     format!(
                         "{} not found next to editor executable. Please build blanc_installer first.",

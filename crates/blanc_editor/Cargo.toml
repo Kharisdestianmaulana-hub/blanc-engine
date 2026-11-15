@@ -5,6 +5,9 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 
+[features]
+bundle-binaries = []
+
 [dependencies]
 blanc_core = { path = "../blanc_core" }
 iced.workspace = true
@@ -17,3 +20,4 @@ image.workspace = true
 rodio.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
+ureq = "2"

@@ -11,7 +11,7 @@ use gilrs::{Axis, Button, EventType, Gilrs};
 use iced::keyboard::{self, key::Named, Key};
 use iced::{Element, Subscription, Task};
 
-use engine::{RuntimeEngine, RuntimeScreen, SaveLoadMode};
+use engine::{RuntimeEngine, RuntimeScreen, SaveLoadMode, SettingsFocusItem, SkipMode};
 use view::{view_runtime, RuntimeMessage};
 
 struct RuntimeApp {
@@ -24,11 +24,7 @@ struct RuntimeApp {
 impl RuntimeApp {
     fn new(project_dir: Option<PathBuf>, start_scene: Option<String>) -> (Self, Task<RuntimeMessage>) {
         let engine = RuntimeEngine::new(project_dir, start_scene);
-        let is_fullscreen = engine
-            .loaded
-            .as_ref()
-            .map(|l| l.config.fullscreen_default)
-            .unwrap_or(false);
+        let is_fullscreen = engine.is_fullscreen;
         let startup_task = if is_fullscreen {
             iced::window::get_latest()
                 .and_then(|id| iced::window::change_mode(id, iced::window::Mode::Fullscreen))
@@ -63,12 +59,31 @@ impl RuntimeApp {
             }
             RuntimeMessage::FocusPrev => {
                 self.engine.move_focus(-1);
+                self.engine.save_load_action_index = 0;
             }
             RuntimeMessage::FocusNext => {
                 self.engine.move_focus(1);
+                self.engine.save_load_action_index = 0;
+            }
+            RuntimeMessage::NavLeft => {
+                return self.handle_horizontal_nav(-1);
+            }
+            RuntimeMessage::NavRight => {
+                return self.handle_horizontal_nav(1);
             }
             RuntimeMessage::FocusConfirm => {
                 return self.confirm_focused();
+            }
+            RuntimeMessage::DeleteFocused => {
+                if let RuntimeScreen::SaveLoad { .. } = self.engine.screen {
+                    let slots = self.engine.list_save_slots();
+                    if !slots.is_empty() {
+                        let idx = self.engine.focus_index % (slots.len() + 1);
+                        if idx < slots.len() {
+                            self.engine.delete_save_slot(idx + 1);
+                        }
+                    }
+                }
             }
             RuntimeMessage::BackOrPause => {
                 return self.update(match self.engine.screen {
@@ -93,6 +108,7 @@ impl RuntimeApp {
             }
             RuntimeMessage::OpenSaveScreen => {
                 self.engine.focus_index = 0;
+                self.engine.save_load_action_index = 0;
                 self.engine.screen = RuntimeScreen::SaveLoad {
                     mode: SaveLoadMode::Save,
                     return_to_pause: true,
@@ -100,6 +116,7 @@ impl RuntimeApp {
             }
             RuntimeMessage::OpenLoadScreen { return_to_pause } => {
                 self.engine.focus_index = 0;
+                self.engine.save_load_action_index = 0;
                 self.engine.screen = RuntimeScreen::SaveLoad {
                     mode: SaveLoadMode::Load,
                     return_to_pause,
@@ -208,6 +225,9 @@ impl RuntimeApp {
             RuntimeMessage::SetSfxVolume(v) => {
                 self.engine.sfx_volume = v;
             }
+            RuntimeMessage::SetVoiceVolume(v) => {
+                self.engine.set_voice_volume(v);
+            }
             RuntimeMessage::SetTextSpeed(s) => {
                 self.engine.text_speed = s;
             }
@@ -226,9 +246,38 @@ impl RuntimeApp {
             RuntimeMessage::SetLanguage(code) => {
                 self.engine.set_language(code);
             }
+            RuntimeMessage::SelectSettingsCategory(cat) => {
+                self.engine.settings_category = cat;
+                self.engine.focus_index = 0;
+            }
+            RuntimeMessage::CycleSettingsCategory(delta) => {
+                if matches!(self.engine.screen, RuntimeScreen::Settings { .. })
+                    && self
+                        .engine
+                        .ui_config()
+                        .pause_settings
+                        .settings_layout_template
+                        .uses_tabs()
+                {
+                    self.engine.settings_category = self.engine.settings_category.cycle(delta);
+                    self.engine.focus_index = 0;
+                }
+            }
             RuntimeMessage::ToggleFullscreen => {
                 self.is_fullscreen = !self.is_fullscreen;
+                self.engine.set_fullscreen(self.is_fullscreen);
                 let mode = if self.is_fullscreen {
+                    iced::window::Mode::Fullscreen
+                } else {
+                    iced::window::Mode::Windowed
+                };
+                return iced::window::get_latest()
+                    .and_then(move |id| iced::window::change_mode(id, mode));
+            }
+            RuntimeMessage::SetFullscreen(fullscreen) => {
+                self.is_fullscreen = fullscreen;
+                self.engine.set_fullscreen(fullscreen);
+                let mode = if fullscreen {
                     iced::window::Mode::Fullscreen
                 } else {
                     iced::window::Mode::Windowed
@@ -254,23 +303,18 @@ impl RuntimeApp {
         };
 
         let key_sub = keyboard::on_key_press(|key, _modifiers| match key {
-            Key::Named(Named::ArrowUp) | Key::Named(Named::ArrowLeft) => Some(RuntimeMessage::FocusPrev),
-            Key::Named(Named::ArrowDown) | Key::Named(Named::ArrowRight) | Key::Named(Named::Tab) => {
-                Some(RuntimeMessage::FocusNext)
-            }
-            Key::Character(ref c) if c.eq_ignore_ascii_case("w") => {
-                Some(RuntimeMessage::FocusPrev)
-            }
-            Key::Character(ref c) if c.eq_ignore_ascii_case("d") => {
-                Some(RuntimeMessage::FocusNext)
-            }
-            Key::Character(ref c) if c.eq_ignore_ascii_case("a") => {
-                Some(RuntimeMessage::ToggleAutoPlay)
-            }
-            Key::Character(ref c) if c.eq_ignore_ascii_case("s") => {
-                Some(RuntimeMessage::ToggleSkip)
-            }
+            Key::Named(Named::ArrowUp) => Some(RuntimeMessage::FocusPrev),
+            Key::Named(Named::ArrowDown) | Key::Named(Named::Tab) => Some(RuntimeMessage::FocusNext),
+            Key::Named(Named::ArrowLeft) => Some(RuntimeMessage::NavLeft),
+            Key::Named(Named::ArrowRight) => Some(RuntimeMessage::NavRight),
+            Key::Character(ref c) if c.eq_ignore_ascii_case("q") => Some(RuntimeMessage::CycleSettingsCategory(-1)),
+            Key::Character(ref c) if c.eq_ignore_ascii_case("e") => Some(RuntimeMessage::CycleSettingsCategory(1)),
+            Key::Character(ref c) if c.eq_ignore_ascii_case("w") => Some(RuntimeMessage::FocusPrev),
+            Key::Character(ref c) if c.eq_ignore_ascii_case("d") => Some(RuntimeMessage::NavRight),
+            Key::Character(ref c) if c.eq_ignore_ascii_case("a") => Some(RuntimeMessage::ToggleAutoPlay),
+            Key::Character(ref c) if c.eq_ignore_ascii_case("s") => Some(RuntimeMessage::ToggleSkip),
             Key::Named(Named::Space) | Key::Named(Named::Enter) => Some(RuntimeMessage::FocusConfirm),
+            Key::Named(Named::Delete) | Key::Named(Named::Backspace) => Some(RuntimeMessage::DeleteFocused),
             Key::Named(Named::Escape) => Some(RuntimeMessage::BackOrPause),
             Key::Character(c) if c.eq_ignore_ascii_case("h") => Some(RuntimeMessage::ToggleHideUi),
             Key::Character(c) if c.eq_ignore_ascii_case("b") => Some(RuntimeMessage::OpenBacklog),
@@ -343,10 +387,40 @@ impl RuntimeApp {
                 }
             }
             RuntimeScreen::Settings { .. } => {
-                return self.update(RuntimeMessage::CloseSettings);
+                let items = self.engine.settings_focus_items();
+                if let Some(item) = items.get(idx % items.len().max(1)).copied() {
+                    match item {
+                        SettingsFocusItem::Back => return self.update(RuntimeMessage::CloseSettings),
+                        SettingsFocusItem::TextSpeed
+                        | SettingsFocusItem::SkipMode
+                        | SettingsFocusItem::DisplayMode
+                        | SettingsFocusItem::Language => return self.handle_horizontal_nav(1),
+                        _ => {}
+                    }
+                }
             }
-            RuntimeScreen::SaveLoad { .. } => {
-                return self.update(RuntimeMessage::CloseSaveLoad);
+            RuntimeScreen::SaveLoad { mode, .. } => {
+                let slots = self.engine.list_save_slots();
+                let total = slots.len() + 1;
+                let focused = idx % total.max(1);
+                if focused < slots.len() {
+                    let slot_num = focused + 1;
+                    let has_data = slots.get(focused).and_then(|s| s.as_ref()).is_some();
+                    if has_data && self.engine.save_load_action_index == 1 {
+                        self.engine.save_load_action_index = 0;
+                        return self.update(RuntimeMessage::DeleteSaveSlot(slot_num));
+                    }
+                    match mode {
+                        SaveLoadMode::Save => return self.update(RuntimeMessage::SaveToSlot(slot_num)),
+                        SaveLoadMode::Load => {
+                            if has_data {
+                                return self.update(RuntimeMessage::LoadFromSlot(slot_num));
+                            }
+                        }
+                    }
+                } else {
+                    return self.update(RuntimeMessage::CloseSaveLoad);
+                }
             }
             RuntimeScreen::Backlog => {
                 return self.update(RuntimeMessage::CloseBacklog);
@@ -359,19 +433,123 @@ impl RuntimeApp {
         Task::none()
     }
 
+    fn handle_horizontal_nav(&mut self, delta: isize) -> Task<RuntimeMessage> {
+        match &self.engine.screen {
+            RuntimeScreen::Settings { .. } => {
+                let items = self.engine.settings_focus_items();
+                let idx = self.engine.focus_index % items.len().max(1);
+                let Some(item) = items.get(idx).copied() else {
+                    return Task::none();
+                };
+                match item {
+                    SettingsFocusItem::MasterVol => {
+                        let next = (self.engine.master_volume + delta as f32 * 0.05).clamp(0.0, 1.0);
+                        return self.update(RuntimeMessage::SetMasterVolume(next));
+                    }
+                    SettingsFocusItem::BgmVol => {
+                        let next = (self.engine.bgm_volume + delta as f32 * 0.05).clamp(0.0, 1.0);
+                        return self.update(RuntimeMessage::SetBgmVolume(next));
+                    }
+                    SettingsFocusItem::SfxVol => {
+                        let next = (self.engine.sfx_volume + delta as f32 * 0.05).clamp(0.0, 1.0);
+                        return self.update(RuntimeMessage::SetSfxVolume(next));
+                    }
+                    SettingsFocusItem::VoiceVol => {
+                        let next = (self.engine.voice_volume + delta as f32 * 0.05).clamp(0.0, 1.0);
+                        return self.update(RuntimeMessage::SetVoiceVolume(next));
+                    }
+                    SettingsFocusItem::AutoDelay => {
+                        let next = (self.engine.auto_forward_delay + delta as f32 * 0.5).clamp(0.5, 5.0);
+                        return self.update(RuntimeMessage::SetAutoForwardDelay(next));
+                    }
+                    SettingsFocusItem::TextSpeed => {
+                        let presets = [0.5_f32, 1.0, 1.5, 2.0];
+                        let cur = if self.engine.text_speed >= 2.0 {
+                            3
+                        } else if self.engine.text_speed >= 1.4 {
+                            2
+                        } else if self.engine.text_speed >= 0.9 {
+                            1
+                        } else {
+                            0
+                        };
+                        let next_idx = (cur as isize + delta).rem_euclid(presets.len() as isize) as usize;
+                        return self.update(RuntimeMessage::SetTextSpeed(presets[next_idx]));
+                    }
+                    SettingsFocusItem::SkipMode => {
+                        let next = match self.engine.skip_rule {
+                            SkipMode::ReadOnly => SkipMode::All,
+                            SkipMode::All => SkipMode::ReadOnly,
+                        };
+                        return self.update(RuntimeMessage::SetSkipMode(next));
+                    }
+                    SettingsFocusItem::DisplayMode => {
+                        return self.update(RuntimeMessage::SetFullscreen(!self.is_fullscreen));
+                    }
+                    SettingsFocusItem::Language => {
+                        let langs = self.engine.available_languages();
+                        if langs.len() > 1 {
+                            let cur = langs
+                                .iter()
+                                .position(|l| l.code == self.engine.active_language)
+                                .unwrap_or(0);
+                            let next_idx = (cur as isize + delta).rem_euclid(langs.len() as isize) as usize;
+                            return self.update(RuntimeMessage::SetLanguage(langs[next_idx].code.clone()));
+                        }
+                    }
+                    SettingsFocusItem::Back => {}
+                }
+            }
+            RuntimeScreen::SaveLoad { .. } => {
+                let slots = self.engine.list_save_slots();
+                let total = slots.len() + 1;
+                let focused = self.engine.focus_index % total.max(1);
+                let has_data = focused < slots.len()
+                    && slots.get(focused).and_then(|s| s.as_ref()).is_some();
+                if delta > 0 {
+                    if has_data && self.engine.save_load_action_index == 0 {
+                        self.engine.save_load_action_index = 1;
+                    } else {
+                        self.engine.move_focus(1);
+                        self.engine.save_load_action_index = 0;
+                    }
+                } else if delta < 0 {
+                    if has_data && self.engine.save_load_action_index == 1 {
+                        self.engine.save_load_action_index = 0;
+                    } else {
+                        self.engine.move_focus(-1);
+                        self.engine.save_load_action_index = 0;
+                    }
+                }
+            }
+            RuntimeScreen::TitleScreen
+            | RuntimeScreen::PauseMenu
+            | RuntimeScreen::Playing => {
+                self.engine.move_focus(delta);
+            }
+            RuntimeScreen::Backlog | RuntimeScreen::Ending { .. } | RuntimeScreen::Error(_) => {}
+        }
+        Task::none()
+    }
+
     fn poll_gamepad(&mut self) {
         let mut nav_actions: Vec<RuntimeMessage> = Vec::new();
         if let Some(gilrs) = &mut self.gilrs {
             while let Some(event) = gilrs.next_event() {
                 match event.event {
                     EventType::ButtonPressed(btn, _) => match btn {
-                        Button::DPadUp | Button::DPadLeft => nav_actions.push(RuntimeMessage::FocusPrev),
-                        Button::DPadDown | Button::DPadRight => nav_actions.push(RuntimeMessage::FocusNext),
+                        Button::DPadUp => nav_actions.push(RuntimeMessage::FocusPrev),
+                        Button::DPadDown => nav_actions.push(RuntimeMessage::FocusNext),
+                        Button::DPadLeft => nav_actions.push(RuntimeMessage::NavLeft),
+                        Button::DPadRight => nav_actions.push(RuntimeMessage::NavRight),
                         Button::South => nav_actions.push(RuntimeMessage::FocusConfirm),
+                        Button::West => nav_actions.push(RuntimeMessage::DeleteFocused),
+                        Button::LeftTrigger => nav_actions.push(RuntimeMessage::CycleSettingsCategory(-1)),
+                        Button::RightTrigger => nav_actions.push(RuntimeMessage::CycleSettingsCategory(1)),
                         Button::East | Button::Start => nav_actions.push(RuntimeMessage::BackOrPause),
                         _ => {}
                     },
-                    EventType::AxisChanged(Axis::LeftStickY | Axis::LeftStickX, val, _) => {
+                    EventType::AxisChanged(Axis::LeftStickY, val, _) => {
                         if self.last_stick_nav.elapsed() > Duration::from_millis(220) {
                             if val > 0.65 {
                                 self.last_stick_nav = Instant::now();
@@ -379,6 +557,17 @@ impl RuntimeApp {
                             } else if val < -0.65 {
                                 self.last_stick_nav = Instant::now();
                                 nav_actions.push(RuntimeMessage::FocusNext);
+                            }
+                        }
+                    }
+                    EventType::AxisChanged(Axis::LeftStickX, val, _) => {
+                        if self.last_stick_nav.elapsed() > Duration::from_millis(220) {
+                            if val < -0.65 {
+                                self.last_stick_nav = Instant::now();
+                                nav_actions.push(RuntimeMessage::NavLeft);
+                            } else if val > 0.65 {
+                                self.last_stick_nav = Instant::now();
+                                nav_actions.push(RuntimeMessage::NavRight);
                             }
                         }
                     }

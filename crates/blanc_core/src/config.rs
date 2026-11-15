@@ -59,6 +59,8 @@ pub struct SystemScreensConfig {
     pub master_volume: f32,
     pub bgm_volume: f32,
     pub sfx_volume: f32,
+    #[serde(default = "default_voice_volume")]
+    pub voice_volume: f32,
 
     // Text & Gameplay Defaults
     pub text_speed: f32,
@@ -69,6 +71,10 @@ pub struct SystemScreensConfig {
     // Customizable Runtime UI Theme & Layout
     #[serde(default)]
     pub ui_config: RuntimeUiConfig,
+}
+
+fn default_voice_volume() -> f32 {
+    1.0
 }
 
 impl Default for SystemScreensConfig {
@@ -86,6 +92,7 @@ impl Default for SystemScreensConfig {
             master_volume: 1.0,
             bgm_volume: 0.8,
             sfx_volume: 1.0,
+            voice_volume: 1.0,
             text_speed: 1.0,
             auto_forward_delay: 2.0,
             scene_transition_mode: SceneTransitionMode::CleanFade,

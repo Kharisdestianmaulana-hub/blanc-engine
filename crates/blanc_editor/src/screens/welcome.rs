@@ -20,7 +20,26 @@ pub enum HubTab {
     #[default]
     Projects,
     LearnDocs,
+    SubmitGames,
     Settings,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum GameSubmitStatus {
+    #[default]
+    Released,
+    Demo,
+    InDevelopment,
+}
+
+impl GameSubmitStatus {
+    pub fn as_form_value(&self) -> &'static str {
+        match self {
+            Self::Released => "Released",
+            Self::Demo => "Demo",
+            Self::InDevelopment => "In Development",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -43,10 +62,64 @@ pub struct RecentProject {
     pub last_opened: chrono::DateTime<chrono::Utc>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+fn default_author_value() -> String {
+    "Creator".to_string()
+}
+
+fn default_resolution_value() -> (u32, u32) {
+    (1280, 720)
+}
+
+fn default_language_value() -> String {
+    "en".to_string()
+}
+
+fn default_true() -> bool {
+    true
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HubConfig {
     pub default_folder: Option<PathBuf>,
     pub recent_projects: Vec<RecentProject>,
+    #[serde(default)]
+    pub default_export_folder: Option<PathBuf>,
+    #[serde(default = "default_author_value")]
+    pub default_author: String,
+    #[serde(default = "default_resolution_value")]
+    pub default_resolution: (u32, u32),
+    #[serde(default = "default_language_value")]
+    pub default_language_code: String,
+    #[serde(default = "default_true")]
+    pub auto_save_on_play_preview: bool,
+    #[serde(default)]
+    pub reopen_last_project: bool,
+    #[serde(default = "default_true")]
+    pub confirm_before_delete: bool,
+    #[serde(default)]
+    pub onboarding_completed: bool,
+}
+
+impl Default for HubConfig {
+    fn default() -> Self {
+        let default_folder = std::env::var("USERPROFILE")
+            .map(|p| PathBuf::from(p).join("Documents"))
+            .ok()
+            .filter(|p| p.exists());
+
+        Self {
+            default_folder,
+            recent_projects: Vec::new(),
+            default_export_folder: None,
+            default_author: default_author_value(),
+            default_resolution: default_resolution_value(),
+            default_language_code: default_language_value(),
+            auto_save_on_play_preview: true,
+            reopen_last_project: false,
+            confirm_before_delete: true,
+            onboarding_completed: false,
+        }
+    }
 }
 
 impl HubConfig {
@@ -65,16 +138,7 @@ impl HubConfig {
             }
         }
 
-        // Default to C:\Users\<user>\Documents
-        let default_folder = std::env::var("USERPROFILE")
-            .map(|p| PathBuf::from(p).join("Documents"))
-            .ok()
-            .filter(|p| p.exists());
-
-        Self {
-            default_folder,
-            recent_projects: Vec::new(),
-        }
+        Self::default()
     }
 
     pub fn save(&self) {
@@ -127,6 +191,35 @@ pub enum WelcomeMessage {
     RemoveRecentProject(PathBuf),
     RevealInExplorer(PathBuf),
     ChangeDefaultFolder,
+    OpenDefaultFolder,
+    ChangeDefaultExportFolder,
+    ClearDefaultExportFolder,
+    OpenConfigFolder,
+    ClearRecentProjects,
+    ResetHubPreferences,
+    DefaultAuthorChanged(String),
+    SetDefaultResolution(u32, u32),
+    SetDefaultLanguageCode(String),
+    ToggleAutoSaveOnPlayPreview(bool),
+    ToggleReopenLastProject(bool),
+    ToggleConfirmBeforeDelete(bool),
+    OnboardingNextStep,
+    OnboardingPrevStep,
+    OnboardingSkip,
+    OnboardingFinishToHub,
+    OnboardingFinishCreateProject,
+    ReplayOnboarding,
+    SubmitTitleChanged(String),
+    SubmitAuthorChanged(String),
+    SubmitStatusChanged(GameSubmitStatus),
+    SubmitGenreChanged(String),
+    SubmitCoverUrlChanged(String),
+    SubmitGameUrlChanged(String),
+    SubmitDescriptionChanged(String),
+    SubmitFillFromRecent,
+    SubmitResetForm,
+    SubmitGameClicked,
+    SubmitGameCompleted(Result<(), String>),
 }
 
 #[derive(Debug, Clone)]
@@ -145,12 +238,34 @@ pub struct WelcomeState {
 
     // Hub config & recents
     pub config: HubConfig,
+    pub settings_status_message: Option<String>,
+
+    // First-time onboarding
+    pub show_onboarding: bool,
+    pub onboarding_step: u8,
+
+    // Submit Your Games tab state
+    pub submit_title: String,
+    pub submit_author: String,
+    pub submit_status: GameSubmitStatus,
+    pub submit_genre: String,
+    pub submit_cover_url: String,
+    pub submit_game_url: String,
+    pub submit_description: String,
+    pub submit_in_progress: bool,
+    pub submit_feedback: Option<(bool, String)>,
 }
 
 impl Default for WelcomeState {
     fn default() -> Self {
         let config = HubConfig::load();
         let initial_folder = config.default_folder.clone();
+        let initial_author = if config.default_author.trim().is_empty() {
+            "Creator".to_string()
+        } else {
+            config.default_author.clone()
+        };
+        let show_onboarding = !config.onboarding_completed;
 
         Self {
             active_tab: HubTab::Projects,
@@ -159,10 +274,22 @@ impl Default for WelcomeState {
             search_query: String::new(),
             is_creating_project: false,
             input_name: "Echoes of Memories".to_string(),
-            input_author: "Creator".to_string(),
+            input_author: initial_author.clone(),
             selected_folder: initial_folder,
             error_message: None,
             config,
+            settings_status_message: None,
+            show_onboarding,
+            onboarding_step: 0,
+            submit_title: String::new(),
+            submit_author: initial_author,
+            submit_status: GameSubmitStatus::Released,
+            submit_genre: String::new(),
+            submit_cover_url: String::new(),
+            submit_game_url: String::new(),
+            submit_description: String::new(),
+            submit_in_progress: false,
+            submit_feedback: None,
         }
     }
 }
@@ -173,10 +300,15 @@ impl WelcomeState {
     }
 
     pub fn view(&self) -> Element<'_, WelcomeMessage> {
+        if self.show_onboarding {
+            return self.view_onboarding_screen();
+        }
+
         let sidebar = self.view_sidebar();
         let main_content = match self.active_tab {
             HubTab::Projects => self.view_projects_tab(),
             HubTab::LearnDocs => self.view_learn_docs_tab(),
+            HubTab::SubmitGames => self.view_submit_games_tab(),
             HubTab::Settings => self.view_settings_tab(),
         };
 
@@ -225,7 +357,7 @@ impl WelcomeState {
         .align_y(Alignment::Center);
 
         let badge = container(
-            text("v0.1.0-alpha")
+            text("v0.1.0-beta")
                 .size(LABEL_SM)
                 .color(iced::Color::from_rgb8(ACCENT_PRIMARY.r, ACCENT_PRIMARY.g, ACCENT_PRIMARY.b)),
         )
@@ -273,6 +405,19 @@ impl WelcomeState {
         .style(sidebar_button_style(self.active_tab == HubTab::LearnDocs))
         .on_press(WelcomeMessage::SelectTab(HubTab::LearnDocs));
 
+        let btn_submit = button(
+            row![
+                icon_rocket(),
+                text("Submit Your Games").size(BODY_MD),
+            ]
+            .spacing(SPACE_3)
+            .align_y(Alignment::Center),
+        )
+        .padding([SPACE_3, SPACE_4])
+        .width(Length::Fill)
+        .style(sidebar_button_style(self.active_tab == HubTab::SubmitGames))
+        .on_press(WelcomeMessage::SelectTab(HubTab::SubmitGames));
+
         let btn_settings = button(
             row![
                 icon_settings(),
@@ -286,7 +431,7 @@ impl WelcomeState {
         .style(sidebar_button_style(self.active_tab == HubTab::Settings))
         .on_press(WelcomeMessage::SelectTab(HubTab::Settings));
 
-        let nav_list = column![btn_projects, btn_learn, btn_settings].spacing(SPACE_2);
+        let nav_list = column![btn_projects, btn_learn, btn_submit, btn_settings].spacing(SPACE_2);
 
         // Footer info
         let footer = column![
@@ -332,12 +477,17 @@ impl WelcomeState {
             .style(sidebar_button_style(self.active_tab == HubTab::LearnDocs))
             .on_press(WelcomeMessage::SelectTab(HubTab::LearnDocs));
 
+        let btn_submit = button(icon_rocket())
+            .padding(SPACE_3)
+            .style(sidebar_button_style(self.active_tab == HubTab::SubmitGames))
+            .on_press(WelcomeMessage::SelectTab(HubTab::SubmitGames));
+
         let btn_settings = button(icon_settings())
             .padding(SPACE_3)
             .style(sidebar_button_style(self.active_tab == HubTab::Settings))
             .on_press(WelcomeMessage::SelectTab(HubTab::Settings));
 
-        let nav_icons = column![btn_projects, btn_learn, btn_settings]
+        let nav_icons = column![btn_projects, btn_learn, btn_submit, btn_settings]
             .spacing(SPACE_3)
             .align_x(Alignment::Center);
 
@@ -1122,13 +1272,13 @@ Alice: "In that case, let's head to the cafeteria together!"
             text("Engine Settings & Preferences")
                 .size(HEADING_LG)
                 .color(iced::Color::from_rgb8(TEXT_PRIMARY.r, TEXT_PRIMARY.g, TEXT_PRIMARY.b)),
-            text("Configure default project storage directory and engine specifications")
+            text("Configure global directories, new project defaults, editor workflow, and engine specifications.")
                 .size(BODY_SM)
                 .color(iced::Color::from_rgb8(TEXT_SECONDARY.r, TEXT_SECONDARY.g, TEXT_SECONDARY.b)),
         ]
         .spacing(SPACE_1);
 
-        // Section 1: Default Project Location
+        // Section 1: Storage & Directories
         let current_dir_text = self
             .config
             .default_folder
@@ -1136,30 +1286,155 @@ Alice: "In that case, let's head to the cafeteria together!"
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_else(|| "Not configured (User Documents default)".to_string());
 
-        let btn_change_folder = button(text("Change Folder...").size(LABEL_MD))
-            .padding([SPACE_2, SPACE_4])
-            .style(secondary_button_style)
-            .on_press(WelcomeMessage::ChangeDefaultFolder);
+        let current_export_text = self
+            .config
+            .default_export_folder
+            .as_ref()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_else(|| "Not configured (Ask per project / project Exports folder)".to_string());
 
-        let folder_card = container(
+        let storage_card = container(
             column![
-                text("Default Project Directory")
+                text("Storage & Directories")
                     .size(HEADING_SM)
                     .color(iced::Color::from_rgb8(TEXT_PRIMARY.r, TEXT_PRIMARY.g, TEXT_PRIMARY.b)),
-                text("The default parent folder where newly created visual novel projects will be initialized.")
-                    .size(BODY_SM)
+                text("Default Project Directory")
+                    .size(LABEL_MD)
                     .color(iced::Color::from_rgb8(TEXT_SECONDARY.r, TEXT_SECONDARY.g, TEXT_SECONDARY.b)),
-                Space::with_height(SPACE_2),
                 row![
                     container(
                         text(current_dir_text)
                             .size(BODY_SM)
                             .color(iced::Color::from_rgb8(TEXT_PRIMARY.r, TEXT_PRIMARY.g, TEXT_PRIMARY.b))
                     )
-                    .padding(SPACE_3)
+                    .padding(SPACE_2)
                     .width(Length::Fill)
                     .style(code_container_style),
-                    btn_change_folder,
+                    button(text("Change...").size(LABEL_SM))
+                        .padding([SPACE_2, SPACE_3])
+                        .style(secondary_button_style)
+                        .on_press(WelcomeMessage::ChangeDefaultFolder),
+                    button(text("Open").size(LABEL_SM))
+                        .padding([SPACE_2, SPACE_3])
+                        .style(subtle_button_style)
+                        .on_press(WelcomeMessage::OpenDefaultFolder),
+                ]
+                .spacing(SPACE_2)
+                .align_y(Alignment::Center),
+                Space::with_height(SPACE_1),
+                text("Default Export Output Directory")
+                    .size(LABEL_MD)
+                    .color(iced::Color::from_rgb8(TEXT_SECONDARY.r, TEXT_SECONDARY.g, TEXT_SECONDARY.b)),
+                row![
+                    container(
+                        text(current_export_text)
+                            .size(BODY_SM)
+                            .color(iced::Color::from_rgb8(TEXT_PRIMARY.r, TEXT_PRIMARY.g, TEXT_PRIMARY.b))
+                    )
+                    .padding(SPACE_2)
+                    .width(Length::Fill)
+                    .style(code_container_style),
+                    button(text("Change...").size(LABEL_SM))
+                        .padding([SPACE_2, SPACE_3])
+                        .style(secondary_button_style)
+                        .on_press(WelcomeMessage::ChangeDefaultExportFolder),
+                    button(text("Clear").size(LABEL_SM))
+                        .padding([SPACE_2, SPACE_3])
+                        .style(subtle_button_style)
+                        .on_press(WelcomeMessage::ClearDefaultExportFolder),
+                ]
+                .spacing(SPACE_2)
+                .align_y(Alignment::Center),
+                Space::with_height(SPACE_1),
+                row![
+                    text(format!("Global Config: {}", HubConfig::config_path().display()))
+                        .size(LABEL_SM)
+                        .color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b))
+                        .width(Length::Fill),
+                    button(text("Open Config Folder").size(LABEL_SM))
+                        .padding([SPACE_1, SPACE_3])
+                        .style(secondary_button_style)
+                        .on_press(WelcomeMessage::OpenConfigFolder),
+                ]
+                .spacing(SPACE_2)
+                .align_y(Alignment::Center),
+            ]
+            .spacing(SPACE_2),
+        )
+        .padding(SPACE_5)
+        .width(Length::Fill)
+        .style(card_container_style);
+
+        // Section 2: New Project Defaults
+        let res = self.config.default_resolution;
+        let lang = self.config.default_language_code.as_str();
+
+        let defaults_card = container(
+            column![
+                text("New Project Defaults")
+                    .size(HEADING_SM)
+                    .color(iced::Color::from_rgb8(TEXT_PRIMARY.r, TEXT_PRIMARY.g, TEXT_PRIMARY.b)),
+                text("Pre-fill these values automatically whenever you create a new visual novel project.")
+                    .size(BODY_SM)
+                    .color(iced::Color::from_rgb8(TEXT_SECONDARY.r, TEXT_SECONDARY.g, TEXT_SECONDARY.b)),
+                Space::with_height(SPACE_1),
+                row![
+                    text("Default Author / Studio")
+                        .size(LABEL_MD)
+                        .color(iced::Color::from_rgb8(TEXT_SECONDARY.r, TEXT_SECONDARY.g, TEXT_SECONDARY.b))
+                        .width(Length::Fixed(190.0)),
+                    text_input("Creator / Studio Name", &self.config.default_author)
+                        .on_input(WelcomeMessage::DefaultAuthorChanged)
+                        .size(BODY_SM)
+                        .padding(SPACE_2)
+                        .width(Length::Fixed(280.0))
+                        .style(input_field_style),
+                ]
+                .spacing(SPACE_3)
+                .align_y(Alignment::Center),
+                row![
+                    text("Default Resolution")
+                        .size(LABEL_MD)
+                        .color(iced::Color::from_rgb8(TEXT_SECONDARY.r, TEXT_SECONDARY.g, TEXT_SECONDARY.b))
+                        .width(Length::Fixed(190.0)),
+                    row![
+                        button(text("1280 × 720 (HD)").size(LABEL_SM))
+                            .padding([SPACE_1, SPACE_3])
+                            .style(if res == (1280, 720) { primary_button_style } else { secondary_button_style })
+                            .on_press(WelcomeMessage::SetDefaultResolution(1280, 720)),
+                        button(text("1600 × 900").size(LABEL_SM))
+                            .padding([SPACE_1, SPACE_3])
+                            .style(if res == (1600, 900) { primary_button_style } else { secondary_button_style })
+                            .on_press(WelcomeMessage::SetDefaultResolution(1600, 900)),
+                        button(text("1920 × 1080 (FHD)").size(LABEL_SM))
+                            .padding([SPACE_1, SPACE_3])
+                            .style(if res == (1920, 1080) { primary_button_style } else { secondary_button_style })
+                            .on_press(WelcomeMessage::SetDefaultResolution(1920, 1080)),
+                    ]
+                    .spacing(SPACE_2),
+                ]
+                .spacing(SPACE_3)
+                .align_y(Alignment::Center),
+                row![
+                    text("Default Source Language")
+                        .size(LABEL_MD)
+                        .color(iced::Color::from_rgb8(TEXT_SECONDARY.r, TEXT_SECONDARY.g, TEXT_SECONDARY.b))
+                        .width(Length::Fixed(190.0)),
+                    row![
+                        button(text("English (en)").size(LABEL_SM))
+                            .padding([SPACE_1, SPACE_3])
+                            .style(if lang.eq_ignore_ascii_case("en") { primary_button_style } else { secondary_button_style })
+                            .on_press(WelcomeMessage::SetDefaultLanguageCode("en".to_string())),
+                        button(text("Indonesian (id)").size(LABEL_SM))
+                            .padding([SPACE_1, SPACE_3])
+                            .style(if lang.eq_ignore_ascii_case("id") { primary_button_style } else { secondary_button_style })
+                            .on_press(WelcomeMessage::SetDefaultLanguageCode("id".to_string())),
+                        button(text("Japanese (ja)").size(LABEL_SM))
+                            .padding([SPACE_1, SPACE_3])
+                            .style(if lang.eq_ignore_ascii_case("ja") { primary_button_style } else { secondary_button_style })
+                            .on_press(WelcomeMessage::SetDefaultLanguageCode("ja".to_string())),
+                    ]
+                    .spacing(SPACE_2),
                 ]
                 .spacing(SPACE_3)
                 .align_y(Alignment::Center),
@@ -1170,7 +1445,92 @@ Alice: "In that case, let's head to the cafeteria together!"
         .width(Length::Fill)
         .style(card_container_style);
 
-        // Section 2: Engine Specifications & License
+        // Section 3: Editor Workflow & Maintenance
+        let toggle_row = |label: &'static str, desc: &'static str, value: bool, on_yes: WelcomeMessage, on_no: WelcomeMessage| {
+            row![
+                column![
+                    text(label)
+                        .size(LABEL_MD)
+                        .color(iced::Color::from_rgb8(TEXT_PRIMARY.r, TEXT_PRIMARY.g, TEXT_PRIMARY.b)),
+                    text(desc)
+                        .size(LABEL_SM)
+                        .color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b)),
+                ]
+                .spacing(2)
+                .width(Length::Fill),
+                row![
+                    button(text("ON").size(LABEL_SM))
+                        .padding([4, 12])
+                        .style(if value { primary_button_style } else { secondary_button_style })
+                        .on_press(on_yes),
+                    button(text("OFF").size(LABEL_SM))
+                        .padding([4, 12])
+                        .style(if !value { primary_button_style } else { secondary_button_style })
+                        .on_press(on_no),
+                ]
+                .spacing(4),
+            ]
+            .spacing(SPACE_3)
+            .align_y(Alignment::Center)
+            .width(Length::Fill)
+        };
+
+        let workflow_card = container(
+            column![
+                text("Editor Workflow & Maintenance")
+                    .size(HEADING_SM)
+                    .color(iced::Color::from_rgb8(TEXT_PRIMARY.r, TEXT_PRIMARY.g, TEXT_PRIMARY.b)),
+                Space::with_height(SPACE_1),
+                toggle_row(
+                    "Auto-Save Scene Before Play Preview",
+                    "Automatically save the active scene before launching blanc_runtime.exe.",
+                    self.config.auto_save_on_play_preview,
+                    WelcomeMessage::ToggleAutoSaveOnPlayPreview(true),
+                    WelcomeMessage::ToggleAutoSaveOnPlayPreview(false),
+                ),
+                toggle_row(
+                    "Reopen Last Project on Startup",
+                    "Skip the Project Hub and open your most recent project automatically when launching.",
+                    self.config.reopen_last_project,
+                    WelcomeMessage::ToggleReopenLastProject(true),
+                    WelcomeMessage::ToggleReopenLastProject(false),
+                ),
+                toggle_row(
+                    "Confirm Before Delete",
+                    "Keep safety prompts enabled when removing scenes, assets, or languages.",
+                    self.config.confirm_before_delete,
+                    WelcomeMessage::ToggleConfirmBeforeDelete(true),
+                    WelcomeMessage::ToggleConfirmBeforeDelete(false),
+                ),
+                Space::with_height(SPACE_2),
+                row![
+                    text(format!("Recent projects stored: {}", self.config.recent_projects.len()))
+                        .size(LABEL_SM)
+                        .color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b))
+                        .width(Length::Fill),
+                    button(text("Replay Onboarding").size(LABEL_SM))
+                        .padding([SPACE_1, SPACE_3])
+                        .style(secondary_button_style)
+                        .on_press(WelcomeMessage::ReplayOnboarding),
+                    button(text("Clear Recent Projects").size(LABEL_SM))
+                        .padding([SPACE_1, SPACE_3])
+                        .style(secondary_button_style)
+                        .on_press(WelcomeMessage::ClearRecentProjects),
+                    button(text("Reset Preferences").size(LABEL_SM))
+                        .padding([SPACE_1, SPACE_3])
+                        .style(secondary_button_style)
+                        .on_press(WelcomeMessage::ResetHubPreferences),
+                ]
+                .spacing(SPACE_2)
+                .align_y(Alignment::Center),
+            ]
+            .spacing(SPACE_2),
+        )
+        .padding(SPACE_5)
+        .width(Length::Fill)
+        .style(card_container_style);
+
+        // Section 4: Engine Specifications & License
         let info_card = container(
             column![
                 text("Engine Specifications & Licensing")
@@ -1179,7 +1539,7 @@ Alice: "In that case, let's head to the cafeteria together!"
                 Space::with_height(SPACE_2),
                 row![
                     text("Engine Version:").size(BODY_SM).color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b)).width(Length::Fixed(180.0)),
-                    text("v0.1.0-alpha (Milestone 1)").size(BODY_SM).color(iced::Color::from_rgb8(TEXT_PRIMARY.r, TEXT_PRIMARY.g, TEXT_PRIMARY.b)),
+                    text("v0.1.0-beta").size(BODY_SM).color(iced::Color::from_rgb8(TEXT_PRIMARY.r, TEXT_PRIMARY.g, TEXT_PRIMARY.b)),
                 ].spacing(SPACE_2),
                 row![
                     text("Engine License:").size(BODY_SM).color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b)).width(Length::Fixed(180.0)),
@@ -1204,8 +1564,578 @@ Alice: "In that case, let's head to the cafeteria together!"
         .width(Length::Fill)
         .style(card_container_style);
 
-        let content = column![title_col, Space::with_height(SPACE_4), folder_card, info_card]
-            .spacing(SPACE_4)
+        let mut content = column![title_col, Space::with_height(SPACE_2)].spacing(SPACE_4).width(Length::Fill);
+        if let Some(status) = &self.settings_status_message {
+            content = content.push(
+                container(
+                    text(status)
+                        .size(BODY_SM)
+                        .color(iced::Color::from_rgb8(TEXT_PRIMARY.r, TEXT_PRIMARY.g, TEXT_PRIMARY.b)),
+                )
+                .padding([SPACE_2, SPACE_3])
+                .width(Length::Fill)
+                .style(callout_container_style),
+            );
+        }
+        content = content
+            .push(storage_card)
+            .push(defaults_card)
+            .push(workflow_card)
+            .push(info_card);
+
+        scrollable(content).width(Length::Fill).height(Length::Fill).into()
+    }
+
+    // ==========================================
+    // FULL-PAGE FIRST-TIME ONBOARDING
+    // ==========================================
+    fn view_onboarding_screen(&self) -> Element<'_, WelcomeMessage> {
+        let step = self.onboarding_step.min(2);
+
+        let step_pill = |idx: u8, label: &'static str| {
+            let is_active = step == idx;
+            let is_done = step > idx;
+            let badge_color = if is_active {
+                iced::Color::from_rgb8(ACCENT_PRIMARY.r, ACCENT_PRIMARY.g, ACCENT_PRIMARY.b)
+            } else if is_done {
+                iced::Color::from_rgb8(STATUS_SUCCESS.r, STATUS_SUCCESS.g, STATUS_SUCCESS.b)
+            } else {
+                iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b)
+            };
+
+            container(
+                text(label).size(LABEL_SM).color(badge_color),
+            )
+            .padding([SPACE_1, SPACE_3])
+            .style(if is_active { badge_container_style } else { code_container_style })
+        };
+
+        let top_bar = row![
+            row![
+                engine_logo(28.0),
+                text("BLANC ENGINE")
+                    .size(HEADING_SM)
+                    .color(iced::Color::from_rgb8(TEXT_PRIMARY.r, TEXT_PRIMARY.g, TEXT_PRIMARY.b)),
+                container(
+                    text("v0.1.0-beta")
+                        .size(LABEL_SM)
+                        .color(iced::Color::from_rgb8(ACCENT_PRIMARY.r, ACCENT_PRIMARY.g, ACCENT_PRIMARY.b)),
+                )
+                .padding([2.0, 8.0])
+                .style(badge_container_style),
+            ]
+            .spacing(SPACE_2)
+            .align_y(Alignment::Center),
+            Space::with_width(Length::Fill),
+            row![
+                step_pill(0, "1. Welcome"),
+                step_pill(1, "2. Workspace"),
+                step_pill(2, "3. Workflow"),
+            ]
+            .spacing(SPACE_2)
+            .align_y(Alignment::Center),
+            Space::with_width(Length::Fill),
+            button(text("Skip Setup").size(LABEL_SM))
+                .padding([SPACE_2, SPACE_3])
+                .style(subtle_button_style)
+                .on_press(WelcomeMessage::OnboardingSkip),
+        ]
+        .padding([SPACE_4, SPACE_6])
+        .align_y(Alignment::Center)
+        .width(Length::Fill);
+
+        let feature_card = |title: &'static str, desc: &'static str| {
+            container(
+                column![
+                    text(title)
+                        .size(HEADING_SM)
+                        .color(iced::Color::from_rgb8(TEXT_PRIMARY.r, TEXT_PRIMARY.g, TEXT_PRIMARY.b)),
+                    text(desc)
+                        .size(BODY_SM)
+                        .color(iced::Color::from_rgb8(TEXT_SECONDARY.r, TEXT_SECONDARY.g, TEXT_SECONDARY.b)),
+                ]
+                .spacing(SPACE_1),
+            )
+            .padding(SPACE_4)
+            .width(Length::FillPortion(1))
+            .style(code_container_style)
+        };
+
+        let body_card: Element<'_, WelcomeMessage> = match step {
+            0 => {
+                let hero = column![
+                    text("Welcome to Blanc Engine")
+                        .size(28)
+                        .color(iced::Color::from_rgb8(TEXT_PRIMARY.r, TEXT_PRIMARY.g, TEXT_PRIMARY.b)),
+                    text("Build, customize, localize, and export complete Visual Novels in one cohesive desktop studio.")
+                        .size(BODY_MD)
+                        .color(iced::Color::from_rgb8(TEXT_SECONDARY.r, TEXT_SECONDARY.g, TEXT_SECONDARY.b)),
+                ]
+                .spacing(SPACE_2);
+
+                let grid_top = row![
+                    feature_card(
+                        "Visual Novel Workflow",
+                        "Write dialogue in Scene Editor and connect branching paths visually in Story Flow."
+                    ),
+                    feature_card(
+                        "UI Designer & 19 Templates",
+                        "Pick ready-made layouts for Pause, Settings, Save/Load, and History, or skin everything with custom PNGs."
+                    ),
+                ]
+                .spacing(SPACE_3);
+
+                let grid_bottom = row![
+                    feature_card(
+                        "Multi-Language & Voice Acting",
+                        "Translate UI, speakers, and scripts with CSV round-trip, plus Voice Acting & Active Speaker Highlight."
+                    ),
+                    feature_card(
+                        "100% Creator-Owned",
+                        "Export standalone builds and installers. Everything you create is yours to publish commercially or for free."
+                    ),
+                ]
+                .spacing(SPACE_3);
+
+                let footer = row![
+                    text("Step 1 of 3")
+                        .size(LABEL_SM)
+                        .color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b)),
+                    Space::with_width(Length::Fill),
+                    button(text("Get Started ->").size(LABEL_MD))
+                        .padding([SPACE_2, SPACE_5])
+                        .style(primary_button_style)
+                        .on_press(WelcomeMessage::OnboardingNextStep),
+                ]
+                .align_y(Alignment::Center)
+                .width(Length::Fill);
+
+                container(
+                    column![hero, Space::with_height(SPACE_2), grid_top, grid_bottom, Space::with_height(SPACE_2), footer]
+                        .spacing(SPACE_3),
+                )
+                .padding(SPACE_6)
+                .width(Length::Fixed(860.0))
+                .style(card_container_style)
+                .into()
+            }
+            1 => {
+                let current_dir_text = self
+                    .config
+                    .default_folder
+                    .as_ref()
+                    .map(|p| p.to_string_lossy().to_string())
+                    .unwrap_or_else(|| "Not configured (User Documents default)".to_string());
+                let res = self.config.default_resolution;
+                let lang = self.config.default_language_code.as_str();
+
+                let header = column![
+                    text("Quick Workspace Setup")
+                        .size(26)
+                        .color(iced::Color::from_rgb8(TEXT_PRIMARY.r, TEXT_PRIMARY.g, TEXT_PRIMARY.b)),
+                    text("Set your default project folder and starter preferences. You can change these anytime in Hub Settings.")
+                        .size(BODY_SM)
+                        .color(iced::Color::from_rgb8(TEXT_SECONDARY.r, TEXT_SECONDARY.g, TEXT_SECONDARY.b)),
+                ]
+                .spacing(SPACE_1);
+
+                let folder_row = column![
+                    text("Default Project Directory")
+                        .size(LABEL_MD)
+                        .color(iced::Color::from_rgb8(TEXT_PRIMARY.r, TEXT_PRIMARY.g, TEXT_PRIMARY.b)),
+                    row![
+                        container(
+                            text(current_dir_text)
+                                .size(BODY_SM)
+                                .color(iced::Color::from_rgb8(TEXT_PRIMARY.r, TEXT_PRIMARY.g, TEXT_PRIMARY.b)),
+                        )
+                        .padding(SPACE_2)
+                        .width(Length::Fill)
+                        .style(code_container_style),
+                        button(text("Change Folder...").size(LABEL_SM))
+                            .padding([SPACE_2, SPACE_3])
+                            .style(secondary_button_style)
+                            .on_press(WelcomeMessage::ChangeDefaultFolder),
+                    ]
+                    .spacing(SPACE_2)
+                    .align_y(Alignment::Center),
+                ]
+                .spacing(SPACE_1);
+
+                let author_row = row![
+                    text("Creator / Studio Name")
+                        .size(LABEL_MD)
+                        .color(iced::Color::from_rgb8(TEXT_PRIMARY.r, TEXT_PRIMARY.g, TEXT_PRIMARY.b))
+                        .width(Length::Fixed(200.0)),
+                    text_input("Creator / Studio Name", &self.config.default_author)
+                        .on_input(WelcomeMessage::DefaultAuthorChanged)
+                        .size(BODY_SM)
+                        .padding(SPACE_2)
+                        .width(Length::Fill)
+                        .style(input_field_style),
+                ]
+                .spacing(SPACE_3)
+                .align_y(Alignment::Center);
+
+                let res_row = row![
+                    text("Default Game Resolution")
+                        .size(LABEL_MD)
+                        .color(iced::Color::from_rgb8(TEXT_PRIMARY.r, TEXT_PRIMARY.g, TEXT_PRIMARY.b))
+                        .width(Length::Fixed(200.0)),
+                    row![
+                        button(text("1280 x 720 (HD)").size(LABEL_SM))
+                            .padding([SPACE_1, SPACE_3])
+                            .style(if res == (1280, 720) { primary_button_style } else { secondary_button_style })
+                            .on_press(WelcomeMessage::SetDefaultResolution(1280, 720)),
+                        button(text("1600 x 900").size(LABEL_SM))
+                            .padding([SPACE_1, SPACE_3])
+                            .style(if res == (1600, 900) { primary_button_style } else { secondary_button_style })
+                            .on_press(WelcomeMessage::SetDefaultResolution(1600, 900)),
+                        button(text("1920 x 1080 (FHD)").size(LABEL_SM))
+                            .padding([SPACE_1, SPACE_3])
+                            .style(if res == (1920, 1080) { primary_button_style } else { secondary_button_style })
+                            .on_press(WelcomeMessage::SetDefaultResolution(1920, 1080)),
+                    ]
+                    .spacing(SPACE_2),
+                ]
+                .spacing(SPACE_3)
+                .align_y(Alignment::Center);
+
+                let lang_row = row![
+                    text("Default Source Language")
+                        .size(LABEL_MD)
+                        .color(iced::Color::from_rgb8(TEXT_PRIMARY.r, TEXT_PRIMARY.g, TEXT_PRIMARY.b))
+                        .width(Length::Fixed(200.0)),
+                    row![
+                        button(text("English (en)").size(LABEL_SM))
+                            .padding([SPACE_1, SPACE_3])
+                            .style(if lang.eq_ignore_ascii_case("en") { primary_button_style } else { secondary_button_style })
+                            .on_press(WelcomeMessage::SetDefaultLanguageCode("en".to_string())),
+                        button(text("Indonesian (id)").size(LABEL_SM))
+                            .padding([SPACE_1, SPACE_3])
+                            .style(if lang.eq_ignore_ascii_case("id") { primary_button_style } else { secondary_button_style })
+                            .on_press(WelcomeMessage::SetDefaultLanguageCode("id".to_string())),
+                        button(text("Japanese (ja)").size(LABEL_SM))
+                            .padding([SPACE_1, SPACE_3])
+                            .style(if lang.eq_ignore_ascii_case("ja") { primary_button_style } else { secondary_button_style })
+                            .on_press(WelcomeMessage::SetDefaultLanguageCode("ja".to_string())),
+                    ]
+                    .spacing(SPACE_2),
+                ]
+                .spacing(SPACE_3)
+                .align_y(Alignment::Center);
+
+                let footer = row![
+                    button(text("<- Back").size(LABEL_SM))
+                        .padding([SPACE_2, SPACE_4])
+                        .style(secondary_button_style)
+                        .on_press(WelcomeMessage::OnboardingPrevStep),
+                    Space::with_width(Length::Fill),
+                    text("Step 2 of 3")
+                        .size(LABEL_SM)
+                        .color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b)),
+                    Space::with_width(Length::Fixed(SPACE_3)),
+                    button(text("Continue ->").size(LABEL_MD))
+                        .padding([SPACE_2, SPACE_5])
+                        .style(primary_button_style)
+                        .on_press(WelcomeMessage::OnboardingNextStep),
+                ]
+                .align_y(Alignment::Center)
+                .width(Length::Fill);
+
+                container(
+                    column![
+                        header,
+                        Space::with_height(SPACE_1),
+                        folder_row,
+                        author_row,
+                        res_row,
+                        lang_row,
+                        Space::with_height(SPACE_2),
+                        footer,
+                    ]
+                    .spacing(SPACE_3),
+                )
+                .padding(SPACE_6)
+                .width(Length::Fixed(860.0))
+                .style(card_container_style)
+                .into()
+            }
+            _ => {
+                let header = column![
+                    text("How Blanc Engine Works")
+                        .size(26)
+                        .color(iced::Color::from_rgb8(TEXT_PRIMARY.r, TEXT_PRIMARY.g, TEXT_PRIMARY.b)),
+                    text("Follow these 4 stages to take your visual novel from idea to playable release.")
+                        .size(BODY_SM)
+                        .color(iced::Color::from_rgb8(TEXT_SECONDARY.r, TEXT_SECONDARY.g, TEXT_SECONDARY.b)),
+                ]
+                .spacing(SPACE_1);
+
+                let row_1 = row![
+                    feature_card(
+                        "1. Import Assets",
+                        "Drop in backgrounds, character sprites, BGM, SFX, and voice acting clips inside Asset Manager."
+                    ),
+                    feature_card(
+                        "2. Build Story & Scenes",
+                        "Author dialogue, expressions, choices, and branching paths in Scene Editor and Story Flow."
+                    ),
+                ]
+                .spacing(SPACE_3);
+
+                let row_2 = row![
+                    feature_card(
+                        "3. Design UI & Locales",
+                        "Customize Title, Settings, Save/Load, and Gameplay UI with templates, PNG skins, and Localization."
+                    ),
+                    feature_card(
+                        "4. Play Preview & Export",
+                        "Test your game live with keyboard/gamepad support, then package a standalone build & installer."
+                    ),
+                ]
+                .spacing(SPACE_3);
+
+                let footer = row![
+                    button(text("<- Back").size(LABEL_SM))
+                        .padding([SPACE_2, SPACE_4])
+                        .style(secondary_button_style)
+                        .on_press(WelcomeMessage::OnboardingPrevStep),
+                    Space::with_width(Length::Fill),
+                    button(text("Go to Project Hub").size(LABEL_SM))
+                        .padding([SPACE_2, SPACE_4])
+                        .style(secondary_button_style)
+                        .on_press(WelcomeMessage::OnboardingFinishToHub),
+                    button(text("Create First Project ->").size(LABEL_MD))
+                        .padding([SPACE_2, SPACE_5])
+                        .style(primary_button_style)
+                        .on_press(WelcomeMessage::OnboardingFinishCreateProject),
+                ]
+                .spacing(SPACE_2)
+                .align_y(Alignment::Center)
+                .width(Length::Fill);
+
+                container(
+                    column![header, Space::with_height(SPACE_2), row_1, row_2, Space::with_height(SPACE_2), footer]
+                        .spacing(SPACE_3),
+                )
+                .padding(SPACE_6)
+                .width(Length::Fixed(860.0))
+                .style(card_container_style)
+                .into()
+            }
+        };
+
+        let center_area = container(body_card)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .center_x(Length::Fill)
+            .center_y(Length::Fill)
+            .padding(SPACE_6);
+
+        column![top_bar, center_area]
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .into()
+    }
+
+    // ==========================================
+    // SUBMIT YOUR GAMES TAB (MIRRORS WEBSITE FORM)
+    // ==========================================
+    fn view_submit_games_tab(&self) -> Element<'_, WelcomeMessage> {
+        let mut header_row = row![
+            column![
+                text("Submit Your Games")
+                    .size(HEADING_LG)
+                    .color(iced::Color::from_rgb8(TEXT_PRIMARY.r, TEXT_PRIMARY.g, TEXT_PRIMARY.b)),
+                text("Submit your visual novel made with Blanc Engine to be featured in the official community showcase.")
+                    .size(BODY_SM)
+                    .color(iced::Color::from_rgb8(TEXT_SECONDARY.r, TEXT_SECONDARY.g, TEXT_SECONDARY.b)),
+            ]
+            .spacing(SPACE_1)
+            .width(Length::Fill),
+        ]
+        .spacing(SPACE_3)
+        .align_y(Alignment::Center);
+
+        if !self.config.recent_projects.is_empty() {
+            header_row = header_row.push(
+                button(text("Auto-fill from Latest Project").size(LABEL_SM))
+                    .padding([SPACE_2, SPACE_3])
+                    .style(secondary_button_style)
+                    .on_press(WelcomeMessage::SubmitFillFromRecent),
+            );
+        }
+
+        let field_label = |label: &'static str| {
+            row![
+                text(label)
+                    .size(LABEL_MD)
+                    .color(iced::Color::from_rgb8(TEXT_PRIMARY.r, TEXT_PRIMARY.g, TEXT_PRIMARY.b)),
+                text(" *")
+                    .size(LABEL_MD)
+                    .color(iced::Color::from_rgb8(STATUS_ERROR.r, STATUS_ERROR.g, STATUS_ERROR.b)),
+            ]
+        };
+
+        let row_title_author = row![
+            column![
+                field_label("Game Title"),
+                text_input("Echoes of Memories", &self.submit_title)
+                    .on_input(WelcomeMessage::SubmitTitleChanged)
+                    .size(BODY_SM)
+                    .padding(SPACE_2)
+                    .width(Length::Fill)
+                    .style(input_field_style),
+            ]
+            .spacing(SPACE_1)
+            .width(Length::FillPortion(1)),
+            column![
+                field_label("Author / Studio"),
+                text_input("Your Name or Studio", &self.submit_author)
+                    .on_input(WelcomeMessage::SubmitAuthorChanged)
+                    .size(BODY_SM)
+                    .padding(SPACE_2)
+                    .width(Length::Fill)
+                    .style(input_field_style),
+            ]
+            .spacing(SPACE_1)
+            .width(Length::FillPortion(1)),
+        ]
+        .spacing(SPACE_4);
+
+        let status_pills = row![
+            button(text("Released").size(LABEL_SM))
+                .padding([SPACE_1, SPACE_3])
+                .style(if self.submit_status == GameSubmitStatus::Released { primary_button_style } else { secondary_button_style })
+                .on_press(WelcomeMessage::SubmitStatusChanged(GameSubmitStatus::Released)),
+            button(text("Demo").size(LABEL_SM))
+                .padding([SPACE_1, SPACE_3])
+                .style(if self.submit_status == GameSubmitStatus::Demo { primary_button_style } else { secondary_button_style })
+                .on_press(WelcomeMessage::SubmitStatusChanged(GameSubmitStatus::Demo)),
+            button(text("In Development").size(LABEL_SM))
+                .padding([SPACE_1, SPACE_3])
+                .style(if self.submit_status == GameSubmitStatus::InDevelopment { primary_button_style } else { secondary_button_style })
+                .on_press(WelcomeMessage::SubmitStatusChanged(GameSubmitStatus::InDevelopment)),
+        ]
+        .spacing(SPACE_2);
+
+        let row_status_genre = row![
+            column![
+                field_label("Status"),
+                status_pills,
+            ]
+            .spacing(SPACE_2)
+            .width(Length::FillPortion(1)),
+            column![
+                field_label("Genre / Tags"),
+                text_input("Mystery, Romance, Slice of Life", &self.submit_genre)
+                    .on_input(WelcomeMessage::SubmitGenreChanged)
+                    .size(BODY_SM)
+                    .padding(SPACE_2)
+                    .width(Length::Fill)
+                    .style(input_field_style),
+            ]
+            .spacing(SPACE_1)
+            .width(Length::FillPortion(1)),
+        ]
+        .spacing(SPACE_4);
+
+        let cover_field = column![
+            field_label("Cover Image URL (16:9 recommended)"),
+            text_input("https://example.com/cover.png", &self.submit_cover_url)
+                .on_input(WelcomeMessage::SubmitCoverUrlChanged)
+                .size(BODY_SM)
+                .padding(SPACE_2)
+                .width(Length::Fill)
+                .style(input_field_style),
+        ]
+        .spacing(SPACE_1);
+
+        let game_url_field = column![
+            field_label("Game / Download URL"),
+            text_input("https://yourname.itch.io/your-game", &self.submit_game_url)
+                .on_input(WelcomeMessage::SubmitGameUrlChanged)
+                .size(BODY_SM)
+                .padding(SPACE_2)
+                .width(Length::Fill)
+                .style(input_field_style),
+        ]
+        .spacing(SPACE_1);
+
+        let desc_field = column![
+            field_label("Short Description"),
+            text_input(
+                "A brief 1-2 sentence summary of your visual novel...",
+                &self.submit_description
+            )
+            .on_input(WelcomeMessage::SubmitDescriptionChanged)
+            .size(BODY_SM)
+            .padding(SPACE_2)
+            .width(Length::Fill)
+            .style(input_field_style),
+        ]
+        .spacing(SPACE_1);
+
+        let mut form_col = column![
+            row_title_author,
+            row_status_genre,
+            cover_field,
+            game_url_field,
+            desc_field,
+        ]
+        .spacing(SPACE_3);
+
+        if let Some((is_ok, msg)) = &self.submit_feedback {
+            let color = if *is_ok {
+                iced::Color::from_rgb8(STATUS_SUCCESS.r, STATUS_SUCCESS.g, STATUS_SUCCESS.b)
+            } else {
+                iced::Color::from_rgb8(STATUS_ERROR.r, STATUS_ERROR.g, STATUS_ERROR.b)
+            };
+            form_col = form_col.push(
+                container(text(msg).size(BODY_SM).color(color))
+                    .padding([SPACE_2, SPACE_3])
+                    .width(Length::Fill)
+                    .style(callout_container_style),
+            );
+        }
+
+        let submit_btn_label = if self.submit_in_progress {
+            "Submitting..."
+        } else {
+            "Submit Game"
+        };
+        let mut submit_btn = button(text(submit_btn_label).size(LABEL_MD))
+            .padding([SPACE_2, SPACE_5])
+            .style(primary_button_style);
+        if !self.submit_in_progress {
+            submit_btn = submit_btn.on_press(WelcomeMessage::SubmitGameClicked);
+        }
+
+        let actions_row = row![
+            text("Submitted entries are reviewed before appearing on the Blanc Engine Showcase.")
+                .size(LABEL_SM)
+                .color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b))
+                .width(Length::Fill),
+            button(text("Clear Form").size(LABEL_SM))
+                .padding([SPACE_2, SPACE_3])
+                .style(secondary_button_style)
+                .on_press(WelcomeMessage::SubmitResetForm),
+            submit_btn,
+        ]
+        .spacing(SPACE_2)
+        .align_y(Alignment::Center)
+        .width(Length::Fill);
+
+        form_col = form_col.push(Space::with_height(SPACE_1)).push(actions_row);
+
+        let form_card = container(form_col)
+            .padding(SPACE_5)
+            .width(Length::Fill)
+            .style(card_container_style);
+
+        let content = column![header_row, Space::with_height(SPACE_2), form_card]
+            .spacing(SPACE_3)
             .width(Length::Fill);
 
         scrollable(content).width(Length::Fill).height(Length::Fill).into()

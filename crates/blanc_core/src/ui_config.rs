@@ -113,6 +113,32 @@ pub struct ThemeUiConfig {
     pub small_button_focus_asset_id: Option<String>,
     pub small_button_pressed_asset_id: Option<String>,
     pub small_button_disabled_asset_id: Option<String>,
+
+    // Optional custom slider textures & styling (Settings sliders)
+    #[serde(default)]
+    pub slider_track_asset_id: Option<String>,
+    #[serde(default)]
+    pub slider_fill_asset_id: Option<String>,
+    #[serde(default)]
+    pub slider_handle_asset_id: Option<String>,
+    #[serde(default)]
+    pub slider_track_bg_hex: String,
+    #[serde(default)]
+    pub slider_fill_hex: String,
+    #[serde(default)]
+    pub slider_handle_hex: String,
+    #[serde(default = "default_slider_track_height")]
+    pub slider_track_height: f32,
+    #[serde(default = "default_slider_handle_size")]
+    pub slider_handle_size: f32,
+}
+
+fn default_slider_track_height() -> f32 {
+    6.0
+}
+
+fn default_slider_handle_size() -> f32 {
+    16.0
 }
 
 impl Default for ThemeUiConfig {
@@ -136,6 +162,14 @@ impl Default for ThemeUiConfig {
             small_button_focus_asset_id: None,
             small_button_pressed_asset_id: None,
             small_button_disabled_asset_id: None,
+            slider_track_asset_id: None,
+            slider_fill_asset_id: None,
+            slider_handle_asset_id: None,
+            slider_track_bg_hex: String::new(),
+            slider_fill_hex: String::new(),
+            slider_handle_hex: String::new(),
+            slider_track_height: 6.0,
+            slider_handle_size: 16.0,
         }
     }
 }
@@ -311,6 +345,72 @@ pub enum PauseButtonsLayout {
     TwoRowGrid,
 }
 
+/// Structural layout template for Pause Menu
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum PauseLayoutTemplate {
+    #[default]
+    CenteredCard,
+    LeftSidebar,
+    RightSidebar,
+    BottomBar,
+    TopBar,
+}
+
+impl PauseLayoutTemplate {
+    pub const ALL: &'static [Self] = &[
+        Self::CenteredCard,
+        Self::LeftSidebar,
+        Self::RightSidebar,
+        Self::BottomBar,
+        Self::TopBar,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::CenteredCard => "Centered Card",
+            Self::LeftSidebar => "Left Sidebar",
+            Self::RightSidebar => "Right Sidebar",
+            Self::BottomBar => "Bottom Bar",
+            Self::TopBar => "Top Bar",
+        }
+    }
+}
+
+/// Structural layout template for Settings Screen
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum SettingsLayoutTemplate {
+    #[default]
+    Classic,
+    TopTabs,
+    LeftSidebar,
+    RightSidebar,
+    TwoColumnSplit,
+}
+
+impl SettingsLayoutTemplate {
+    pub const ALL: &'static [Self] = &[
+        Self::Classic,
+        Self::TopTabs,
+        Self::LeftSidebar,
+        Self::RightSidebar,
+        Self::TwoColumnSplit,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Classic => "Classic (All)",
+            Self::TopTabs => "Top Tabs",
+            Self::LeftSidebar => "Left Sidebar",
+            Self::RightSidebar => "Right Sidebar",
+            Self::TwoColumnSplit => "2-Column Split",
+        }
+    }
+
+    pub fn uses_tabs(self) -> bool {
+        matches!(self, Self::TopTabs | Self::LeftSidebar | Self::RightSidebar)
+    }
+}
+
 /// Pause Menu & In-Game Settings screen customization
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -328,6 +428,7 @@ pub struct PauseSettingsUiConfig {
     pub pause_button_width: f32,
     pub pause_direction: ButtonDirection,
     pub pause_layout: PauseButtonsLayout,
+    pub pause_layout_template: PauseLayoutTemplate,
     pub pause_overlay_dimming: f32,
     pub pause_panel_asset_id: Option<String>,
 
@@ -349,6 +450,7 @@ pub struct PauseSettingsUiConfig {
     pub show_quit_button: bool,
 
     pub settings_show_panel: bool,
+    pub settings_layout_template: SettingsLayoutTemplate,
     pub settings_overlay_dimming: f32,
     pub settings_show_title: bool,
     pub settings_title_anchor: UiAnchor,
@@ -392,6 +494,7 @@ impl Default for PauseSettingsUiConfig {
             pause_button_width: 210.0,
             pause_direction: ButtonDirection::Vertical,
             pause_layout: PauseButtonsLayout::Vertical,
+            pause_layout_template: PauseLayoutTemplate::CenteredCard,
             pause_overlay_dimming: 0.55,
             pause_panel_asset_id: None,
 
@@ -413,6 +516,7 @@ impl Default for PauseSettingsUiConfig {
             show_quit_button: true,
 
             settings_show_panel: false,
+            settings_layout_template: SettingsLayoutTemplate::Classic,
             settings_overlay_dimming: 0.55,
             settings_show_title: true,
             settings_title_anchor: UiAnchor::Center,
@@ -467,10 +571,42 @@ impl SaveLoadSlotLayout {
     }
 }
 
+/// Structural layout template for Save & Load screens
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum SaveLoadLayoutTemplate {
+    #[default]
+    Classic,
+    TopBar,
+    LeftSidebar,
+    RightSidebar,
+    BottomStrip,
+}
+
+impl SaveLoadLayoutTemplate {
+    pub const ALL: &'static [Self] = &[
+        Self::Classic,
+        Self::TopBar,
+        Self::LeftSidebar,
+        Self::RightSidebar,
+        Self::BottomStrip,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Classic => "Classic",
+            Self::TopBar => "Top Bar",
+            Self::LeftSidebar => "Left Sidebar",
+            Self::RightSidebar => "Right Sidebar",
+            Self::BottomStrip => "Bottom Strip",
+        }
+    }
+}
+
 /// Customizable Save & Load screen layout, labels, and skinning
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct SaveLoadUiConfig {
+    pub layout_template: SaveLoadLayoutTemplate,
     pub show_panel: bool,
     pub show_title: bool,
     pub title_anchor: UiAnchor,
@@ -506,6 +642,7 @@ pub struct SaveLoadUiConfig {
 impl Default for SaveLoadUiConfig {
     fn default() -> Self {
         Self {
+            layout_template: SaveLoadLayoutTemplate::Classic,
             show_panel: false,
             show_title: true,
             title_anchor: UiAnchor::Center,
@@ -540,10 +677,39 @@ impl Default for SaveLoadUiConfig {
     }
 }
 
+/// Structural layout template for History / Backlog screen
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum HistoryLayoutTemplate {
+    #[default]
+    CenteredModal,
+    TopBarReader,
+    LeftDrawer,
+    RightDrawer,
+}
+
+impl HistoryLayoutTemplate {
+    pub const ALL: &'static [Self] = &[
+        Self::CenteredModal,
+        Self::TopBarReader,
+        Self::LeftDrawer,
+        Self::RightDrawer,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::CenteredModal => "Centered Modal",
+            Self::TopBarReader => "Top Bar Reader",
+            Self::LeftDrawer => "Left Drawer",
+            Self::RightDrawer => "Right Drawer",
+        }
+    }
+}
+
 /// Dialogue History / Backlog screen configuration
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct HistoryUiConfig {
+    pub layout_template: HistoryLayoutTemplate,
     pub show_panel: bool,
     pub panel_width: f32,
     pub panel_height: f32,
@@ -563,6 +729,7 @@ pub struct HistoryUiConfig {
 impl Default for HistoryUiConfig {
     fn default() -> Self {
         Self {
+            layout_template: HistoryLayoutTemplate::CenteredModal,
             show_panel: true,
             panel_width: 780.0,
             panel_height: 540.0,

@@ -33,6 +33,10 @@ struct RuntimeUserSettings {
     auto_forward_delay: f32,
     #[serde(default)]
     language: Option<String>,
+    #[serde(default)]
+    voice_volume: Option<f32>,
+    #[serde(default)]
+    fullscreen: Option<bool>,
 }
 
 fn default_auto_delay() -> f32 {
@@ -43,6 +47,53 @@ fn default_auto_delay() -> f32 {
 pub enum SaveLoadMode {
     Save,
     Load,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SettingsCategory {
+    Audio,
+    Gameplay,
+    System,
+}
+
+impl SettingsCategory {
+    pub const ALL: &'static [Self] = &[Self::Audio, Self::Gameplay, Self::System];
+
+    pub fn loc_key(self) -> &'static str {
+        match self {
+            Self::Audio => "ui.settings.cat_audio",
+            Self::Gameplay => "ui.settings.cat_gameplay",
+            Self::System => "ui.settings.cat_system",
+        }
+    }
+
+    pub fn default_label(self) -> &'static str {
+        match self {
+            Self::Audio => "Audio",
+            Self::Gameplay => "Gameplay",
+            Self::System => "System",
+        }
+    }
+
+    pub fn cycle(self, delta: isize) -> Self {
+        let idx = Self::ALL.iter().position(|&c| c == self).unwrap_or(0) as isize;
+        let next = (idx + delta).rem_euclid(Self::ALL.len() as isize) as usize;
+        Self::ALL[next]
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SettingsFocusItem {
+    MasterVol,
+    BgmVol,
+    SfxVol,
+    VoiceVol,
+    TextSpeed,
+    AutoDelay,
+    SkipMode,
+    DisplayMode,
+    Language,
+    Back,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -101,6 +152,7 @@ pub struct ActiveCharacter {
 #[derive(Debug, Clone)]
 pub struct ActiveDialogue {
     pub speaker: Option<String>,
+    pub speaker_id: Option<String>,
     pub nameplate_position: Option<CharacterPosition>,
     pub full_text: String,
     pub visible_chars: usize,
@@ -112,6 +164,7 @@ impl ActiveDialogue {
         let total_chars = text.chars().count();
         Self {
             speaker,
+            speaker_id: None,
             nameplate_position: None,
             full_text: text,
             visible_chars: 0,
@@ -170,6 +223,7 @@ pub struct AudioController {
     _stream: Option<OutputStream>,
     stream_handle: Option<OutputStreamHandle>,
     bgm_sink: Option<Sink>,
+    voice_sink: Option<Sink>,
 }
 
 impl Default for AudioController {
@@ -179,11 +233,13 @@ impl Default for AudioController {
                 _stream: Some(stream),
                 stream_handle: Some(handle),
                 bgm_sink: None,
+                voice_sink: None,
             },
             Err(_) => Self {
                 _stream: None,
                 stream_handle: None,
                 bgm_sink: None,
+                voice_sink: None,
             },
         }
     }
@@ -245,6 +301,60 @@ impl AudioController {
         }
     }
 
+    pub fn play_voice(&mut self, path: &PathBuf, volume: f32) {
+        self.stop_voice();
+        let Some(handle) = &self.stream_handle else {
+            return;
+        };
+        let Ok(file) = File::open(path) else {
+            return;
+        };
+        let Ok(source) = Decoder::new(BufReader::new(file)) else {
+            return;
+        };
+        let Ok(sink) = Sink::try_new(handle) else {
+            return;
+        };
+        sink.set_volume(volume.clamp(0.0, 1.0));
+        sink.append(source);
+        self.voice_sink = Some(sink);
+    }
+
+    pub fn play_voice_bytes(&mut self, bytes: Vec<u8>, volume: f32) {
+        self.stop_voice();
+        let Some(handle) = &self.stream_handle else {
+            return;
+        };
+        let Ok(source) = Decoder::new(std::io::Cursor::new(bytes)) else {
+            return;
+        };
+        let Ok(sink) = Sink::try_new(handle) else {
+            return;
+        };
+        sink.set_volume(volume.clamp(0.0, 1.0));
+        sink.append(source);
+        self.voice_sink = Some(sink);
+    }
+
+    pub fn stop_voice(&mut self) {
+        if let Some(sink) = self.voice_sink.take() {
+            sink.stop();
+        }
+    }
+
+    pub fn set_voice_volume(&self, volume: f32) {
+        if let Some(sink) = &self.voice_sink {
+            sink.set_volume(volume.clamp(0.0, 1.0));
+        }
+    }
+
+    pub fn is_voice_playing(&self) -> bool {
+        self.voice_sink
+            .as_ref()
+            .map(|s| !s.empty())
+            .unwrap_or(false)
+    }
+
     pub fn play_sfx(&self, path: &PathBuf, volume: f32) {
         let Some(handle) = &self.stream_handle else {
             return;
@@ -285,6 +395,9 @@ pub struct RuntimeEngine {
     pub master_volume: f32,
     pub bgm_volume: f32,
     pub sfx_volume: f32,
+    pub voice_volume: f32,
+    pub has_voice_acting: bool,
+    pub is_fullscreen: bool,
     pub text_speed: f32,
     pub auto_play: bool,
     pub skip_mode_active: bool,
@@ -292,6 +405,8 @@ pub struct RuntimeEngine {
     pub auto_forward_delay: f32,
     pub active_language: String,
     pub focus_index: usize,
+    pub save_load_action_index: usize,
+    pub settings_category: SettingsCategory,
     pub ui_anim_time: f32,
     pub toast: Option<(String, std::time::Instant)>,
     char_accumulator: f32,
@@ -312,6 +427,9 @@ impl RuntimeEngine {
             master_volume: 1.0,
             bgm_volume: 0.8,
             sfx_volume: 1.0,
+            voice_volume: 1.0,
+            has_voice_acting: false,
+            is_fullscreen: false,
             text_speed: 1.0,
             auto_play: false,
             skip_mode_active: false,
@@ -319,6 +437,8 @@ impl RuntimeEngine {
             auto_forward_delay: 2.0,
             active_language: "en".to_string(),
             focus_index: 0,
+            save_load_action_index: 0,
+            settings_category: SettingsCategory::Audio,
             ui_anim_time: 0.0,
             toast: None,
             char_accumulator: 0.0,
@@ -349,6 +469,26 @@ impl RuntimeEngine {
                         engine.master_volume = loaded.config.master_volume;
                         engine.bgm_volume = loaded.config.bgm_volume;
                         engine.sfx_volume = loaded.config.sfx_volume;
+                        engine.voice_volume = loaded.config.voice_volume;
+                        let has_voice_assets = loaded
+                            .project
+                            .assets
+                            .assets
+                            .values()
+                            .any(|a| a.category == AssetCategory::Voice);
+                        let has_dialogue_voice = loaded.scenes.values().any(|scene| {
+                            scene.blocks.iter().any(|b| {
+                                matches!(
+                                    b,
+                                    ActionBlock::Dialogue {
+                                        voice_asset_id: Some(v),
+                                        ..
+                                    } if !v.trim().is_empty()
+                                )
+                            })
+                        });
+                        engine.has_voice_acting = has_voice_assets || has_dialogue_voice;
+                        engine.is_fullscreen = loaded.config.fullscreen_default;
                         engine.text_speed = loaded.config.text_speed.max(0.25);
                         engine.auto_forward_delay = loaded.config.auto_forward_delay.clamp(0.5, 5.0);
                         engine.active_language = loaded.locale_manifest.default_language.code.clone();
@@ -383,6 +523,7 @@ impl RuntimeEngine {
         self.stage = StageState::default();
         self.focus_index = 0;
         self.audio.stop_bgm();
+        self.audio.stop_voice();
 
         if let Some(loaded) = &self.loaded {
             if let Some(bgm_id) = &loaded.config.title_bgm_asset_id {
@@ -409,6 +550,7 @@ impl RuntimeEngine {
         match start_scene {
             Some(scene_name) => {
                 self.audio.stop_bgm();
+                self.audio.stop_voice();
                 self.stage = StageState::default();
                 self.load_scene(&scene_name);
             }
@@ -439,6 +581,12 @@ impl RuntimeEngine {
                 if let Ok(settings) = serde_json::from_str::<RuntimeUserSettings>(&raw) {
                     self.skip_rule = settings.skip_mode;
                     self.auto_forward_delay = settings.auto_forward_delay.clamp(0.5, 5.0);
+                    if let Some(vv) = settings.voice_volume {
+                        self.voice_volume = vv.clamp(0.0, 1.0);
+                    }
+                    if let Some(fs) = settings.fullscreen {
+                        self.is_fullscreen = fs;
+                    }
                     if let (Some(lang), Some(loaded)) = (settings.language, &self.loaded) {
                         if let Some(found) = loaded.locale_manifest.find_language_by_code(&lang) {
                             self.active_language = found.code;
@@ -483,6 +631,8 @@ impl RuntimeEngine {
             skip_mode: self.skip_rule,
             auto_forward_delay: self.auto_forward_delay,
             language: Some(self.active_language.clone()),
+            voice_volume: Some(self.voice_volume),
+            fullscreen: Some(self.is_fullscreen),
         };
         if let Ok(json) = serde_json::to_string_pretty(&settings) {
             let _ = std::fs::write(path, json);
@@ -1202,21 +1352,42 @@ impl RuntimeEngine {
                     }
                     self.stage.block_index += 1;
                 }
-                ActionBlock::Dialogue { speaker, text, nameplate_position, .. } => {
+                ActionBlock::Dialogue { speaker, text, voice_asset_id, nameplate_position } => {
                     self.stage.active_choice = None;
                     self.mark_current_line_read();
                     self.auto_timer = 0.0;
-                    let spk = if speaker.trim().is_empty() {
+                    self.audio.stop_voice();
+                    let speaker_id = if speaker.trim().is_empty() {
                         None
                     } else {
-                        Some(self.tr_speaker(&speaker))
+                        Some(speaker.trim().to_string())
                     };
+                    let spk = speaker_id.as_ref().map(|s| self.tr_speaker(s));
                     let text_disp = self.tr_or(
                         &scene_text_key(&self.stage.current_scene_name, self.stage.block_index),
                         &text,
                     );
+                    if !self.skip_mode_active {
+                        if let (Some(voice_id), Some(loaded)) = (voice_asset_id.as_deref(), &self.loaded) {
+                            let path_opt = loaded
+                                .resolve_asset_path(voice_id, Some(AssetCategory::Voice))
+                                .or_else(|| loaded.resolve_asset_path(voice_id, Some(AssetCategory::Sfx)))
+                                .or_else(|| loaded.resolve_asset_path(voice_id, None));
+                            if let Some(path) = path_opt {
+                                let vol = self.master_volume * self.voice_volume;
+                                if loaded.pack.is_some() {
+                                    if let Some(bytes) = loaded.read_path_bytes(&path) {
+                                        self.audio.play_voice_bytes(bytes, vol);
+                                    }
+                                } else {
+                                    self.audio.play_voice(&path, vol);
+                                }
+                            }
+                        }
+                    }
                     self.push_backlog_entry(spk.clone(), text_disp.clone());
                     let mut dlg = ActiveDialogue::new(spk, text_disp);
+                    dlg.speaker_id = speaker_id;
                     dlg.nameplate_position = nameplate_position;
                     if self.text_speed >= 2.0 {
                         dlg.complete_now();
@@ -1229,6 +1400,7 @@ impl RuntimeEngine {
                     self.stage.active_choice = None;
                     self.mark_current_line_read();
                     self.auto_timer = 0.0;
+                    self.audio.stop_voice();
                     let text_disp = self.tr_or(
                         &scene_text_key(&self.stage.current_scene_name, self.stage.block_index),
                         &text,
@@ -1340,6 +1512,7 @@ impl RuntimeEngine {
                 return;
             }
         }
+        self.audio.stop_voice();
         self.stage.block_index += 1;
         self.step_blocks();
         self.save_autosave();
@@ -1367,6 +1540,7 @@ impl RuntimeEngine {
         }
 
         // 3. Continue within current scene
+        self.audio.stop_voice();
         self.stage.block_index += 1;
         self.step_blocks();
         self.save_autosave();
@@ -1466,7 +1640,8 @@ impl RuntimeEngine {
                 .as_ref()
                 .map(|d| d.is_complete())
                 .unwrap_or(true);
-            if dialogue_ready && self.stage.wait_remaining.is_none() {
+            let voice_done = !self.audio.is_voice_playing();
+            if dialogue_ready && voice_done && self.stage.wait_remaining.is_none() {
                 self.auto_timer += dt_seconds;
                 if self.auto_timer >= self.auto_forward_delay {
                     self.auto_timer = 0.0;
@@ -1567,6 +1742,18 @@ impl RuntimeEngine {
 
     pub fn update_volumes(&mut self) {
         self.audio.set_bgm_volume(self.master_volume * self.bgm_volume);
+        self.audio.set_voice_volume(self.master_volume * self.voice_volume);
+    }
+
+    pub fn set_voice_volume(&mut self, vol: f32) {
+        self.voice_volume = vol.clamp(0.0, 1.0);
+        self.update_volumes();
+        self.save_user_settings();
+    }
+
+    pub fn set_fullscreen(&mut self, fullscreen: bool) {
+        self.is_fullscreen = fullscreen;
+        self.save_user_settings();
     }
 
     pub fn ui_config(&self) -> blanc_core::RuntimeUiConfig {
@@ -1607,12 +1794,42 @@ impl RuntimeEngine {
                 .count()
                 .max(1)
             }
-            RuntimeScreen::Settings { .. } => 1,
-            RuntimeScreen::SaveLoad { .. } => 1,
+            RuntimeScreen::Settings { .. } => self.settings_focus_items().len(),
+            RuntimeScreen::SaveLoad { .. } => self.list_save_slots().len() + 1,
             RuntimeScreen::Backlog => 1,
             RuntimeScreen::Ending { .. } => 1,
             RuntimeScreen::Error(_) => 0,
         }
+    }
+
+    pub fn settings_focus_items(&self) -> Vec<SettingsFocusItem> {
+        let uses_tabs = self
+            .ui_config()
+            .pause_settings
+            .settings_layout_template
+            .uses_tabs();
+        let mut items = Vec::new();
+        if !uses_tabs || self.settings_category == SettingsCategory::Audio {
+            items.push(SettingsFocusItem::MasterVol);
+            items.push(SettingsFocusItem::BgmVol);
+            items.push(SettingsFocusItem::SfxVol);
+            if self.has_voice_acting {
+                items.push(SettingsFocusItem::VoiceVol);
+            }
+        }
+        if !uses_tabs || self.settings_category == SettingsCategory::Gameplay {
+            items.push(SettingsFocusItem::TextSpeed);
+            items.push(SettingsFocusItem::AutoDelay);
+            items.push(SettingsFocusItem::SkipMode);
+        }
+        if !uses_tabs || self.settings_category == SettingsCategory::System {
+            items.push(SettingsFocusItem::DisplayMode);
+            if self.available_languages().len() > 1 {
+                items.push(SettingsFocusItem::Language);
+            }
+        }
+        items.push(SettingsFocusItem::Back);
+        items
     }
 
     pub fn move_focus(&mut self, delta: isize) {

@@ -9,8 +9,9 @@ use blanc_core::theme::colors::*;
 use blanc_core::theme::spacing::*;
 use blanc_core::theme::typography::*;
 use blanc_core::ui_config::{
-    parse_hex_rgb, ButtonDirection, ButtonVisualStyle, EndingQuickPreset, NameplatePosition,
-    PauseButtonsLayout, RuntimeUiConfig, SaveLoadSlotLayout, UiAnchor,
+    parse_hex_rgb, ButtonDirection, ButtonVisualStyle, EndingQuickPreset, HistoryLayoutTemplate,
+    NameplatePosition, PauseButtonsLayout, PauseLayoutTemplate, RuntimeUiConfig,
+    SaveLoadLayoutTemplate, SaveLoadSlotLayout, SettingsLayoutTemplate, UiAnchor,
 };
 
 use crate::icons::*;
@@ -116,6 +117,9 @@ pub enum UiAssetSlot {
     SmallButtonFocus,
     SmallButtonPressed,
     SmallButtonDisabled,
+    SliderTrack,
+    SliderFill,
+    SliderHandle,
     MainMenuLogo,
     MainMenuPanel,
     DialogueBox,
@@ -186,6 +190,8 @@ pub enum UiDesignerMessage {
     SetFontFamily(String),
     SetBorderRadius(f32),
     SetButtonStyle(ButtonVisualStyle),
+    SetSliderTrackHeight(f32),
+    SetSliderHandleSize(f32),
 
     // Main Menu
     ApplyMainMenuPreset(MainMenuQuickPreset),
@@ -251,8 +257,10 @@ pub enum UiDesignerMessage {
     SetPauseSettingsLabel(String),
     SetReturnTitleLabel(String),
     SetPauseQuitLabel(String),
+    SetPauseTemplate(PauseLayoutTemplate),
 
     ApplySettingsPreset(SettingsQuickPreset),
+    SetSettingsTemplate(SettingsLayoutTemplate),
     SetSettingsShowPanel(bool),
     SetSettingsDimming(f32),
     SetSettingsShowTitle(bool),
@@ -273,6 +281,7 @@ pub enum UiDesignerMessage {
 
     // Save & Load
     ApplySaveLoadPreset(SaveLoadQuickPreset),
+    SetSaveLoadTemplate(SaveLoadLayoutTemplate),
     SetSaveLoadShowPanel(bool),
     SetSaveLoadShowTitle(bool),
     SetSaveLoadTitleAnchor(UiAnchor),
@@ -295,6 +304,7 @@ pub enum UiDesignerMessage {
     SetSaveLoadBackLabel(String),
 
     // History / Backlog
+    SetHistoryTemplate(HistoryLayoutTemplate),
     SetHistoryShowPanel(bool),
     SetHistoryPanelWidth(f32),
     SetHistoryPanelHeight(f32),
@@ -380,6 +390,8 @@ pub fn handle_ui_designer_message(
         UiDesignerMessage::SetFontFamily(v) => ui.theme.font_family = v,
         UiDesignerMessage::SetBorderRadius(v) => ui.theme.border_radius = v.clamp(0.0, 28.0),
         UiDesignerMessage::SetButtonStyle(s) => ui.theme.button_style = s,
+        UiDesignerMessage::SetSliderTrackHeight(v) => ui.theme.slider_track_height = v.clamp(2.0, 128.0),
+        UiDesignerMessage::SetSliderHandleSize(v) => ui.theme.slider_handle_size = v.clamp(8.0, 128.0),
 
         UiDesignerMessage::ApplyMainMenuPreset(preset) => match preset {
             MainMenuQuickPreset::Centered => {
@@ -575,6 +587,11 @@ pub fn handle_ui_designer_message(
         UiDesignerMessage::SetPauseSettingsLabel(v) => ui.pause_settings.settings_label = v,
         UiDesignerMessage::SetReturnTitleLabel(v) => ui.pause_settings.return_title_label = v,
         UiDesignerMessage::SetPauseQuitLabel(v) => ui.pause_settings.quit_label = v,
+        UiDesignerMessage::SetPauseTemplate(t) => ui.pause_settings.pause_layout_template = t,
+
+        UiDesignerMessage::SetSettingsTemplate(t) => ui.pause_settings.settings_layout_template = t,
+        UiDesignerMessage::SetSaveLoadTemplate(t) => ui.save_load.layout_template = t,
+        UiDesignerMessage::SetHistoryTemplate(t) => ui.history.layout_template = t,
 
         UiDesignerMessage::ApplySettingsPreset(preset) => match preset {
             SettingsQuickPreset::Centered => {
@@ -785,6 +802,9 @@ pub fn handle_ui_designer_message(
             UiAssetSlot::SmallButtonFocus => ui.theme.small_button_focus_asset_id = None,
             UiAssetSlot::SmallButtonPressed => ui.theme.small_button_pressed_asset_id = None,
             UiAssetSlot::SmallButtonDisabled => ui.theme.small_button_disabled_asset_id = None,
+            UiAssetSlot::SliderTrack => ui.theme.slider_track_asset_id = None,
+            UiAssetSlot::SliderFill => ui.theme.slider_fill_asset_id = None,
+            UiAssetSlot::SliderHandle => ui.theme.slider_handle_asset_id = None,
             UiAssetSlot::MainMenuLogo => {}
             UiAssetSlot::MainMenuPanel => ui.main_menu.panel_asset_id = None,
             UiAssetSlot::DialogueBox => ui.gameplay.dialogue_box_asset_id = None,
@@ -870,7 +890,7 @@ pub fn view_ui_designer<'a>(
     .width(Length::Fill);
 
     let inspector_content: Element<'a, DashboardMessage> = match sub_tab {
-        UiDesignerSubTab::ThemeAndButtons => view_theme_tab(ui, sections, project),
+        UiDesignerSubTab::ThemeAndButtons => view_theme_tab(ui, sections, project, project_dir),
         UiDesignerSubTab::MainMenu => view_main_menu_tab(ui, sections, logo_asset_id, project),
         UiDesignerSubTab::Gameplay => view_gameplay_tab(ui, sections, project),
         UiDesignerSubTab::PauseMenu => view_pause_tab(ui, sections, project),
@@ -1122,10 +1142,172 @@ fn two_col_grid<'a>(items: Vec<Element<'a, UiDesignerMessage>>) -> Element<'a, U
     rows_col.into()
 }
 
+fn resolve_ui_asset_path(
+    asset_id: Option<&str>,
+    project: &Project,
+    project_dir: &PathBuf,
+) -> Option<PathBuf> {
+    let id = asset_id?.trim();
+    if id.is_empty() {
+        return None;
+    }
+    let asset = project.assets.get(id)?;
+    let full = project_dir.join(&asset.relative_path);
+    full.exists().then_some(full)
+}
+
+fn preview_slider_widget<'a>(
+    ui: &'a RuntimeUiConfig,
+    project: &'a Project,
+    project_dir: &'a PathBuf,
+    ratio: f32,
+    width: f32,
+    scale: f32,
+    fallback_accent: Color,
+) -> Element<'a, DashboardMessage> {
+    let track_asset = resolve_ui_asset_path(ui.theme.slider_track_asset_id.as_deref(), project, project_dir);
+    let fill_asset = resolve_ui_asset_path(ui.theme.slider_fill_asset_id.as_deref(), project, project_dir);
+    let handle_asset = resolve_ui_asset_path(ui.theme.slider_handle_asset_id.as_deref(), project, project_dir);
+
+    let track_bg_col = resolve_preview_text_color(&ui.theme.slider_track_bg_hex, Color::from_rgb8(42, 46, 56));
+    let fill_col = resolve_preview_text_color(&ui.theme.slider_fill_hex, fallback_accent);
+    let handle_col = resolve_preview_text_color(&ui.theme.slider_handle_hex, Color::WHITE);
+
+    let track_h = (ui.theme.slider_track_height.clamp(2.0, 128.0) * scale).max(2.0);
+    let handle_sz = (ui.theme.slider_handle_size.clamp(8.0, 128.0) * scale).max(8.0);
+    let box_h = track_h.max(handle_sz).max(16.0);
+
+    let pct = ratio.clamp(0.0, 1.0);
+    let left_p = (pct * 1000.0).round() as u16;
+    let right_p = 1000u16.saturating_sub(left_p);
+
+    let has_track_asset = track_asset.is_some();
+    let track_layer: Element<'a, DashboardMessage> = if let Some(tp) = track_asset {
+        image(image::Handle::from_path(tp))
+            .width(Length::Fixed(width))
+            .height(Length::Fixed(track_h))
+            .content_fit(ContentFit::Fill)
+            .into()
+    } else {
+        container(Space::new(Length::Fixed(width), Length::Fixed(track_h)))
+            .width(Length::Fixed(width))
+            .height(Length::Fixed(track_h))
+            .style(move |_| container::Style {
+                background: Some(Background::Color(track_bg_col)),
+                border: Border { radius: (track_h * 0.5).into(), ..Default::default() },
+                ..Default::default()
+            })
+            .into()
+    };
+
+    let show_fill_layer = fill_asset.is_some()
+        || !has_track_asset
+        || parse_hex_rgb(&ui.theme.slider_fill_hex).is_some();
+
+    let fill_inner: Element<'a, DashboardMessage> = if left_p == 0 || !show_fill_layer {
+        Space::new(Length::Fixed(0.0), Length::Fixed(track_h)).into()
+    } else if let Some(fp) = fill_asset {
+        image(image::Handle::from_path(fp))
+            .width(Length::Fill)
+            .height(Length::Fixed(track_h))
+            .content_fit(ContentFit::Fill)
+            .into()
+    } else {
+        container(Space::new(Length::Fill, Length::Fixed(track_h)))
+            .width(Length::Fill)
+            .height(Length::Fixed(track_h))
+            .style(move |_| container::Style {
+                background: Some(Background::Color(fill_col)),
+                border: Border { radius: (track_h * 0.5).into(), ..Default::default() },
+                ..Default::default()
+            })
+            .into()
+    };
+
+    let fill_layer = row![
+        container(fill_inner).width(if left_p == 0 {
+            Length::Fixed(0.0)
+        } else {
+            Length::FillPortion(left_p)
+        }),
+        Space::new(
+            if right_p == 0 {
+                Length::Fixed(0.0)
+            } else {
+                Length::FillPortion(right_p)
+            },
+            Length::Fixed(track_h),
+        ),
+    ]
+    .width(Length::Fixed(width))
+    .align_y(Alignment::Center);
+
+    let handle_widget: Element<'a, DashboardMessage> = if let Some(hp) = handle_asset {
+        image(image::Handle::from_path(hp))
+            .width(Length::Shrink)
+            .height(Length::Fixed(handle_sz))
+            .content_fit(ContentFit::Contain)
+            .into()
+    } else {
+        container(Space::new(Length::Fixed(handle_sz), Length::Fixed(handle_sz)))
+            .width(Length::Fixed(handle_sz))
+            .height(Length::Fixed(handle_sz))
+            .style(move |_| container::Style {
+                background: Some(Background::Color(handle_col)),
+                border: Border {
+                    radius: (handle_sz * 0.5).into(),
+                    width: 1.0,
+                    color: Color::from_rgba(0.0, 0.0, 0.0, 0.25),
+                },
+                ..Default::default()
+            })
+            .into()
+    };
+
+    let handle_layer = row![
+        Space::new(
+            if left_p == 0 {
+                Length::Fixed(0.0)
+            } else {
+                Length::FillPortion(left_p)
+            },
+            Length::Fixed(box_h),
+        ),
+        handle_widget,
+        Space::new(
+            if right_p == 0 {
+                Length::Fixed(0.0)
+            } else {
+                Length::FillPortion(right_p)
+            },
+            Length::Fixed(box_h),
+        ),
+    ]
+    .width(Length::Fixed(width))
+    .align_y(Alignment::Center);
+
+    stack![
+        container(track_layer)
+            .width(Length::Fixed(width))
+            .height(Length::Fixed(box_h))
+            .center_y(Length::Fixed(box_h)),
+        container(fill_layer)
+            .width(Length::Fixed(width))
+            .height(Length::Fixed(box_h))
+            .center_y(Length::Fixed(box_h)),
+        container(handle_layer)
+            .width(Length::Fixed(width))
+            .height(Length::Fixed(box_h))
+            .center_y(Length::Fixed(box_h)),
+    ]
+    .into()
+}
+
 fn view_theme_tab<'a>(
     ui: &'a RuntimeUiConfig,
     sections: &'a UiDesignerSections,
     project: &'a Project,
+    project_dir: &'a PathBuf,
 ) -> Element<'a, DashboardMessage> {
     let card_palette = section_card("Theme Colors & Accent", sections.presets, UiSectionId::Presets, || {
         column![
@@ -1228,7 +1410,69 @@ fn view_theme_tab<'a>(
         .into()
     });
 
-    column![card_palette, card_style, card_colors, card_skins]
+    let track_h = ui.theme.slider_track_height.clamp(2.0, 128.0);
+    let handle_sz = ui.theme.slider_handle_size.clamp(8.0, 128.0);
+    let accent_fallback = resolve_preview_text_color(&ui.theme.accent_hex, Color::from_rgb8(99, 102, 241));
+    let slider_preview = container(preview_slider_widget(
+        ui,
+        project,
+        project_dir,
+        0.65,
+        210.0,
+        0.65,
+        accent_fallback,
+    ))
+    .padding([4.0, 8.0]);
+
+    let card_sliders = section_card("Custom Slider UI (Settings)", sections.skins, UiSectionId::Skins, || {
+        column![
+            text("Supports 0, 2 (Track + Handle), or 3 (Track + Fill + Handle) PNGs from Assets/UI.")
+                .size(11)
+                .color(rgb(TEXT_MUTED)),
+            texture_slot_row("Slider Track", ui.theme.slider_track_asset_id.as_deref(), UiAssetSlot::SliderTrack, project),
+            texture_slot_row("Slider Fill (Opt)", ui.theme.slider_fill_asset_id.as_deref(), UiAssetSlot::SliderFill, project),
+            texture_slot_row("Slider Handle", ui.theme.slider_handle_asset_id.as_deref(), UiAssetSlot::SliderHandle, project),
+            color_picker_row("Track Bg:", &ui.theme.slider_track_bg_hex, UiColorTarget::SliderTrackBg, sections),
+            color_picker_row("Fill Color:", &ui.theme.slider_fill_hex, UiColorTarget::SliderFill, sections),
+            color_picker_row("Handle Color:", &ui.theme.slider_handle_hex, UiColorTarget::SliderHandle, sections),
+            Element::from(
+                row![
+                    text("Track Height:").size(LABEL_SM).color(rgb(TEXT_MUTED)).width(Length::Fixed(86.0)),
+                    mini_btn("-4", UiDesignerMessage::SetSliderTrackHeight(track_h - 4.0)),
+                    mini_btn("-2", UiDesignerMessage::SetSliderTrackHeight(track_h - 2.0)),
+                    text(format!("{:.0}px", track_h)).size(LABEL_SM).width(Length::Fixed(42.0)),
+                    mini_btn("+2", UiDesignerMessage::SetSliderTrackHeight(track_h + 2.0)),
+                    mini_btn("+4", UiDesignerMessage::SetSliderTrackHeight(track_h + 4.0)),
+                ]
+                .spacing(SPACE_1)
+                .align_y(Alignment::Center),
+            )
+            .map(DashboardMessage::UiDesigner),
+            Element::from(
+                row![
+                    text("Handle Size:").size(LABEL_SM).color(rgb(TEXT_MUTED)).width(Length::Fixed(86.0)),
+                    mini_btn("-4", UiDesignerMessage::SetSliderHandleSize(handle_sz - 4.0)),
+                    mini_btn("-2", UiDesignerMessage::SetSliderHandleSize(handle_sz - 2.0)),
+                    text(format!("{:.0}px", handle_sz)).size(LABEL_SM).width(Length::Fixed(42.0)),
+                    mini_btn("+2", UiDesignerMessage::SetSliderHandleSize(handle_sz + 2.0)),
+                    mini_btn("+4", UiDesignerMessage::SetSliderHandleSize(handle_sz + 4.0)),
+                ]
+                .spacing(SPACE_1)
+                .align_y(Alignment::Center),
+            )
+            .map(DashboardMessage::UiDesigner),
+            row![
+                text("Preview:").size(LABEL_SM).color(rgb(TEXT_MUTED)).width(Length::Fixed(86.0)),
+                slider_preview,
+            ]
+            .spacing(SPACE_1)
+            .align_y(Alignment::Center),
+        ]
+        .spacing(SPACE_2)
+        .into()
+    });
+
+    column![card_palette, card_style, card_colors, card_skins, card_sliders]
         .spacing(SPACE_2)
         .width(Length::Fill)
         .into()
@@ -1410,14 +1654,25 @@ fn view_gameplay_tab<'a>(
                 .align_y(Alignment::Center),
                 row![
                     text("HUD Btns:").size(LABEL_SM).color(rgb(TEXT_MUTED)).width(Length::Fixed(78.0)),
-                    choice_pill(if g.show_quick_save_button { "Q.Save: ON" } else { "Q.Save: OFF" }, g.show_quick_save_button, UiDesignerMessage::SetShowQuickSaveButton(!g.show_quick_save_button)),
-                    choice_pill(if g.show_quick_load_button { "Q.Load: ON" } else { "Q.Load: OFF" }, g.show_quick_load_button, UiDesignerMessage::SetShowQuickLoadButton(!g.show_quick_load_button)),
-                    choice_pill(if g.show_history_button { "History: ON" } else { "History: OFF" }, g.show_history_button, UiDesignerMessage::SetShowHistoryButton(!g.show_history_button)),
-                    choice_pill(if g.show_hide_ui_button { "Hide UI: ON" } else { "Hide UI: OFF" }, g.show_hide_ui_button, UiDesignerMessage::SetShowHideUiButton(!g.show_hide_ui_button)),
-                    choice_pill(if g.show_menu_button { "Menu: ON" } else { "Menu: OFF" }, g.show_menu_button, UiDesignerMessage::SetShowMenuButton(!g.show_menu_button)),
+                    column![
+                        row![
+                            choice_pill(if g.show_quick_save_button { "Q.Save: ON" } else { "Q.Save: OFF" }, g.show_quick_save_button, UiDesignerMessage::SetShowQuickSaveButton(!g.show_quick_save_button)),
+                            choice_pill(if g.show_quick_load_button { "Q.Load: ON" } else { "Q.Load: OFF" }, g.show_quick_load_button, UiDesignerMessage::SetShowQuickLoadButton(!g.show_quick_load_button)),
+                            choice_pill(if g.show_history_button { "History: ON" } else { "History: OFF" }, g.show_history_button, UiDesignerMessage::SetShowHistoryButton(!g.show_history_button)),
+                        ]
+                        .spacing(SPACE_1)
+                        .align_y(Alignment::Center),
+                        row![
+                            choice_pill(if g.show_hide_ui_button { "Hide UI: ON" } else { "Hide UI: OFF" }, g.show_hide_ui_button, UiDesignerMessage::SetShowHideUiButton(!g.show_hide_ui_button)),
+                            choice_pill(if g.show_menu_button { "Menu: ON" } else { "Menu: OFF" }, g.show_menu_button, UiDesignerMessage::SetShowMenuButton(!g.show_menu_button)),
+                        ]
+                        .spacing(SPACE_1)
+                        .align_y(Alignment::Center),
+                    ]
+                    .spacing(SPACE_1),
                 ]
                 .spacing(SPACE_1)
-                .align_y(Alignment::Center),
+                .align_y(Alignment::Start),
             ]
             .spacing(SPACE_2),
         )
@@ -1523,6 +1778,18 @@ fn view_pause_tab<'a>(
     let card_presets = section_card("Layout & Presets", sections.presets, UiSectionId::Presets, || {
         Element::from(
             column![
+                text("Template:").size(LABEL_SM).color(rgb(TEXT_MUTED)),
+                row![
+                    choice_pill("Centered", p.pause_layout_template == PauseLayoutTemplate::CenteredCard, UiDesignerMessage::SetPauseTemplate(PauseLayoutTemplate::CenteredCard)),
+                    choice_pill("Left Side", p.pause_layout_template == PauseLayoutTemplate::LeftSidebar, UiDesignerMessage::SetPauseTemplate(PauseLayoutTemplate::LeftSidebar)),
+                    choice_pill("Right Side", p.pause_layout_template == PauseLayoutTemplate::RightSidebar, UiDesignerMessage::SetPauseTemplate(PauseLayoutTemplate::RightSidebar)),
+                ]
+                .spacing(SPACE_1),
+                row![
+                    choice_pill("Bottom Bar", p.pause_layout_template == PauseLayoutTemplate::BottomBar, UiDesignerMessage::SetPauseTemplate(PauseLayoutTemplate::BottomBar)),
+                    choice_pill("Top Bar", p.pause_layout_template == PauseLayoutTemplate::TopBar, UiDesignerMessage::SetPauseTemplate(PauseLayoutTemplate::TopBar)),
+                ]
+                .spacing(SPACE_1),
                 row![
                     mini_btn("Centered", UiDesignerMessage::ApplyPausePreset(PauseQuickPreset::Centered)),
                     mini_btn("Left Col", UiDesignerMessage::ApplyPausePreset(PauseQuickPreset::LeftColumn)),
@@ -1646,6 +1913,18 @@ fn view_settings_tab<'a>(
     let card_presets = section_card("Layout & Presets", sections.presets, UiSectionId::Presets, || {
         Element::from(
             column![
+                text("Template:").size(LABEL_SM).color(rgb(TEXT_MUTED)),
+                row![
+                    choice_pill("Classic", p.settings_layout_template == SettingsLayoutTemplate::Classic, UiDesignerMessage::SetSettingsTemplate(SettingsLayoutTemplate::Classic)),
+                    choice_pill("Top Tabs", p.settings_layout_template == SettingsLayoutTemplate::TopTabs, UiDesignerMessage::SetSettingsTemplate(SettingsLayoutTemplate::TopTabs)),
+                    choice_pill("Left Side", p.settings_layout_template == SettingsLayoutTemplate::LeftSidebar, UiDesignerMessage::SetSettingsTemplate(SettingsLayoutTemplate::LeftSidebar)),
+                ]
+                .spacing(SPACE_1),
+                row![
+                    choice_pill("Right Side", p.settings_layout_template == SettingsLayoutTemplate::RightSidebar, UiDesignerMessage::SetSettingsTemplate(SettingsLayoutTemplate::RightSidebar)),
+                    choice_pill("2-Col Split", p.settings_layout_template == SettingsLayoutTemplate::TwoColumnSplit, UiDesignerMessage::SetSettingsTemplate(SettingsLayoutTemplate::TwoColumnSplit)),
+                ]
+                .spacing(SPACE_1),
                 row![
                     mini_btn("Centered", UiDesignerMessage::ApplySettingsPreset(SettingsQuickPreset::Centered)),
                     mini_btn("Left Panel", UiDesignerMessage::ApplySettingsPreset(SettingsQuickPreset::LeftPanel)),
@@ -1756,6 +2035,18 @@ fn view_save_load_tab<'a>(
     let card_presets = section_card("Layout & Presets", sections.presets, UiSectionId::Presets, || {
         Element::from(
             column![
+                text("Template:").size(LABEL_SM).color(rgb(TEXT_MUTED)),
+                row![
+                    choice_pill("Classic", sl.layout_template == SaveLoadLayoutTemplate::Classic, UiDesignerMessage::SetSaveLoadTemplate(SaveLoadLayoutTemplate::Classic)),
+                    choice_pill("Top Bar", sl.layout_template == SaveLoadLayoutTemplate::TopBar, UiDesignerMessage::SetSaveLoadTemplate(SaveLoadLayoutTemplate::TopBar)),
+                    choice_pill("Left Side", sl.layout_template == SaveLoadLayoutTemplate::LeftSidebar, UiDesignerMessage::SetSaveLoadTemplate(SaveLoadLayoutTemplate::LeftSidebar)),
+                ]
+                .spacing(SPACE_1),
+                row![
+                    choice_pill("Right Side", sl.layout_template == SaveLoadLayoutTemplate::RightSidebar, UiDesignerMessage::SetSaveLoadTemplate(SaveLoadLayoutTemplate::RightSidebar)),
+                    choice_pill("Bottom Strip", sl.layout_template == SaveLoadLayoutTemplate::BottomStrip, UiDesignerMessage::SetSaveLoadTemplate(SaveLoadLayoutTemplate::BottomStrip)),
+                ]
+                .spacing(SPACE_1),
                 row![
                     mini_btn("Centered Grid", UiDesignerMessage::ApplySaveLoadPreset(SaveLoadQuickPreset::CenteredGrid)),
                     mini_btn("Top Bar", UiDesignerMessage::ApplySaveLoadPreset(SaveLoadQuickPreset::TopBar)),
@@ -1880,6 +2171,17 @@ fn view_history_tab<'a>(
     let card_panel = section_card("Panel & Backdrop", sections.presets, UiSectionId::Presets, || {
         Element::from(
             column![
+                text("Template:").size(LABEL_SM).color(rgb(TEXT_MUTED)),
+                row![
+                    choice_pill("Modal", h.layout_template == HistoryLayoutTemplate::CenteredModal, UiDesignerMessage::SetHistoryTemplate(HistoryLayoutTemplate::CenteredModal)),
+                    choice_pill("Top Reader", h.layout_template == HistoryLayoutTemplate::TopBarReader, UiDesignerMessage::SetHistoryTemplate(HistoryLayoutTemplate::TopBarReader)),
+                ]
+                .spacing(SPACE_1),
+                row![
+                    choice_pill("Left Drawer", h.layout_template == HistoryLayoutTemplate::LeftDrawer, UiDesignerMessage::SetHistoryTemplate(HistoryLayoutTemplate::LeftDrawer)),
+                    choice_pill("Right Drawer", h.layout_template == HistoryLayoutTemplate::RightDrawer, UiDesignerMessage::SetHistoryTemplate(HistoryLayoutTemplate::RightDrawer)),
+                ]
+                .spacing(SPACE_1),
                 row![
                     text("Panel Box:").size(LABEL_SM).color(rgb(TEXT_MUTED)).width(Length::Fixed(78.0)),
                     choice_pill("Shown", h.show_panel, UiDesignerMessage::SetHistoryShowPanel(true)),
@@ -2499,7 +2801,13 @@ fn render_preview_stage<'a>(
                 btns.push(preview_ui_btn(&p.quit_label, false, accent, panel_bg, pause_btn_col, radius, ui.theme.button_style, bw));
             }
 
-            let btn_group: Element<'a, DashboardMessage> = match p.pause_layout {
+            let effective_layout = match p.pause_layout_template {
+                PauseLayoutTemplate::CenteredCard => p.pause_layout,
+                PauseLayoutTemplate::LeftSidebar | PauseLayoutTemplate::RightSidebar => PauseButtonsLayout::Vertical,
+                PauseLayoutTemplate::BottomBar | PauseLayoutTemplate::TopBar => PauseButtonsLayout::Horizontal,
+            };
+
+            let btn_group: Element<'a, DashboardMessage> = match effective_layout {
                 PauseButtonsLayout::Vertical => column(btns).spacing(SPACE_1).align_x(Alignment::Center).into(),
                 PauseButtonsLayout::Horizontal => row(btns).spacing(SPACE_1).align_y(Alignment::Center).into(),
                 PauseButtonsLayout::TwoRowGrid => {
@@ -2531,20 +2839,50 @@ fn render_preview_stage<'a>(
 
             let pause_title_col = resolve_preview_text_color(&p.pause_text_hex, text_col);
             let mut layers: Vec<Element<'a, DashboardMessage>> = vec![dim.into()];
-            if p.pause_show_title && !p.pause_title.trim().is_empty() {
-                layers.push(place_with_anchor(
-                    text(&p.pause_title).size(22).font(preview_font).color(pause_title_col).into(),
-                    p.pause_title_anchor,
-                    p.pause_title_offset_x * 0.55,
-                    p.pause_title_offset_y * 0.55,
-                ));
+            match p.pause_layout_template {
+                PauseLayoutTemplate::CenteredCard => {
+                    if p.pause_show_title && !p.pause_title.trim().is_empty() {
+                        layers.push(place_with_anchor(
+                            text(&p.pause_title).size(22).font(preview_font).color(pause_title_col).into(),
+                            p.pause_title_anchor,
+                            p.pause_title_offset_x * 0.55,
+                            p.pause_title_offset_y * 0.55,
+                        ));
+                    }
+                    layers.push(place_with_anchor(
+                        btns_widget,
+                        p.pause_anchor,
+                        p.pause_offset_x * 0.55,
+                        p.pause_offset_y * 0.55,
+                    ));
+                }
+                PauseLayoutTemplate::LeftSidebar | PauseLayoutTemplate::RightSidebar => {
+                    let mut col_items = column![].spacing(SPACE_2).align_x(Alignment::Center);
+                    if p.pause_show_title && !p.pause_title.trim().is_empty() {
+                        col_items = col_items.push(text(&p.pause_title).size(20).font(preview_font).color(pause_title_col));
+                    }
+                    col_items = col_items.push(btns_widget);
+                    let (anc, ox) = if p.pause_layout_template == PauseLayoutTemplate::LeftSidebar {
+                        (UiAnchor::CenterLeft, 20.0)
+                    } else {
+                        (UiAnchor::CenterRight, -20.0)
+                    };
+                    layers.push(place_with_anchor(col_items.into(), anc, ox, 0.0));
+                }
+                PauseLayoutTemplate::BottomBar | PauseLayoutTemplate::TopBar => {
+                    let mut col_items = column![].spacing(SPACE_2).align_x(Alignment::Center);
+                    if p.pause_show_title && !p.pause_title.trim().is_empty() {
+                        col_items = col_items.push(text(&p.pause_title).size(18).font(preview_font).color(pause_title_col));
+                    }
+                    col_items = col_items.push(btns_widget);
+                    let (anc, oy) = if p.pause_layout_template == PauseLayoutTemplate::BottomBar {
+                        (UiAnchor::BottomCenter, -16.0)
+                    } else {
+                        (UiAnchor::TopCenter, 16.0)
+                    };
+                    layers.push(place_with_anchor(col_items.into(), anc, 0.0, oy));
+                }
             }
-            layers.push(place_with_anchor(
-                btns_widget,
-                p.pause_anchor,
-                p.pause_offset_x * 0.55,
-                p.pause_offset_y * 0.55,
-            ));
             stack(layers).into()
         }
         UiPreviewMode::InGameSettings => {
@@ -2559,53 +2897,134 @@ fn render_preview_stage<'a>(
                 });
 
             let settings_text_col = resolve_preview_text_color(&p.settings_text_hex, text_col);
+            let s_preview = |ratio: f32| -> Element<'a, DashboardMessage> {
+                preview_slider_widget(ui, project, project_dir, ratio, 130.0, 0.55, accent)
+            };
             let controls_col = column![
-                text(format!("{}: 100%", p.master_volume_label)).size(BODY_SM).font(preview_font).color(settings_text_col),
-                text(format!("{}: 80%", p.bgm_volume_label)).size(BODY_SM).font(preview_font).color(settings_text_col),
-                text(format!("{}: 100%", p.sfx_volume_label)).size(BODY_SM).font(preview_font).color(settings_text_col),
+                row![text(format!("{}: 100%", p.master_volume_label)).size(BODY_SM).font(preview_font).color(settings_text_col).width(Length::Fill), s_preview(1.0)].align_y(Alignment::Center),
+                row![text(format!("{}: 80%", p.bgm_volume_label)).size(BODY_SM).font(preview_font).color(settings_text_col).width(Length::Fill), s_preview(0.8)].align_y(Alignment::Center),
+                row![text(format!("{}: 100%", p.sfx_volume_label)).size(BODY_SM).font(preview_font).color(settings_text_col).width(Length::Fill), s_preview(1.0)].align_y(Alignment::Center),
+                row![text("Voice Volume: 100%").size(BODY_SM).font(preview_font).color(settings_text_col).width(Length::Fill), s_preview(1.0)].align_y(Alignment::Center),
                 text(format!("{}: Normal", p.text_speed_label)).size(BODY_SM).font(preview_font).color(settings_text_col),
             ]
             .spacing(SPACE_2);
 
-            let controls_widget: Element<'a, DashboardMessage> = if p.settings_show_panel {
-                container(controls_col)
-                    .width(Length::Fixed((p.settings_width * 0.6).clamp(240.0, 420.0)))
-                    .padding(SPACE_3)
-                    .style(move |_| container::Style {
-                        background: Some(Background::Color(panel_bg)),
-                        border: Border { radius: radius.into(), width: 1.0, color: Color::from_rgba(1.0, 1.0, 1.0, 0.16) },
-                        ..Default::default()
-                    })
-                    .into()
+            let wrap_panel = |inner: Element<'a, DashboardMessage>, pw: f32| -> Element<'a, DashboardMessage> {
+                if p.settings_show_panel {
+                    container(inner)
+                        .width(Length::Fixed(pw))
+                        .padding(SPACE_3)
+                        .style(move |_| container::Style {
+                            background: Some(Background::Color(panel_bg)),
+                            border: Border { radius: radius.into(), width: 1.0, color: Color::from_rgba(1.0, 1.0, 1.0, 0.16) },
+                            ..Default::default()
+                        })
+                        .into()
+                } else {
+                    container(inner).width(Length::Fixed(pw)).padding(SPACE_2).into()
+                }
+            };
+
+            let settings_btn_col = resolve_preview_text_color(&p.settings_button_text_hex, text_col);
+            let back_btn = preview_ui_btn(&p.back_label, true, accent, panel_bg, settings_btn_col, radius, ui.theme.button_style, (p.settings_back_width * 0.6).clamp(80.0, 150.0));
+            let title_el: Element<'a, DashboardMessage> = if p.settings_show_title && !p.settings_title.trim().is_empty() {
+                text(&p.settings_title).size(20).font(preview_font).color(settings_text_col).into()
             } else {
-                container(controls_col)
-                    .width(Length::Fixed((p.settings_width * 0.6).clamp(240.0, 420.0)))
-                    .padding(SPACE_2)
-                    .into()
+                Space::new(Length::Fixed(0.0), Length::Fixed(0.0)).into()
             };
 
             let mut layers: Vec<Element<'a, DashboardMessage>> = vec![dim.into()];
-            if p.settings_show_title && !p.settings_title.trim().is_empty() {
-                layers.push(place_with_anchor(
-                    text(&p.settings_title).size(22).font(preview_font).color(settings_text_col).into(),
-                    p.settings_title_anchor,
-                    p.settings_title_offset_x * 0.55,
-                    p.settings_title_offset_y * 0.55,
-                ));
+            match p.settings_layout_template {
+                SettingsLayoutTemplate::Classic => {
+                    let controls_widget = wrap_panel(controls_col.into(), (p.settings_width * 0.6).clamp(240.0, 420.0));
+                    if p.settings_show_title && !p.settings_title.trim().is_empty() {
+                        layers.push(place_with_anchor(
+                            text(&p.settings_title).size(22).font(preview_font).color(settings_text_col).into(),
+                            p.settings_title_anchor,
+                            p.settings_title_offset_x * 0.55,
+                            p.settings_title_offset_y * 0.55,
+                        ));
+                    }
+                    layers.push(place_with_anchor(controls_widget, p.settings_anchor, p.settings_offset_x * 0.55, p.settings_offset_y * 0.55));
+                    layers.push(place_with_anchor(back_btn, p.settings_back_anchor, p.settings_back_offset_x * 0.55, p.settings_back_offset_y * 0.55));
+                }
+                SettingsLayoutTemplate::TopTabs => {
+                    let tab_audio = preview_ui_btn("Audio", true, accent, panel_bg, settings_btn_col, radius, ui.theme.button_style, 88.0);
+                    let tab_game = preview_ui_btn("Gameplay", false, accent, panel_bg, settings_btn_col, radius, ui.theme.button_style, 88.0);
+                    let tab_sys = preview_ui_btn("System", false, accent, panel_bg, settings_btn_col, radius, ui.theme.button_style, 88.0);
+                    let panel = wrap_panel(controls_col.into(), 360.0);
+                    layers.push(
+                        column![
+                            row![back_btn, title_el].spacing(SPACE_2).align_y(Alignment::Center),
+                            container(row![tab_audio, tab_game, tab_sys].spacing(SPACE_1)).width(Length::Fill).center_x(Length::Fill),
+                            container(panel).width(Length::Fill).height(Length::Fill).center_x(Length::Fill).center_y(Length::Fill),
+                        ]
+                        .spacing(SPACE_2)
+                        .padding(SPACE_3)
+                        .width(Length::Fill)
+                        .height(Length::Fill)
+                        .into(),
+                    );
+                }
+                SettingsLayoutTemplate::LeftSidebar | SettingsLayoutTemplate::RightSidebar => {
+                    let tab_audio = preview_ui_btn("Audio", true, accent, panel_bg, settings_btn_col, radius, ui.theme.button_style, 100.0);
+                    let tab_game = preview_ui_btn("Gameplay", false, accent, panel_bg, settings_btn_col, radius, ui.theme.button_style, 100.0);
+                    let tab_sys = preview_ui_btn("System", false, accent, panel_bg, settings_btn_col, radius, ui.theme.button_style, 100.0);
+                    let sidebar = column![tab_audio, tab_game, tab_sys].spacing(SPACE_1);
+                    let panel = wrap_panel(controls_col.into(), 330.0);
+                    let is_left = p.settings_layout_template == SettingsLayoutTemplate::LeftSidebar;
+                    let header = if is_left {
+                        row![back_btn, title_el].spacing(SPACE_2).align_y(Alignment::Center)
+                    } else {
+                        row![title_el, Space::with_width(Length::Fill), back_btn].spacing(SPACE_2).align_y(Alignment::Center)
+                    };
+                    let body = if is_left {
+                        row![sidebar, container(panel).width(Length::Fill).center_x(Length::Fill)]
+                    } else {
+                        row![container(panel).width(Length::Fill).center_x(Length::Fill), sidebar]
+                    }
+                    .spacing(SPACE_3)
+                    .align_y(Alignment::Start);
+                    layers.push(column![header, body].spacing(SPACE_3).padding(SPACE_3).width(Length::Fill).height(Length::Fill).into());
+                }
+                SettingsLayoutTemplate::TwoColumnSplit => {
+                    let left_col = wrap_panel(
+                        column![
+                            row![text(format!("{}: 100%", p.master_volume_label)).size(BODY_SM).font(preview_font).color(settings_text_col).width(Length::Fill), s_preview(1.0)].align_y(Alignment::Center),
+                            row![text(format!("{}: 80%", p.bgm_volume_label)).size(BODY_SM).font(preview_font).color(settings_text_col).width(Length::Fill), s_preview(0.8)].align_y(Alignment::Center),
+                            row![text(format!("{}: 100%", p.sfx_volume_label)).size(BODY_SM).font(preview_font).color(settings_text_col).width(Length::Fill), s_preview(1.0)].align_y(Alignment::Center),
+                        ]
+                        .spacing(SPACE_2)
+                        .into(),
+                        250.0,
+                    );
+                    let right_col = wrap_panel(
+                        column![
+                            text(format!("{}: Normal", p.text_speed_label)).size(BODY_SM).font(preview_font).color(settings_text_col),
+                            text("Skip Mode: Read Only").size(BODY_SM).font(preview_font).color(settings_text_col),
+                            text("Display Mode: Windowed").size(BODY_SM).font(preview_font).color(settings_text_col),
+                        ]
+                        .spacing(SPACE_2)
+                        .into(),
+                        230.0,
+                    );
+                    layers.push(
+                        column![
+                            row![back_btn, title_el].spacing(SPACE_2).align_y(Alignment::Center),
+                            container(row![left_col, right_col].spacing(SPACE_2).align_y(Alignment::Start))
+                                .width(Length::Fill)
+                                .height(Length::Fill)
+                                .center_x(Length::Fill)
+                                .center_y(Length::Fill),
+                        ]
+                        .spacing(SPACE_2)
+                        .padding(SPACE_3)
+                        .width(Length::Fill)
+                        .height(Length::Fill)
+                        .into(),
+                    );
+                }
             }
-            layers.push(place_with_anchor(
-                controls_widget,
-                p.settings_anchor,
-                p.settings_offset_x * 0.55,
-                p.settings_offset_y * 0.55,
-            ));
-            let settings_btn_col = resolve_preview_text_color(&p.settings_button_text_hex, text_col);
-            layers.push(place_with_anchor(
-                preview_ui_btn(&p.back_label, true, accent, panel_bg, settings_btn_col, radius, ui.theme.button_style, (p.settings_back_width * 0.65).clamp(90.0, 180.0)),
-                p.settings_back_anchor,
-                p.settings_back_offset_x * 0.55,
-                p.settings_back_offset_y * 0.55,
-            ));
             stack(layers).into()
         }
         UiPreviewMode::SaveLoad => {
@@ -2716,28 +3135,71 @@ fn render_preview_stage<'a>(
                     .into()
             };
 
-            let mut layers: Vec<Element<'a, DashboardMessage>> = vec![dim.into()];
-            if sl.show_title && !sl.save_title.trim().is_empty() {
-                layers.push(place_with_anchor(
-                    text(&sl.save_title).size(22).font(preview_font).color(title_col).into(),
-                    sl.title_anchor,
-                    sl.title_offset_x * 0.55,
-                    sl.title_offset_y * 0.55,
-                ));
-            }
-            layers.push(place_with_anchor(
-                slots_widget,
-                sl.panel_anchor,
-                sl.panel_offset_x * 0.55,
-                sl.panel_offset_y * 0.55,
-            ));
             let sl_btn_col = resolve_preview_text_color(&sl.button_text_hex, text_col);
-            layers.push(place_with_anchor(
-                preview_ui_btn(&sl.back_label, false, accent, panel_bg, sl_btn_col, radius, ui.theme.button_style, (sl.back_width * 0.65).clamp(90.0, 180.0)),
-                sl.back_anchor,
-                sl.back_offset_x * 0.55,
-                sl.back_offset_y * 0.55,
-            ));
+            let back_btn = preview_ui_btn(&sl.back_label, false, accent, panel_bg, sl_btn_col, radius, ui.theme.button_style, (sl.back_width * 0.6).clamp(80.0, 150.0));
+            let title_el: Element<'a, DashboardMessage> = if sl.show_title && !sl.save_title.trim().is_empty() {
+                text(&sl.save_title).size(20).font(preview_font).color(title_col).into()
+            } else {
+                Space::new(Length::Fixed(0.0), Length::Fixed(0.0)).into()
+            };
+
+            let mut layers: Vec<Element<'a, DashboardMessage>> = vec![dim.into()];
+            match sl.layout_template {
+                SaveLoadLayoutTemplate::Classic => {
+                    if sl.show_title && !sl.save_title.trim().is_empty() {
+                        layers.push(place_with_anchor(
+                            text(&sl.save_title).size(22).font(preview_font).color(title_col).into(),
+                            sl.title_anchor,
+                            sl.title_offset_x * 0.55,
+                            sl.title_offset_y * 0.55,
+                        ));
+                    }
+                    layers.push(place_with_anchor(slots_widget, sl.panel_anchor, sl.panel_offset_x * 0.55, sl.panel_offset_y * 0.55));
+                    layers.push(place_with_anchor(back_btn, sl.back_anchor, sl.back_offset_x * 0.55, sl.back_offset_y * 0.55));
+                }
+                SaveLoadLayoutTemplate::TopBar => {
+                    layers.push(
+                        column![
+                            row![back_btn, title_el].spacing(SPACE_2).align_y(Alignment::Center),
+                            container(slots_widget).width(Length::Fill).height(Length::Fill).center_x(Length::Fill).center_y(Length::Fill),
+                        ]
+                        .spacing(SPACE_2)
+                        .padding(SPACE_3)
+                        .width(Length::Fill)
+                        .height(Length::Fill)
+                        .into(),
+                    );
+                }
+                SaveLoadLayoutTemplate::LeftSidebar | SaveLoadLayoutTemplate::RightSidebar => {
+                    let sidebar = column![back_btn, title_el].spacing(SPACE_2).width(Length::Fixed(120.0));
+                    let main_area = container(slots_widget).width(Length::Fill).center_x(Length::Fill).center_y(Length::Fill);
+                    let split = if sl.layout_template == SaveLoadLayoutTemplate::LeftSidebar {
+                        row![sidebar, main_area]
+                    } else {
+                        row![main_area, sidebar]
+                    }
+                    .spacing(SPACE_3)
+                    .padding(SPACE_3)
+                    .width(Length::Fill)
+                    .height(Length::Fill)
+                    .align_y(Alignment::Start);
+                    layers.push(split.into());
+                }
+                SaveLoadLayoutTemplate::BottomStrip => {
+                    layers.push(
+                        column![
+                            row![back_btn, title_el].spacing(SPACE_2).align_y(Alignment::Center),
+                            Space::with_height(Length::Fill),
+                            container(slots_widget).width(Length::Fill).center_x(Length::Fill),
+                        ]
+                        .spacing(SPACE_2)
+                        .padding(SPACE_3)
+                        .width(Length::Fill)
+                        .height(Length::Fill)
+                        .into(),
+                    );
+                }
+            }
             stack(layers).into()
         }
         UiPreviewMode::History => {
@@ -2795,24 +3257,41 @@ fn render_preview_stage<'a>(
             };
 
             let h_btn_col = resolve_preview_text_color(&h.button_text_hex, text_col);
-            let inner = column![
-                row![
+            let back_btn = preview_ui_btn(back_str, false, accent, panel_bg, h_btn_col, radius, ui.theme.button_style, 86.0);
+            let header_row = match h.layout_template {
+                HistoryLayoutTemplate::TopBarReader => row![
+                    back_btn,
                     text(title_str).size(16).font(preview_font).color(title_col),
                     Space::with_width(Length::Fill),
-                    preview_ui_btn(back_str, false, accent, panel_bg, h_btn_col, radius, ui.theme.button_style, 86.0),
+                ]
+                .spacing(SPACE_2)
+                .width(Length::Fill)
+                .align_y(Alignment::Center),
+                _ => row![
+                    text(title_str).size(16).font(preview_font).color(title_col),
+                    Space::with_width(Length::Fill),
+                    back_btn,
                 ]
                 .width(Length::Fill)
                 .align_y(Alignment::Center),
+            };
+            let inner = column![
+                header_row,
                 make_entry(None, "The afternoon bell rang ten minutes ago across the quiet courtyard."),
                 make_entry(Some("Sora"), "\"Wait for me by the rooftop gate, okay?\""),
             ]
             .spacing(SPACE_2)
             .width(Length::Fill);
 
-            let pw = (h.panel_width * 0.62).clamp(280.0, 520.0);
+            let (pw, ph): (Length, Length) = match h.layout_template {
+                HistoryLayoutTemplate::CenteredModal => (Length::Fixed((h.panel_width * 0.62).clamp(280.0, 520.0)), Length::Shrink),
+                HistoryLayoutTemplate::TopBarReader => (Length::Fill, Length::Fill),
+                HistoryLayoutTemplate::LeftDrawer | HistoryLayoutTemplate::RightDrawer => (Length::Fixed(270.0), Length::Fill),
+            };
             let panel: Element<'a, DashboardMessage> = if h.show_panel {
                 container(inner)
-                    .width(Length::Fixed(pw))
+                    .width(pw)
+                    .height(ph)
                     .padding(SPACE_3)
                     .style(move |_| container::Style {
                         background: Some(Background::Color(panel_bg)),
@@ -2825,21 +3304,17 @@ fn render_preview_stage<'a>(
                     })
                     .into()
             } else {
-                container(inner)
-                    .width(Length::Fixed(pw))
-                    .padding(SPACE_2)
-                    .into()
+                container(inner).width(pw).height(ph).padding(SPACE_2).into()
             };
 
-            stack![
-                dim,
-                container(panel)
-                    .width(Length::Fill)
-                    .height(Length::Fill)
-                    .center_x(Length::Fill)
-                    .center_y(Length::Fill),
-            ]
-            .into()
+            let placed = match h.layout_template {
+                HistoryLayoutTemplate::CenteredModal => container(panel).width(Length::Fill).height(Length::Fill).center_x(Length::Fill).center_y(Length::Fill),
+                HistoryLayoutTemplate::TopBarReader => container(panel).width(Length::Fill).height(Length::Fill).padding(SPACE_3),
+                HistoryLayoutTemplate::LeftDrawer => container(panel).width(Length::Fill).height(Length::Fill).align_x(Alignment::Start).padding(SPACE_2),
+                HistoryLayoutTemplate::RightDrawer => container(panel).width(Length::Fill).height(Length::Fill).align_x(Alignment::End).padding(SPACE_2),
+            };
+
+            stack![dim, placed].into()
         }
         UiPreviewMode::Ending => {
             let e = &ui.ending;

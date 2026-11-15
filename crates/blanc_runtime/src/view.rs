@@ -5,14 +5,18 @@ use blanc_core::config::AspectScalingMode;
 use blanc_core::localization::LanguageEntry;
 use blanc_core::scene::CharacterPosition;
 use blanc_core::ui_config::{
-    parse_hex_rgb, ButtonDirection, ButtonVisualStyle, NameplatePosition, RuntimeUiConfig, UiAnchor,
+    parse_hex_rgb, ButtonDirection, ButtonVisualStyle, HistoryLayoutTemplate, NameplatePosition,
+    PauseLayoutTemplate, RuntimeUiConfig, SaveLoadLayoutTemplate, SettingsLayoutTemplate, UiAnchor,
 };
 use iced::widget::{
     button, column, container, image, mouse_area, pick_list, row, scrollable, slider, stack, text, Space,
 };
 use iced::{Alignment, Background, Border, Color, ContentFit, Element, Length, Padding};
 
-use crate::engine::{ActiveCharacter, RuntimeEngine, RuntimeScreen, SaveLoadMode, SkipMode};
+use crate::engine::{
+    ActiveCharacter, RuntimeEngine, RuntimeScreen, SaveLoadMode, SettingsCategory,
+    SettingsFocusItem, SkipMode,
+};
 
 #[derive(Debug, Clone)]
 pub enum RuntimeMessage {
@@ -40,17 +44,24 @@ pub enum RuntimeMessage {
     SetMasterVolume(f32),
     SetBgmVolume(f32),
     SetSfxVolume(f32),
+    SetVoiceVolume(f32),
     SetTextSpeed(f32),
     ToggleAutoPlay,
     ToggleSkip,
     SetSkipMode(SkipMode),
     SetAutoForwardDelay(f32),
     SetLanguage(String),
+    SelectSettingsCategory(SettingsCategory),
+    CycleSettingsCategory(isize),
     FocusPrev,
     FocusNext,
+    NavLeft,
+    NavRight,
     FocusConfirm,
+    DeleteFocused,
     BackOrPause,
     ToggleFullscreen,
+    SetFullscreen(bool),
     QuitGame,
 }
 
@@ -646,6 +657,22 @@ fn view_character_slot<'a>(
     ch: &'a ActiveCharacter,
     theme: ResolvedTheme,
 ) -> Element<'a, RuntimeMessage> {
+    let active_speaker = engine
+        .stage
+        .dialogue
+        .as_ref()
+        .and_then(|d| d.speaker_id.as_deref());
+    let any_speaker_on_stage = active_speaker.is_some_and(|spk| {
+        engine
+            .stage
+            .characters
+            .iter()
+            .any(|c| c.character_id.eq_ignore_ascii_case(spk))
+    });
+    let is_dimmed = any_speaker_on_stage
+        && active_speaker.is_some_and(|spk| !ch.character_id.eq_ignore_ascii_case(spk));
+    let char_opacity = if is_dimmed { 0.52_f32 } else { 1.0_f32 };
+
     if let Some(img_path) = &ch.image_path {
         let pad = Padding {
             top: 40.0,
@@ -656,7 +683,8 @@ fn view_character_slot<'a>(
         container(
             image(load_image_handle(engine, img_path))
                 .height(Length::FillPortion(1))
-                .content_fit(ContentFit::Contain),
+                .content_fit(ContentFit::Contain)
+                .opacity(char_opacity),
         )
         .width(Length::Fill)
         .height(Length::Fill)
@@ -1161,7 +1189,17 @@ fn view_stage(engine: &RuntimeEngine, is_paused: bool) -> Element<'_, RuntimeMes
             ));
         }
 
-        let btn_group: Element<'_, RuntimeMessage> = match p.pause_layout {
+        let effective_btn_layout = match p.pause_layout_template {
+            PauseLayoutTemplate::CenteredCard => p.pause_layout,
+            PauseLayoutTemplate::LeftSidebar | PauseLayoutTemplate::RightSidebar => {
+                blanc_core::ui_config::PauseButtonsLayout::Vertical
+            }
+            PauseLayoutTemplate::BottomBar | PauseLayoutTemplate::TopBar => {
+                blanc_core::ui_config::PauseButtonsLayout::Horizontal
+            }
+        };
+
+        let btn_group: Element<'_, RuntimeMessage> = match effective_btn_layout {
             blanc_core::ui_config::PauseButtonsLayout::Vertical => {
                 column(btns).spacing(10.0).align_x(Alignment::Center).into()
             }
@@ -1201,23 +1239,331 @@ fn view_stage(engine: &RuntimeEngine, is_paused: bool) -> Element<'_, RuntimeMes
             btn_group
         };
 
-        let btns_placed = place_with_anchor(btns_widget, p.pause_anchor, p.pause_offset_x, p.pause_offset_y);
         let mut pause_layers: Vec<Element<'_, RuntimeMessage>> = vec![dim.into()];
-        if p.pause_show_title && !p.pause_title.trim().is_empty() {
-            let pause_title_col = resolve_text_color(&p.pause_text_hex, theme.text_main);
-            let title_el = text(p.pause_title.clone()).size(34).color(pause_title_col);
-            pause_layers.push(place_with_anchor(
-                title_el.into(),
-                p.pause_title_anchor,
-                p.pause_title_offset_x,
-                p.pause_title_offset_y,
-            ));
+        let pause_title_col = resolve_text_color(&p.pause_text_hex, theme.text_main);
+        match p.pause_layout_template {
+            PauseLayoutTemplate::CenteredCard => {
+                pause_layers.push(place_with_anchor(
+                    btns_widget,
+                    p.pause_anchor,
+                    p.pause_offset_x,
+                    p.pause_offset_y,
+                ));
+                if p.pause_show_title && !p.pause_title.trim().is_empty() {
+                    let title_el = text(p.pause_title.clone()).size(34).color(pause_title_col);
+                    pause_layers.push(place_with_anchor(
+                        title_el.into(),
+                        p.pause_title_anchor,
+                        p.pause_title_offset_x,
+                        p.pause_title_offset_y,
+                    ));
+                }
+            }
+            PauseLayoutTemplate::LeftSidebar | PauseLayoutTemplate::RightSidebar => {
+                let mut col_items = column![].spacing(18.0).align_x(Alignment::Center);
+                if p.pause_show_title && !p.pause_title.trim().is_empty() {
+                    col_items = col_items.push(text(p.pause_title.clone()).size(30).color(pause_title_col));
+                }
+                col_items = col_items.push(btns_widget);
+                let (anchor, offset_x) = if p.pause_layout_template == PauseLayoutTemplate::LeftSidebar {
+                    (UiAnchor::CenterLeft, 36.0)
+                } else {
+                    (UiAnchor::CenterRight, -36.0)
+                };
+                pause_layers.push(place_with_anchor(col_items.into(), anchor, offset_x, 0.0));
+            }
+            PauseLayoutTemplate::BottomBar | PauseLayoutTemplate::TopBar => {
+                let mut col_items = column![].spacing(14.0).align_x(Alignment::Center);
+                if p.pause_show_title && !p.pause_title.trim().is_empty() {
+                    col_items = col_items.push(text(p.pause_title.clone()).size(28).color(pause_title_col));
+                }
+                col_items = col_items.push(btns_widget);
+                let (anchor, oy) = if p.pause_layout_template == PauseLayoutTemplate::BottomBar {
+                    (UiAnchor::BottomCenter, -28.0)
+                } else {
+                    (UiAnchor::TopCenter, 28.0)
+                };
+                pause_layers.push(place_with_anchor(col_items.into(), anchor, 0.0, oy));
+            }
         }
-        pause_layers.push(btns_placed);
         layers.push(stack(pause_layers).into());
     }
 
     stack(layers).into()
+}
+
+fn themed_slider<'a>(
+    engine: &'a RuntimeEngine,
+    theme: ResolvedTheme,
+    range: std::ops::RangeInclusive<f32>,
+    value: f32,
+    step: f32,
+    on_change: impl Fn(f32) -> RuntimeMessage + 'a,
+) -> Element<'a, RuntimeMessage> {
+    let ui_theme = &engine.ui_config().theme;
+    let track_asset = resolve_ui_asset(engine, ui_theme.slider_track_asset_id.as_deref());
+    let fill_asset = resolve_ui_asset(engine, ui_theme.slider_fill_asset_id.as_deref());
+    let handle_asset = resolve_ui_asset(engine, ui_theme.slider_handle_asset_id.as_deref());
+
+    let track_col = parse_hex_rgb(&ui_theme.slider_track_bg_hex)
+        .map(|(r, g, b)| Color::from_rgb8(r, g, b))
+        .unwrap_or_else(|| Color::from_rgba(1.0, 1.0, 1.0, 0.18));
+    let fill_col = parse_hex_rgb(&ui_theme.slider_fill_hex)
+        .map(|(r, g, b)| Color::from_rgb8(r, g, b))
+        .unwrap_or(theme.accent);
+    let handle_col = parse_hex_rgb(&ui_theme.slider_handle_hex)
+        .map(|(r, g, b)| Color::from_rgb8(r, g, b))
+        .unwrap_or(theme.accent);
+    let track_h = ui_theme.slider_track_height.clamp(2.0, 128.0);
+    let handle_sz = ui_theme.slider_handle_size.clamp(8.0, 128.0);
+
+    if track_asset.is_none() && fill_asset.is_none() && handle_asset.is_none() {
+        return slider(range, value, on_change)
+            .step(step)
+            .width(Length::Fill)
+            .style(move |_, status| {
+                let h_col = match status {
+                    slider::Status::Hovered | slider::Status::Dragged => theme.text_main,
+                    slider::Status::Active => handle_col,
+                };
+                slider::Style {
+                    rail: slider::Rail {
+                        backgrounds: (Background::Color(fill_col), Background::Color(track_col)),
+                        width: track_h,
+                        border: Border {
+                            radius: 99.0.into(),
+                            width: 0.0,
+                            color: Color::TRANSPARENT,
+                        },
+                    },
+                    handle: slider::Handle {
+                        shape: slider::HandleShape::Circle {
+                            radius: handle_sz * 0.5,
+                        },
+                        background: Background::Color(h_col),
+                        border_width: 2.0,
+                        border_color: theme.text_main,
+                    },
+                }
+            })
+            .into();
+    }
+
+    let min_v = *range.start();
+    let max_v = *range.end();
+    let pct = ((value - min_v) / (max_v - min_v).max(0.0001)).clamp(0.0, 1.0);
+    let left_p = (pct * 1000.0).round() as u16;
+    let right_p = 1000u16.saturating_sub(left_p);
+    let box_h = handle_sz.max(track_h).max(20.0);
+
+    let has_track_asset = track_asset.is_some();
+    let track_layer: Element<'a, RuntimeMessage> = if let Some(tp) = track_asset {
+        image(load_image_handle(engine, tp))
+            .width(Length::Fill)
+            .height(Length::Fixed(track_h))
+            .content_fit(ContentFit::Fill)
+            .into()
+    } else {
+        container(Space::new(Length::Fill, Length::Fixed(track_h)))
+            .width(Length::Fill)
+            .height(Length::Fixed(track_h))
+            .style(move |_| container::Style {
+                background: Some(Background::Color(track_col)),
+                border: Border {
+                    radius: 99.0.into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            })
+            .into()
+    };
+
+    let show_fill_layer = fill_asset.is_some()
+        || !has_track_asset
+        || parse_hex_rgb(&ui_theme.slider_fill_hex).is_some();
+
+    let fill_inner: Element<'a, RuntimeMessage> = if left_p == 0 || !show_fill_layer {
+        Space::new(Length::Fixed(0.0), Length::Fixed(track_h)).into()
+    } else if let Some(fp) = fill_asset {
+        image(load_image_handle(engine, fp))
+            .width(Length::Fill)
+            .height(Length::Fixed(track_h))
+            .content_fit(ContentFit::Fill)
+            .into()
+    } else {
+        container(Space::new(Length::Fill, Length::Fixed(track_h)))
+            .width(Length::Fill)
+            .height(Length::Fixed(track_h))
+            .style(move |_| container::Style {
+                background: Some(Background::Color(fill_col)),
+                border: Border {
+                    radius: 99.0.into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            })
+            .into()
+    };
+
+    let fill_layer = row![
+        container(fill_inner).width(if left_p == 0 {
+            Length::Fixed(0.0)
+        } else {
+            Length::FillPortion(left_p)
+        }),
+        Space::new(
+            if right_p == 0 {
+                Length::Fixed(0.0)
+            } else {
+                Length::FillPortion(right_p)
+            },
+            Length::Fixed(track_h),
+        ),
+    ]
+    .width(Length::Fill)
+    .align_y(Alignment::Center);
+
+    let handle_widget: Element<'a, RuntimeMessage> = if let Some(hp) = handle_asset {
+        image(load_image_handle(engine, hp))
+            .width(Length::Shrink)
+            .height(Length::Fixed(handle_sz))
+            .content_fit(ContentFit::Contain)
+            .into()
+    } else {
+        container(Space::new(Length::Fixed(handle_sz), Length::Fixed(handle_sz)))
+            .width(Length::Fixed(handle_sz))
+            .height(Length::Fixed(handle_sz))
+            .style(move |_| container::Style {
+                background: Some(Background::Color(handle_col)),
+                border: Border {
+                    radius: 99.0.into(),
+                    width: 2.0,
+                    color: theme.text_main,
+                },
+                ..Default::default()
+            })
+            .into()
+    };
+
+    let handle_layer = row![
+        Space::new(
+            if left_p == 0 {
+                Length::Fixed(0.0)
+            } else {
+                Length::FillPortion(left_p)
+            },
+            Length::Fixed(box_h),
+        ),
+        handle_widget,
+        Space::new(
+            if right_p == 0 {
+                Length::Fixed(0.0)
+            } else {
+                Length::FillPortion(right_p)
+            },
+            Length::Fixed(box_h),
+        ),
+    ]
+    .width(Length::Fill)
+    .align_y(Alignment::Center);
+
+    let interactive = slider(range, value, on_change)
+        .step(step)
+        .width(Length::Fill)
+        .height(box_h)
+        .style(|_, _| slider::Style {
+            rail: slider::Rail {
+                backgrounds: (
+                    Background::Color(Color::TRANSPARENT),
+                    Background::Color(Color::TRANSPARENT),
+                ),
+                width: 6.0,
+                border: Border::default(),
+            },
+            handle: slider::Handle {
+                shape: slider::HandleShape::Circle { radius: 8.0 },
+                background: Background::Color(Color::TRANSPARENT),
+                border_width: 0.0,
+                border_color: Color::TRANSPARENT,
+            },
+        });
+
+    stack![
+        container(track_layer)
+            .width(Length::Fill)
+            .height(box_h)
+            .center_y(Length::Fixed(box_h)),
+        container(fill_layer)
+            .width(Length::Fill)
+            .height(box_h)
+            .center_y(Length::Fixed(box_h)),
+        container(handle_layer)
+            .width(Length::Fill)
+            .height(box_h)
+            .center_y(Length::Fixed(box_h)),
+        container(interactive)
+            .width(Length::Fill)
+            .height(box_h)
+            .center_y(Length::Fixed(box_h)),
+    ]
+    .width(Length::Fill)
+    .height(Length::Fixed(box_h))
+    .into()
+}
+
+fn settings_focus_row<'a>(
+    is_focused: bool,
+    accent: Color,
+    content: Element<'a, RuntimeMessage>,
+) -> Element<'a, RuntimeMessage> {
+    container(content)
+        .width(Length::Fill)
+        .padding([6.0, 10.0])
+        .style(move |_| container::Style {
+            background: if is_focused {
+                Some(Background::Color(Color::from_rgba(accent.r, accent.g, accent.b, 0.14)))
+            } else {
+                None
+            },
+            border: Border {
+                radius: 8.0.into(),
+                width: if is_focused { 1.5 } else { 0.0 },
+                color: if is_focused { accent } else { Color::TRANSPARENT },
+            },
+            ..Default::default()
+        })
+        .into()
+}
+
+fn wrap_settings_panel_box<'a>(
+    engine: &'a RuntimeEngine,
+    theme: ResolvedTheme,
+    show_panel: bool,
+    panel_asset_path: Option<&PathBuf>,
+    inner: Element<'a, RuntimeMessage>,
+    panel_w: f32,
+) -> Element<'a, RuntimeMessage> {
+    if show_panel {
+        if let Some(sp_path) = panel_asset_path {
+            container(stack![
+                image(load_image_handle(engine, sp_path)).content_fit(ContentFit::Fill),
+                container(inner).width(Length::Fill).padding([24.0, 32.0]),
+            ])
+            .width(Length::Fixed(panel_w))
+            .into()
+        } else {
+            container(inner)
+                .width(Length::Fixed(panel_w))
+                .padding([24.0, 32.0])
+                .style(themed_panel_style(theme.panel_bg, theme.radius))
+                .into()
+        }
+    } else {
+        container(inner)
+            .width(Length::Fixed(panel_w))
+            .padding([12.0, 18.0])
+            .into()
+    }
 }
 
 fn view_settings(engine: &RuntimeEngine) -> Element<'_, RuntimeMessage> {
@@ -1230,35 +1576,9 @@ fn view_settings(engine: &RuntimeEngine) -> Element<'_, RuntimeMessage> {
         let pct = (current * 100.0).round() as u32;
         row![
             text(label).size(15).color(settings_text_col).width(Length::Fixed(130.0)),
-            slider(0.0..=100.0, current * 100.0, move |v| make_msg(v / 100.0))
-                .step(1.0_f32)
-                .width(Length::Fill)
-                .style(move |_, status| {
-                    let handle_col = match status {
-                        slider::Status::Hovered | slider::Status::Dragged => theme.text_main,
-                        slider::Status::Active => theme.accent,
-                    };
-                    slider::Style {
-                        rail: slider::Rail {
-                            backgrounds: (
-                                Background::Color(theme.accent),
-                                Background::Color(Color::from_rgba(1.0, 1.0, 1.0, 0.18)),
-                            ),
-                            width: 6.0,
-                            border: Border {
-                                radius: 99.0.into(),
-                                width: 0.0,
-                                color: Color::TRANSPARENT,
-                            },
-                        },
-                        handle: slider::Handle {
-                            shape: slider::HandleShape::Circle { radius: 8.0 },
-                            background: Background::Color(handle_col),
-                            border_width: 2.0,
-                            border_color: theme.text_main,
-                        },
-                    }
-                }),
+            themed_slider(engine, theme, 0.0..=100.0, current * 100.0, 1.0_f32, move |v| {
+                make_msg(v / 100.0)
+            }),
             text(format!("{}%", pct))
                 .size(13)
                 .color(TEXT_MUTED)
@@ -1283,35 +1603,14 @@ fn view_settings(engine: &RuntimeEngine) -> Element<'_, RuntimeMessage> {
             .size(15)
             .color(settings_text_col)
             .width(Length::Fixed(130.0)),
-        slider(0.5..=5.0, engine.auto_forward_delay, RuntimeMessage::SetAutoForwardDelay)
-            .step(0.1_f32)
-            .width(Length::Fill)
-            .style(move |_, status| {
-                let handle_col = match status {
-                    slider::Status::Hovered | slider::Status::Dragged => theme.text_main,
-                    slider::Status::Active => theme.accent,
-                };
-                slider::Style {
-                    rail: slider::Rail {
-                        backgrounds: (
-                            Background::Color(theme.accent),
-                            Background::Color(Color::from_rgba(1.0, 1.0, 1.0, 0.18)),
-                        ),
-                        width: 6.0,
-                        border: Border {
-                            radius: 99.0.into(),
-                            width: 0.0,
-                            color: Color::TRANSPARENT,
-                        },
-                    },
-                    handle: slider::Handle {
-                        shape: slider::HandleShape::Circle { radius: 8.0 },
-                        background: Background::Color(handle_col),
-                        border_width: 2.0,
-                        border_color: theme.text_main,
-                    },
-                }
-            }),
+        themed_slider(
+            engine,
+            theme,
+            0.5..=5.0,
+            engine.auto_forward_delay,
+            0.1_f32,
+            RuntimeMessage::SetAutoForwardDelay,
+        ),
         text(format!("{:.1}s", engine.auto_forward_delay))
             .size(13)
             .color(TEXT_MUTED)
@@ -1351,38 +1650,106 @@ fn view_settings(engine: &RuntimeEngine) -> Element<'_, RuntimeMessage> {
     .width(Length::Fill)
     .align_y(Alignment::Center);
 
-    let mut controls_col = column![
-        vol_slider_row(
-            engine.tr_or("ui.settings.master_vol", &p.master_volume_label),
-            engine.master_volume,
-            RuntimeMessage::SetMasterVolume,
-        ),
-        vol_slider_row(
-            engine.tr_or("ui.settings.bgm_vol", &p.bgm_volume_label),
-            engine.bgm_volume,
-            RuntimeMessage::SetBgmVolume,
-        ),
-        vol_slider_row(
-            engine.tr_or("ui.settings.sfx_vol", &p.sfx_volume_label),
-            engine.sfx_volume,
-            RuntimeMessage::SetSfxVolume,
-        ),
+    let display_mode_row = row![
+        text(engine.tr_or("ui.settings.display_mode", "Display Mode"))
+            .size(15)
+            .color(settings_text_col)
+            .width(Length::Fixed(130.0)),
         row![
-            text(engine.tr_or("ui.settings.text_speed", &p.text_speed_label))
-                .size(15)
-                .color(settings_text_col)
-                .width(Length::Fixed(130.0)),
-            speed_presets,
+            themed_small_button(
+                engine,
+                theme,
+                engine.tr_or("ui.settings.windowed", "Windowed"),
+                118.0,
+                !engine.is_fullscreen,
+                RuntimeMessage::SetFullscreen(false),
+            ),
+            themed_small_button(
+                engine,
+                theme,
+                engine.tr_or("ui.settings.fullscreen", "Fullscreen"),
+                118.0,
+                engine.is_fullscreen,
+                RuntimeMessage::SetFullscreen(true),
+            ),
         ]
-        .spacing(12.0)
-        .width(Length::Fill)
-        .align_y(Alignment::Center),
-        auto_delay_row,
-        skip_mode_row,
+        .spacing(8.0),
     ]
-    .spacing(18.0)
-    .width(Length::Fill);
+    .spacing(12.0)
+    .width(Length::Fill)
+    .align_y(Alignment::Center);
 
+    let focus_items = engine.settings_focus_items();
+    let focused_idx = engine.focus_index % focus_items.len().max(1);
+    let focused_item = focus_items.get(focused_idx).copied();
+    let wrap_focus_row = |item: SettingsFocusItem, content| {
+        settings_focus_row(focused_item == Some(item), theme.accent, content)
+    };
+
+    let mut audio_rows: Vec<Element<'_, RuntimeMessage>> = vec![
+        wrap_focus_row(
+            SettingsFocusItem::MasterVol,
+            vol_slider_row(
+                engine.tr_or("ui.settings.master_vol", &p.master_volume_label),
+                engine.master_volume,
+                RuntimeMessage::SetMasterVolume,
+            )
+            .into(),
+        ),
+        wrap_focus_row(
+            SettingsFocusItem::BgmVol,
+            vol_slider_row(
+                engine.tr_or("ui.settings.bgm_vol", &p.bgm_volume_label),
+                engine.bgm_volume,
+                RuntimeMessage::SetBgmVolume,
+            )
+            .into(),
+        ),
+        wrap_focus_row(
+            SettingsFocusItem::SfxVol,
+            vol_slider_row(
+                engine.tr_or("ui.settings.sfx_vol", &p.sfx_volume_label),
+                engine.sfx_volume,
+                RuntimeMessage::SetSfxVolume,
+            )
+            .into(),
+        ),
+    ];
+    if engine.has_voice_acting {
+        audio_rows.push(wrap_focus_row(
+            SettingsFocusItem::VoiceVol,
+            vol_slider_row(
+                engine.tr_or("ui.settings.voice_vol", "Voice Volume"),
+                engine.voice_volume,
+                RuntimeMessage::SetVoiceVolume,
+            )
+            .into(),
+        ));
+    }
+
+    let gameplay_rows: Vec<Element<'_, RuntimeMessage>> = vec![
+        wrap_focus_row(
+            SettingsFocusItem::TextSpeed,
+            row![
+                text(engine.tr_or("ui.settings.text_speed", &p.text_speed_label))
+                    .size(15)
+                    .color(settings_text_col)
+                    .width(Length::Fixed(130.0)),
+                speed_presets,
+            ]
+            .spacing(12.0)
+            .width(Length::Fill)
+            .align_y(Alignment::Center)
+            .into(),
+        ),
+        wrap_focus_row(SettingsFocusItem::AutoDelay, auto_delay_row.into()),
+        wrap_focus_row(SettingsFocusItem::SkipMode, skip_mode_row.into()),
+    ];
+
+    let mut system_rows: Vec<Element<'_, RuntimeMessage>> = vec![wrap_focus_row(
+        SettingsFocusItem::DisplayMode,
+        display_mode_row.into(),
+    )];
     let langs = engine.available_languages();
     if langs.len() > 1 {
         let current_lang = engine.current_language_entry();
@@ -1400,31 +1767,20 @@ fn view_settings(engine: &RuntimeEngine) -> Element<'_, RuntimeMessage> {
         .spacing(12.0)
         .width(Length::Fill)
         .align_y(Alignment::Center);
-        controls_col = controls_col.push(lang_row);
+        system_rows.push(wrap_focus_row(SettingsFocusItem::Language, lang_row.into()));
     }
 
-    let controls_widget: Element<'_, RuntimeMessage> = if p.settings_show_panel {
-        if let Some(sp_path) = resolve_ui_asset(engine, p.settings_panel_asset_id.as_deref()) {
-            container(
-                stack![
-                    image(load_image_handle(engine, sp_path)).content_fit(ContentFit::Fill),
-                    container(controls_col).width(Length::Fill).padding([24.0, 32.0]),
-                ],
-            )
-            .width(Length::Fixed(p.settings_width))
-            .into()
-        } else {
-            container(controls_col)
-                .width(Length::Fixed(p.settings_width))
-                .padding([24.0, 32.0])
-                .style(themed_panel_style(theme.panel_bg, theme.radius))
-                .into()
-        }
-    } else {
-        container(controls_col)
-            .width(Length::Fixed(p.settings_width))
-            .padding([12.0, 18.0])
-            .into()
+    let template = p.settings_layout_template;
+    let settings_panel_path = resolve_ui_asset(engine, p.settings_panel_asset_id.as_deref());
+    let wrap_settings_panel = |inner, panel_w: f32| {
+        wrap_settings_panel_box(
+            engine,
+            theme,
+            p.settings_show_panel,
+            settings_panel_path.as_ref(),
+            inner,
+            panel_w,
+        )
     };
 
     let bg_layer: Element<'_, RuntimeMessage> = if let Some(loaded) = &engine.loaded {
@@ -1463,41 +1819,205 @@ fn view_settings(engine: &RuntimeEngine) -> Element<'_, RuntimeMessage> {
             ..Default::default()
         });
 
-    let mut layers: Vec<Element<'_, RuntimeMessage>> = vec![bg_layer, dim.into()];
-    if p.settings_show_title && !p.settings_title.trim().is_empty() {
-        let title_el = text(p.settings_title.clone()).size(34).color(settings_text_col);
-        layers.push(place_with_anchor(
-            title_el.into(),
-            p.settings_title_anchor,
-            p.settings_title_offset_x,
-            p.settings_title_offset_y,
-        ));
-    }
-
-    layers.push(place_with_anchor(
-        controls_widget,
-        p.settings_anchor,
-        p.settings_offset_x,
-        p.settings_offset_y,
-    ));
-
     let back_btn = themed_button(
         engine,
         theme,
         None,
         p.back_label.clone(),
         p.settings_back_width.max(110.0),
-        true,
+        focused_item == Some(SettingsFocusItem::Back),
         false,
         None,
         RuntimeMessage::CloseSettings,
     );
-    layers.push(place_with_anchor(
-        back_btn,
-        p.settings_back_anchor,
-        p.settings_back_offset_x,
-        p.settings_back_offset_y,
-    ));
+
+    let mut layers: Vec<Element<'_, RuntimeMessage>> = vec![bg_layer, dim.into()];
+    match template {
+        SettingsLayoutTemplate::Classic => {
+            let mut all_rows = Vec::new();
+            all_rows.extend(audio_rows);
+            all_rows.extend(gameplay_rows);
+            all_rows.extend(system_rows);
+            let controls_col = column(all_rows).spacing(10.0).width(Length::Fill);
+            let controls_widget = wrap_settings_panel(controls_col.into(), p.settings_width);
+            if p.settings_show_title && !p.settings_title.trim().is_empty() {
+                let title_el = text(p.settings_title.clone()).size(34).color(settings_text_col);
+                layers.push(place_with_anchor(
+                    title_el.into(),
+                    p.settings_title_anchor,
+                    p.settings_title_offset_x,
+                    p.settings_title_offset_y,
+                ));
+            }
+            layers.push(place_with_anchor(
+                controls_widget,
+                p.settings_anchor,
+                p.settings_offset_x,
+                p.settings_offset_y,
+            ));
+            layers.push(place_with_anchor(
+                back_btn,
+                p.settings_back_anchor,
+                p.settings_back_offset_x,
+                p.settings_back_offset_y,
+            ));
+        }
+        SettingsLayoutTemplate::TopTabs
+        | SettingsLayoutTemplate::LeftSidebar
+        | SettingsLayoutTemplate::RightSidebar => {
+            let active_rows = match engine.settings_category {
+                SettingsCategory::Audio => audio_rows,
+                SettingsCategory::Gameplay => gameplay_rows,
+                SettingsCategory::System => system_rows,
+            };
+            let content_col = column(active_rows).spacing(12.0).width(Length::Fill);
+            let content_panel = wrap_settings_panel(content_col.into(), p.settings_width.max(540.0));
+
+            let cat_btn = |cat: SettingsCategory, btn_w: f32| {
+                themed_small_button(
+                    engine,
+                    theme,
+                    engine.tr_or(cat.loc_key(), cat.default_label()),
+                    btn_w,
+                    engine.settings_category == cat,
+                    RuntimeMessage::SelectSettingsCategory(cat),
+                )
+            };
+
+            let title_el: Element<'_, RuntimeMessage> =
+                if p.settings_show_title && !p.settings_title.trim().is_empty() {
+                    text(p.settings_title.clone()).size(30).color(settings_text_col).into()
+                } else {
+                    Space::new(Length::Fixed(0.0), Length::Fixed(0.0)).into()
+                };
+
+            let layout_root: Element<'_, RuntimeMessage> = match template {
+                SettingsLayoutTemplate::TopTabs => {
+                    let tabs_row = row![
+                        cat_btn(SettingsCategory::Audio, 130.0),
+                        cat_btn(SettingsCategory::Gameplay, 130.0),
+                        cat_btn(SettingsCategory::System, 130.0),
+                    ]
+                    .spacing(10.0)
+                    .align_y(Alignment::Center);
+                    let header = row![back_btn, title_el]
+                        .spacing(18.0)
+                        .width(Length::Fill)
+                        .align_y(Alignment::Center);
+                    column![
+                        header,
+                        container(tabs_row).width(Length::Fill).center_x(Length::Fill),
+                        container(content_panel)
+                            .width(Length::Fill)
+                            .height(Length::Fill)
+                            .center_x(Length::Fill)
+                            .center_y(Length::Fill),
+                    ]
+                    .spacing(18.0)
+                    .width(Length::Fill)
+                    .height(Length::Fill)
+                    .padding(28.0)
+                    .into()
+                }
+                SettingsLayoutTemplate::LeftSidebar => {
+                    let header = row![back_btn, title_el]
+                        .spacing(18.0)
+                        .width(Length::Fill)
+                        .align_y(Alignment::Center);
+                    let sidebar = column![
+                        cat_btn(SettingsCategory::Audio, 180.0),
+                        cat_btn(SettingsCategory::Gameplay, 180.0),
+                        cat_btn(SettingsCategory::System, 180.0),
+                    ]
+                    .spacing(10.0)
+                    .width(Length::Fixed(200.0));
+                    let body = row![
+                        sidebar,
+                        container(content_panel)
+                            .width(Length::Fill)
+                            .center_x(Length::Fill),
+                    ]
+                    .spacing(24.0)
+                    .width(Length::Fill)
+                    .height(Length::Fill)
+                    .align_y(Alignment::Start);
+                    column![header, body]
+                        .spacing(22.0)
+                        .width(Length::Fill)
+                        .height(Length::Fill)
+                        .padding(28.0)
+                        .into()
+                }
+                SettingsLayoutTemplate::RightSidebar => {
+                    let header = row![title_el, Space::with_width(Length::Fill), back_btn]
+                        .spacing(18.0)
+                        .width(Length::Fill)
+                        .align_y(Alignment::Center);
+                    let sidebar = column![
+                        cat_btn(SettingsCategory::Audio, 180.0),
+                        cat_btn(SettingsCategory::Gameplay, 180.0),
+                        cat_btn(SettingsCategory::System, 180.0),
+                    ]
+                    .spacing(10.0)
+                    .width(Length::Fixed(200.0));
+                    let body = row![
+                        container(content_panel)
+                            .width(Length::Fill)
+                            .center_x(Length::Fill),
+                        sidebar,
+                    ]
+                    .spacing(24.0)
+                    .width(Length::Fill)
+                    .height(Length::Fill)
+                    .align_y(Alignment::Start);
+                    column![header, body]
+                        .spacing(22.0)
+                        .width(Length::Fill)
+                        .height(Length::Fill)
+                        .padding(28.0)
+                        .into()
+                }
+                _ => Space::new(Length::Fill, Length::Fill).into(),
+            };
+            layers.push(layout_root);
+        }
+        SettingsLayoutTemplate::TwoColumnSplit => {
+            let title_el: Element<'_, RuntimeMessage> =
+                if p.settings_show_title && !p.settings_title.trim().is_empty() {
+                    text(p.settings_title.clone()).size(30).color(settings_text_col).into()
+                } else {
+                    Space::new(Length::Fixed(0.0), Length::Fixed(0.0)).into()
+                };
+            let header = row![back_btn, title_el]
+                .spacing(18.0)
+                .width(Length::Fill)
+                .align_y(Alignment::Center);
+            let left_col = wrap_settings_panel(
+                column(audio_rows).spacing(10.0).width(Length::Fill).into(),
+                460.0,
+            );
+            let mut right_rows = Vec::new();
+            right_rows.extend(gameplay_rows);
+            right_rows.extend(system_rows);
+            let right_col = wrap_settings_panel(
+                column(right_rows).spacing(10.0).width(Length::Fill).into(),
+                460.0,
+            );
+            let body = container(row![left_col, right_col].spacing(24.0).align_y(Alignment::Start))
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .center_x(Length::Fill)
+                .center_y(Length::Fill);
+            layers.push(
+                column![header, body]
+                    .spacing(20.0)
+                    .width(Length::Fill)
+                    .height(Length::Fill)
+                    .padding(28.0)
+                    .into(),
+            );
+        }
+    }
 
     stack(layers).into()
 }
@@ -1612,8 +2132,12 @@ fn view_save_load(engine: &RuntimeEngine, mode: SaveLoadMode) -> Element<'_, Run
     let thumb_w = if is_list_layout { 96.0 } else { 104.0 };
     let thumb_h = if is_list_layout { 58.0 } else { 66.0 };
 
+    let total_sl_focus = slots.len() + 1;
+    let sl_focused = engine.focus_index % total_sl_focus.max(1);
+
     let build_slot_card = |idx: usize, data: Option<crate::engine::SaveSlotData>| -> Element<'_, RuntimeMessage> {
         let slot_num = idx + 1;
+        let is_slot_focused = sl_focused == idx;
         let thumb_widget = build_save_thumbnail(
             engine,
             data.as_ref(),
@@ -1650,6 +2174,11 @@ fn view_save_load(engine: &RuntimeEngine, mode: SaveLoadMode) -> Element<'_, Run
         };
 
         let mut action_row = row![].spacing(8.0).align_y(Alignment::Center);
+        let action_idx = if data.is_some() {
+            engine.save_load_action_index.min(1)
+        } else {
+            0
+        };
         match mode {
             SaveLoadMode::Save => {
                 let lbl = if data.is_some() {
@@ -1663,7 +2192,7 @@ fn view_save_load(engine: &RuntimeEngine, mode: SaveLoadMode) -> Element<'_, Run
                     None,
                     lbl,
                     118.0,
-                    false,
+                    is_slot_focused && action_idx == 0,
                     false,
                     None,
                     RuntimeMessage::SaveToSlot(slot_num),
@@ -1676,7 +2205,7 @@ fn view_save_load(engine: &RuntimeEngine, mode: SaveLoadMode) -> Element<'_, Run
                     None,
                     &sl.load_btn_label,
                     118.0,
-                    false,
+                    is_slot_focused && action_idx == 0,
                     data.is_none(),
                     None,
                     RuntimeMessage::LoadFromSlot(slot_num),
@@ -1689,7 +2218,7 @@ fn view_save_load(engine: &RuntimeEngine, mode: SaveLoadMode) -> Element<'_, Run
                 theme,
                 sl.delete_btn_label.clone(),
                 76.0,
-                false,
+                is_slot_focused && action_idx == 1,
                 RuntimeMessage::DeleteSaveSlot(slot_num),
             ));
         }
@@ -1729,7 +2258,7 @@ fn view_save_load(engine: &RuntimeEngine, mode: SaveLoadMode) -> Element<'_, Run
             card_asset_path.as_ref()
         };
 
-        if let Some(card_path) = slot_bg_path {
+        let card_el: Element<'_, RuntimeMessage> = if let Some(card_path) = slot_bg_path {
             container(
                 stack![
                     image(load_image_handle(engine, card_path)).content_fit(ContentFit::Fill),
@@ -1746,6 +2275,24 @@ fn view_save_load(engine: &RuntimeEngine, mode: SaveLoadMode) -> Element<'_, Run
                 .padding(14.0)
                 .style(themed_panel_style(theme.panel_bg, theme.radius))
                 .into()
+        };
+
+        if is_slot_focused {
+            let accent = theme.accent;
+            let radius = theme.radius;
+            container(card_el)
+                .width(Length::FillPortion(1))
+                .style(move |_| container::Style {
+                    border: Border {
+                        radius: radius.into(),
+                        width: 2.0,
+                        color: accent,
+                    },
+                    ..Default::default()
+                })
+                .into()
+        } else {
+            card_el
         }
     };
 
@@ -1832,40 +2379,92 @@ fn view_save_load(engine: &RuntimeEngine, mode: SaveLoadMode) -> Element<'_, Run
             ..Default::default()
         });
 
-    let mut layers: Vec<Element<'_, RuntimeMessage>> = vec![bg_layer, dim.into()];
-    if sl.show_title && !title_str.trim().is_empty() {
-        layers.push(place_with_anchor(
-            text(title_str).size(32).color(sl_title_col).into(),
-            sl.title_anchor,
-            sl.title_offset_x,
-            sl.title_offset_y,
-        ));
-    }
-
-    layers.push(place_with_anchor(
-        slots_widget,
-        sl.panel_anchor,
-        sl.panel_offset_x,
-        sl.panel_offset_y,
-    ));
-
     let back_btn = themed_button(
         engine,
         theme,
         None,
         &sl.back_label,
         sl.back_width.max(110.0),
-        true,
+        sl_focused == slots.len(),
         false,
         None,
         RuntimeMessage::CloseSaveLoad,
     );
-    layers.push(place_with_anchor(
-        back_btn,
-        sl.back_anchor,
-        sl.back_offset_x,
-        sl.back_offset_y,
-    ));
+
+    let mut layers: Vec<Element<'_, RuntimeMessage>> = vec![bg_layer, dim.into()];
+    match sl.layout_template {
+        SaveLoadLayoutTemplate::Classic => {
+            if sl.show_title && !title_str.trim().is_empty() {
+                layers.push(place_with_anchor(
+                    text(title_str).size(32).color(sl_title_col).into(),
+                    sl.title_anchor,
+                    sl.title_offset_x,
+                    sl.title_offset_y,
+                ));
+            }
+            layers.push(place_with_anchor(
+                slots_widget,
+                sl.panel_anchor,
+                sl.panel_offset_x,
+                sl.panel_offset_y,
+            ));
+            layers.push(place_with_anchor(
+                back_btn,
+                sl.back_anchor,
+                sl.back_offset_x,
+                sl.back_offset_y,
+            ));
+        }
+        SaveLoadLayoutTemplate::TopBar => {
+            let mut top_row = row![back_btn].spacing(18.0).align_y(Alignment::Center);
+            if sl.show_title && !title_str.trim().is_empty() {
+                top_row = top_row.push(text(title_str).size(30).color(sl_title_col));
+            }
+            let layout_col = column![
+                top_row.width(Length::Fill),
+                container(slots_widget).center_x(Length::Fill).center_y(Length::Fill),
+            ]
+            .spacing(16.0)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .padding(28.0);
+            layers.push(layout_col.into());
+        }
+        SaveLoadLayoutTemplate::LeftSidebar | SaveLoadLayoutTemplate::RightSidebar => {
+            let mut sidebar = column![back_btn].spacing(18.0).align_x(Alignment::Start).width(Length::Fixed(220.0));
+            if sl.show_title && !title_str.trim().is_empty() {
+                sidebar = sidebar.push(text(title_str).size(28).color(sl_title_col));
+            }
+            let main_area = container(slots_widget).width(Length::Fill).center_x(Length::Fill).center_y(Length::Fill);
+            let split = if sl.layout_template == SaveLoadLayoutTemplate::LeftSidebar {
+                row![sidebar, main_area]
+            } else {
+                row![main_area, sidebar]
+            }
+            .spacing(24.0)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .padding(28.0)
+            .align_y(Alignment::Start);
+            layers.push(split.into());
+        }
+        SaveLoadLayoutTemplate::BottomStrip => {
+            let mut top_row = row![back_btn].spacing(18.0).align_y(Alignment::Center);
+            if sl.show_title && !title_str.trim().is_empty() {
+                top_row = top_row.push(text(title_str).size(30).color(sl_title_col));
+            }
+            let layout_col = column![
+                top_row.width(Length::Fill),
+                Space::with_height(Length::Fill),
+                container(slots_widget).width(Length::Fill).center_x(Length::Fill),
+            ]
+            .spacing(16.0)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .padding(28.0);
+            layers.push(layout_col.into());
+        }
+    }
 
     stack(layers).into()
 }
@@ -1937,24 +2536,38 @@ fn view_backlog(engine: &RuntimeEngine) -> Element<'_, RuntimeMessage> {
         h.back_label.as_str()
     };
 
-    let inner_col = column![
-        row![
+    let back_btn = themed_button(
+        engine,
+        theme,
+        None,
+        back_lbl,
+        130.0,
+        true,
+        false,
+        None,
+        RuntimeMessage::CloseBacklog,
+    );
+
+    let header_row = match h.layout_template {
+        HistoryLayoutTemplate::TopBarReader => row![
+            back_btn,
+            text(title_lbl.to_string()).size(26).color(title_col),
+            Space::with_width(Length::Fill),
+        ]
+        .spacing(16.0)
+        .width(Length::Fill)
+        .align_y(Alignment::Center),
+        _ => row![
             text(title_lbl.to_string()).size(24).color(title_col),
             Space::with_width(Length::Fill),
-            themed_button(
-                engine,
-                theme,
-                None,
-                back_lbl,
-                130.0,
-                true,
-                false,
-                None,
-                RuntimeMessage::CloseBacklog,
-            ),
+            back_btn,
         ]
         .width(Length::Fill)
         .align_y(Alignment::Center),
+    };
+
+    let inner_col = column![
+        header_row,
         scrollable(list_col)
             .width(Length::Fill)
             .height(Length::Fill),
@@ -1963,8 +2576,17 @@ fn view_backlog(engine: &RuntimeEngine) -> Element<'_, RuntimeMessage> {
     .width(Length::Fill)
     .height(Length::Fill);
 
-    let panel_w = h.panel_width.clamp(420.0, 1180.0);
-    let panel_h = h.panel_height.clamp(300.0, 680.0);
+    let (panel_w, panel_h_len): (Length, Length) = match h.layout_template {
+        HistoryLayoutTemplate::CenteredModal => (
+            Length::Fixed(h.panel_width.clamp(420.0, 1180.0)),
+            Length::Fixed(h.panel_height.clamp(300.0, 680.0)),
+        ),
+        HistoryLayoutTemplate::TopBarReader => (Length::Fill, Length::Fill),
+        HistoryLayoutTemplate::LeftDrawer | HistoryLayoutTemplate::RightDrawer => (
+            Length::Fixed(h.panel_width.clamp(380.0, 560.0)),
+            Length::Fill,
+        ),
+    };
 
     let panel: Element<'_, RuntimeMessage> = if h.show_panel {
         if let Some(pp_path) = resolve_ui_asset(engine, h.panel_asset_id.as_deref()) {
@@ -1978,35 +2600,39 @@ fn view_backlog(engine: &RuntimeEngine) -> Element<'_, RuntimeMessage> {
                     .height(Length::Fill)
                     .padding(26.0),
             ])
-            .width(Length::Fixed(panel_w))
-            .height(Length::Fixed(panel_h))
+            .width(panel_w)
+            .height(panel_h_len)
             .into()
         } else {
             container(inner_col)
-                .width(Length::Fixed(panel_w))
-                .height(Length::Fixed(panel_h))
+                .width(panel_w)
+                .height(panel_h_len)
                 .padding(26.0)
                 .style(themed_panel_style(theme.panel_bg, theme.radius))
                 .into()
         }
     } else {
         container(inner_col)
-            .width(Length::Fixed(panel_w))
-            .height(Length::Fixed(panel_h))
+            .width(panel_w)
+            .height(panel_h_len)
             .padding(12.0)
             .into()
     };
 
     let dim_alpha = h.overlay_dimming.clamp(0.0, 0.95);
-    let overlay = container(panel)
+    let overlay_base = container(panel)
         .width(Length::Fill)
         .height(Length::Fill)
-        .center_x(Length::Fill)
-        .center_y(Length::Fill)
         .style(move |_| container::Style {
             background: Some(Background::Color(Color::from_rgba(0.03, 0.04, 0.07, dim_alpha))),
             ..Default::default()
         });
+    let overlay: Element<'_, RuntimeMessage> = match h.layout_template {
+        HistoryLayoutTemplate::CenteredModal => overlay_base.center_x(Length::Fill).center_y(Length::Fill).into(),
+        HistoryLayoutTemplate::TopBarReader => overlay_base.padding(28.0).into(),
+        HistoryLayoutTemplate::LeftDrawer => overlay_base.align_x(Alignment::Start).padding(18.0).into(),
+        HistoryLayoutTemplate::RightDrawer => overlay_base.align_x(Alignment::End).padding(18.0).into(),
+    };
 
     stack![view_stage_visual(engine, theme), overlay].into()
 }
