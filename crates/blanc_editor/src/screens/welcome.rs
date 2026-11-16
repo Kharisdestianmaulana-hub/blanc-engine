@@ -78,6 +78,10 @@ fn default_true() -> bool {
     true
 }
 
+fn default_auto_save_interval_minutes() -> u32 {
+    3
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HubConfig {
     pub default_folder: Option<PathBuf>,
@@ -92,6 +96,10 @@ pub struct HubConfig {
     pub default_language_code: String,
     #[serde(default = "default_true")]
     pub auto_save_on_play_preview: bool,
+    #[serde(default = "default_true")]
+    pub periodic_auto_save: bool,
+    #[serde(default = "default_auto_save_interval_minutes")]
+    pub auto_save_interval_minutes: u32,
     #[serde(default)]
     pub reopen_last_project: bool,
     #[serde(default = "default_true")]
@@ -115,6 +123,8 @@ impl Default for HubConfig {
             default_resolution: default_resolution_value(),
             default_language_code: default_language_value(),
             auto_save_on_play_preview: true,
+            periodic_auto_save: true,
+            auto_save_interval_minutes: default_auto_save_interval_minutes(),
             reopen_last_project: false,
             confirm_before_delete: true,
             onboarding_completed: false,
@@ -127,14 +137,22 @@ impl HubConfig {
         let base = std::env::var("APPDATA")
             .map(PathBuf::from)
             .unwrap_or_else(|_| PathBuf::from("."));
+        base.join("BlancEngine").join("hub_config.bcfg")
+    }
+
+    fn legacy_config_path() -> PathBuf {
+        let base = std::env::var("APPDATA")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| PathBuf::from("."));
         base.join("BlancEngine").join("hub_config.json")
     }
 
     pub fn load() -> Self {
-        let path = Self::config_path();
-        if let Ok(content) = std::fs::read_to_string(&path) {
-            if let Ok(cfg) = serde_json::from_str(&content) {
-                return cfg;
+        for path in [Self::config_path(), Self::legacy_config_path()] {
+            if let Ok(content) = std::fs::read_to_string(&path) {
+                if let Ok(cfg) = serde_json::from_str(&content) {
+                    return cfg;
+                }
             }
         }
 
@@ -201,6 +219,8 @@ pub enum WelcomeMessage {
     SetDefaultResolution(u32, u32),
     SetDefaultLanguageCode(String),
     ToggleAutoSaveOnPlayPreview(bool),
+    TogglePeriodicAutoSave(bool),
+    SetAutoSaveIntervalMinutes(u32),
     ToggleReopenLastProject(bool),
     ToggleConfirmBeforeDelete(bool),
     OnboardingNextStep,
@@ -357,7 +377,7 @@ impl WelcomeState {
         .align_y(Alignment::Center);
 
         let badge = container(
-            text("v0.1.0-beta")
+            text("v0.1.0")
                 .size(LABEL_SM)
                 .color(iced::Color::from_rgb8(ACCENT_PRIMARY.r, ACCENT_PRIMARY.g, ACCENT_PRIMARY.b)),
         )
@@ -1044,14 +1064,38 @@ Alice: "In that case, let's head to the cafeteria together!"
             text("Story Script Format & Dialogue Syntax")
                 .size(HEADING_MD)
                 .color(iced::Color::from_rgb8(TEXT_PRIMARY.r, TEXT_PRIMARY.g, TEXT_PRIMARY.b)),
-            text("Blanc Engine supports natural dialogue screenplay syntax. Write your story like a theatrical script, and the engine automatically translates lines into visual action blocks.")
+            text("Blanc Engine supports natural screenplay syntax. Each part of your script is parsed into visual action blocks when you click 'Convert to Scenes' in Story Setup.")
                 .size(BODY_MD)
                 .color(iced::Color::from_rgb8(TEXT_SECONDARY.r, TEXT_SECONDARY.g, TEXT_SECONDARY.b)),
             Space::with_height(SPACE_2),
 
-            text("Dialogue Syntax:").size(HEADING_SM).color(iced::Color::from_rgb8(TEXT_PRIMARY.r, TEXT_PRIMARY.g, TEXT_PRIMARY.b)),
-            text("Format: Character (Emotion): \"Spoken text\". Emotion tags in parentheses are optional and will automatically bind to corresponding character sprite expressions.").size(BODY_SM).color(iced::Color::from_rgb8(TEXT_SECONDARY.r, TEXT_SECONDARY.g, TEXT_SECONDARY.b)),
+            self.create_step_card(
+                "1. Scene Separators  —  [Scene: Name]  |  # Name  |  ## Name  |  INT. / EXT.",
+                "Splits your script into separate .bscene files. Examples:\n  [Scene: 01_Classroom]\n  ## Cafe Arrival\n  INT. SCHOOL ROOFTOP - DAY"
+            ),
+            self.create_step_card(
+                "2. Dialogue & Emotion Tags  —  Speaker (Emotion): \"Text\"",
+                "Creates a Dialogue block (quotes and emotion tags are optional). Examples:\n  Rowan (Happy): \"Let's head home together!\"\n  Mina: Wait, look at this notebook."
+            ),
+            self.create_step_card(
+                "3. Narration  —  Plain Paragraph",
+                "Any normal line without a colon (:) becomes a Narration block automatically. Example:\n  The afternoon bell rang across the empty hallway."
+            ),
+            self.create_step_card(
+                "4. Audio Directives  —  [BGM: track]  |  [SFX: sound]",
+                "Triggers background music or sound effects at that exact moment. Examples:\n  [BGM: School_Afternoon]\n  [SFX: Door_Slide]"
+            ),
+            self.create_step_card(
+                "5. Interactive Choices  —  [Choice: Prompt] ... - \"Option\" -> TargetScene",
+                "Presents branching choices to the player. Example:\n  [Choice: Where should we go?]\n  - \"Go to the rooftop\" -> Scene_2A_School_Rooftop\n  - \"Visit the cafe\" -> Scene_2B_Town_Cafe\n  ]"
+            ),
+            self.create_step_card(
+                "6. Writer Comments  —  // Note",
+                "Lines starting with // are ignored by the parser so you can keep personal notes inside your script."
+            ),
 
+            Space::with_height(SPACE_2),
+            text("Complete Script Example:").size(HEADING_SM).color(iced::Color::from_rgb8(TEXT_PRIMARY.r, TEXT_PRIMARY.g, TEXT_PRIMARY.b)),
             container(
                 text(code_sample).size(BODY_SM).color(iced::Color::from_rgb8(ACCENT_PRIMARY.r, ACCENT_PRIMARY.g, ACCENT_PRIMARY.b))
             )
@@ -1063,7 +1107,7 @@ Alice: "In that case, let's head to the cafeteria together!"
             text("External Script Import:")
                 .size(LABEL_MD)
                 .color(iced::Color::from_rgb8(STATUS_SUCCESS.r, STATUS_SUCCESS.g, STATUS_SUCCESS.b)),
-            text("You can draft your story scripts in your favorite text editor (Notepad, Obsidian, VS Code, or Fountain screenplay software) and directly import .txt, .md, or .fountain files into Blanc Engine.")
+            text("You can draft your story scripts in any editor (Notepad, Obsidian, VS Code, or Fountain software) and import .txt, .md, or .fountain files into Story Setup — or skip Story Setup completely and build scenes block-by-block in Scene Editor.")
                 .size(BODY_SM)
                 .color(iced::Color::from_rgb8(TEXT_SECONDARY.r, TEXT_SECONDARY.g, TEXT_SECONDARY.b)),
         ]
@@ -1489,6 +1533,45 @@ Alice: "In that case, let's head to the cafeteria together!"
                     WelcomeMessage::ToggleAutoSaveOnPlayPreview(false),
                 ),
                 toggle_row(
+                    "Periodic Auto-Save (Inside Project)",
+                    "Automatically save unsaved project changes on a timer while editing.",
+                    self.config.periodic_auto_save,
+                    WelcomeMessage::TogglePeriodicAutoSave(true),
+                    WelcomeMessage::TogglePeriodicAutoSave(false),
+                ),
+                row![
+                    column![
+                        text("Auto-Save Interval")
+                            .size(LABEL_MD)
+                            .color(iced::Color::from_rgb8(TEXT_PRIMARY.r, TEXT_PRIMARY.g, TEXT_PRIMARY.b)),
+                        text(if self.config.periodic_auto_save {
+                            "How often unsaved changes are saved automatically."
+                        } else {
+                            "Periodic auto-save is currently disabled."
+                        })
+                            .size(LABEL_SM)
+                            .color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b)),
+                    ]
+                    .spacing(2.0)
+                    .width(Length::Fill),
+                    [1u32, 3, 5, 10]
+                        .into_iter()
+                        .fold(row![].spacing(SPACE_2), |acc, mins| {
+                            let active = self.config.auto_save_interval_minutes == mins;
+                            let btn = button(text(format!("{} min", mins)).size(LABEL_SM))
+                                .padding([SPACE_1, SPACE_3])
+                                .style(if active { primary_button_style } else { secondary_button_style });
+                            let btn = if self.config.periodic_auto_save {
+                                btn.on_press(WelcomeMessage::SetAutoSaveIntervalMinutes(mins))
+                            } else {
+                                btn
+                            };
+                            acc.push(btn)
+                        }),
+                ]
+                .spacing(SPACE_3)
+                .align_y(Alignment::Center),
+                toggle_row(
                     "Reopen Last Project on Startup",
                     "Skip the Project Hub and open your most recent project automatically when launching.",
                     self.config.reopen_last_project,
@@ -1539,7 +1622,7 @@ Alice: "In that case, let's head to the cafeteria together!"
                 Space::with_height(SPACE_2),
                 row![
                     text("Engine Version:").size(BODY_SM).color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b)).width(Length::Fixed(180.0)),
-                    text("v0.1.0-beta").size(BODY_SM).color(iced::Color::from_rgb8(TEXT_PRIMARY.r, TEXT_PRIMARY.g, TEXT_PRIMARY.b)),
+                    text("v0.1.0").size(BODY_SM).color(iced::Color::from_rgb8(TEXT_PRIMARY.r, TEXT_PRIMARY.g, TEXT_PRIMARY.b)),
                 ].spacing(SPACE_2),
                 row![
                     text("Engine License:").size(BODY_SM).color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b)).width(Length::Fixed(180.0)),
@@ -1617,7 +1700,7 @@ Alice: "In that case, let's head to the cafeteria together!"
                     .size(HEADING_SM)
                     .color(iced::Color::from_rgb8(TEXT_PRIMARY.r, TEXT_PRIMARY.g, TEXT_PRIMARY.b)),
                 container(
-                    text("v0.1.0-beta")
+                    text("v0.1.0")
                         .size(LABEL_SM)
                         .color(iced::Color::from_rgb8(ACCENT_PRIMARY.r, ACCENT_PRIMARY.g, ACCENT_PRIMARY.b)),
                 )

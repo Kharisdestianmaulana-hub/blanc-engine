@@ -34,10 +34,12 @@ pub enum UiDesignerSubTab {
     SaveAndLoad,
     History,
     Ending,
+    CreditsRoll,
+    GameOver,
 }
 
 impl UiDesignerSubTab {
-    pub const ALL: [UiDesignerSubTab; 8] = [
+    pub const ALL: [UiDesignerSubTab; 10] = [
         UiDesignerSubTab::ThemeAndButtons,
         UiDesignerSubTab::MainMenu,
         UiDesignerSubTab::Gameplay,
@@ -46,6 +48,8 @@ impl UiDesignerSubTab {
         UiDesignerSubTab::SaveAndLoad,
         UiDesignerSubTab::History,
         UiDesignerSubTab::Ending,
+        UiDesignerSubTab::CreditsRoll,
+        UiDesignerSubTab::GameOver,
     ];
 }
 
@@ -60,6 +64,8 @@ impl fmt::Display for UiDesignerSubTab {
             Self::SaveAndLoad => "Save & Load",
             Self::History => "History / Backlog",
             Self::Ending => "Ending / Return to Title",
+            Self::CreditsRoll => "Credits Roll",
+            Self::GameOver => "Game Over",
         };
         f.write_str(label)
     }
@@ -71,6 +77,7 @@ pub enum UiSectionId {
     Position,
     ColorsLabels,
     Skins,
+    SliderSkins,
 }
 
 #[derive(Debug, Clone)]
@@ -79,6 +86,7 @@ pub struct UiDesignerSections {
     pub position: bool,
     pub colors_labels: bool,
     pub skins: bool,
+    pub slider_skins: bool,
     pub color_picker: ActiveColorPickerState,
 }
 
@@ -89,6 +97,7 @@ impl Default for UiDesignerSections {
             position: true,
             colors_labels: false,
             skins: false,
+            slider_skins: false,
             color_picker: ActiveColorPickerState::default(),
         }
     }
@@ -104,6 +113,8 @@ pub enum UiPreviewMode {
     SaveLoad,
     History,
     Ending,
+    CreditsRoll,
+    GameOver,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -329,6 +340,30 @@ pub enum UiDesignerMessage {
     SetEndingSubtitleLabel(String),
     SetEndingButtonLabel(String),
 
+    // Credits Roll
+    SetCreditsShowLogo(bool),
+    SetCreditsAutoReturn(bool),
+    SetCreditsScrollSpeed(f32),
+    SetCreditsPanelWidth(f32),
+    SetCreditsOverlayDimming(f32),
+    SetCreditsTitleLabel(String),
+    SetCreditsSubtitleLabel(String),
+    SetCreditsSkipButtonLabel(String),
+    SetCreditsText(String),
+
+    // Game Over
+    SetGameOverShowPanel(bool),
+    SetGameOverShowLoad(bool),
+    SetGameOverShowQuickLoad(bool),
+    SetGameOverPanelWidth(f32),
+    SetGameOverButtonWidth(f32),
+    SetGameOverOverlayDimming(f32),
+    SetGameOverTitleLabel(String),
+    SetGameOverSubtitleLabel(String),
+    SetGameOverLoadButtonLabel(String),
+    SetGameOverQuickLoadButtonLabel(String),
+    SetGameOverTitleButtonLabel(String),
+
     // Asset & Reset
     ClearAsset(UiAssetSlot),
     ResetDefaults,
@@ -352,6 +387,8 @@ pub fn handle_ui_designer_message(
                 UiDesignerSubTab::SaveAndLoad => UiPreviewMode::SaveLoad,
                 UiDesignerSubTab::History => UiPreviewMode::History,
                 UiDesignerSubTab::Ending => UiPreviewMode::Ending,
+                UiDesignerSubTab::CreditsRoll => UiPreviewMode::CreditsRoll,
+                UiDesignerSubTab::GameOver => UiPreviewMode::GameOver,
             };
         }
         UiDesignerMessage::ToggleSection(id) => match id {
@@ -359,6 +396,7 @@ pub fn handle_ui_designer_message(
             UiSectionId::Position => sections.position = !sections.position,
             UiSectionId::ColorsLabels => sections.colors_labels = !sections.colors_labels,
             UiSectionId::Skins => sections.skins = !sections.skins,
+            UiSectionId::SliderSkins => sections.slider_skins = !sections.slider_skins,
         },
         UiDesignerMessage::ToggleColorPicker(target) => {
             sections.color_picker.toggle(target, ui);
@@ -789,6 +827,30 @@ pub fn handle_ui_designer_message(
         UiDesignerMessage::SetEndingSubtitleLabel(v) => ui.ending.subtitle_label = v,
         UiDesignerMessage::SetEndingButtonLabel(v) => ui.ending.button_label = v,
 
+        // Credits Roll
+        UiDesignerMessage::SetCreditsShowLogo(v) => ui.credits.show_logo = v,
+        UiDesignerMessage::SetCreditsAutoReturn(v) => ui.credits.auto_return_to_title = v,
+        UiDesignerMessage::SetCreditsScrollSpeed(v) => ui.credits.scroll_speed = v.clamp(10.0, 160.0),
+        UiDesignerMessage::SetCreditsPanelWidth(v) => ui.credits.panel_width = v.clamp(360.0, 1040.0),
+        UiDesignerMessage::SetCreditsOverlayDimming(v) => ui.credits.overlay_dimming = v.clamp(0.0, 0.98),
+        UiDesignerMessage::SetCreditsTitleLabel(v) => ui.credits.title_label = v,
+        UiDesignerMessage::SetCreditsSubtitleLabel(v) => ui.credits.subtitle_label = v,
+        UiDesignerMessage::SetCreditsSkipButtonLabel(v) => ui.credits.skip_button_label = v,
+        UiDesignerMessage::SetCreditsText(v) => ui.credits.credits_text = v,
+
+        // Game Over
+        UiDesignerMessage::SetGameOverShowPanel(v) => ui.game_over.show_panel = v,
+        UiDesignerMessage::SetGameOverShowLoad(v) => ui.game_over.show_load_button = v,
+        UiDesignerMessage::SetGameOverShowQuickLoad(v) => ui.game_over.show_quick_load_button = v,
+        UiDesignerMessage::SetGameOverPanelWidth(v) => ui.game_over.panel_width = v.clamp(320.0, 960.0),
+        UiDesignerMessage::SetGameOverButtonWidth(v) => ui.game_over.button_width = v.clamp(160.0, 480.0),
+        UiDesignerMessage::SetGameOverOverlayDimming(v) => ui.game_over.overlay_dimming = v.clamp(0.0, 0.98),
+        UiDesignerMessage::SetGameOverTitleLabel(v) => ui.game_over.title_label = v,
+        UiDesignerMessage::SetGameOverSubtitleLabel(v) => ui.game_over.subtitle_label = v,
+        UiDesignerMessage::SetGameOverLoadButtonLabel(v) => ui.game_over.load_button_label = v,
+        UiDesignerMessage::SetGameOverQuickLoadButtonLabel(v) => ui.game_over.quick_load_button_label = v,
+        UiDesignerMessage::SetGameOverTitleButtonLabel(v) => ui.game_over.title_button_label = v,
+
         UiDesignerMessage::ClearAsset(slot) => match slot {
             UiAssetSlot::Font => {
                 ui.theme.font_asset_id = None;
@@ -898,6 +960,8 @@ pub fn view_ui_designer<'a>(
         UiDesignerSubTab::SaveAndLoad => view_save_load_tab(ui, sections, project),
         UiDesignerSubTab::History => view_history_tab(ui, sections, project),
         UiDesignerSubTab::Ending => view_ending_tab(ui, sections, project),
+        UiDesignerSubTab::CreditsRoll => view_credits_tab(ui, sections),
+        UiDesignerSubTab::GameOver => view_game_over_tab(ui, sections),
     };
 
     let tab_divider = container(Space::new(Length::Fill, 1.0)).style(|_| container::Style {
@@ -983,7 +1047,7 @@ fn section_card<'a>(
     id: UiSectionId,
     build_body: impl FnOnce() -> Element<'a, DashboardMessage>,
 ) -> Element<'a, DashboardMessage> {
-    let arrow = if expanded { "▼" } else { "▶" };
+    let arrow = if expanded { "v" } else { ">" };
     let header_btn = button(
         row![
             text(arrow).size(10).color(rgb(ACCENT_PRIMARY)),
@@ -1424,7 +1488,7 @@ fn view_theme_tab<'a>(
     ))
     .padding([4.0, 8.0]);
 
-    let card_sliders = section_card("Custom Slider UI (Settings)", sections.skins, UiSectionId::Skins, || {
+    let card_sliders = section_card("Custom Slider UI (Settings)", sections.slider_skins, UiSectionId::SliderSkins, || {
         column![
             text("Supports 0, 2 (Track + Handle), or 3 (Track + Fill + Handle) PNGs from Assets/UI.")
                 .size(11)
@@ -2389,6 +2453,203 @@ fn view_ending_tab<'a>(
         .into()
 }
 
+fn view_credits_tab<'a>(
+    ui: &'a RuntimeUiConfig,
+    sections: &'a UiDesignerSections,
+) -> Element<'a, DashboardMessage> {
+    let c = &ui.credits;
+    let card_layout = section_card("Credits Roll Settings", sections.position, UiSectionId::Position, || {
+        Element::from(
+            column![
+                row![
+                    text("Logo:").size(LABEL_SM).color(rgb(TEXT_MUTED)).width(Length::Fixed(96.0)),
+                    choice_pill("ON", c.show_logo, UiDesignerMessage::SetCreditsShowLogo(true)),
+                    choice_pill("OFF", !c.show_logo, UiDesignerMessage::SetCreditsShowLogo(false)),
+                ]
+                .spacing(SPACE_1)
+                .align_y(Alignment::Center),
+                row![
+                    text("Auto-Return:").size(LABEL_SM).color(rgb(TEXT_MUTED)).width(Length::Fixed(96.0)),
+                    choice_pill("ON", c.auto_return_to_title, UiDesignerMessage::SetCreditsAutoReturn(true)),
+                    choice_pill("OFF", !c.auto_return_to_title, UiDesignerMessage::SetCreditsAutoReturn(false)),
+                ]
+                .spacing(SPACE_1)
+                .align_y(Alignment::Center),
+                row![
+                    text("Scroll Speed:").size(LABEL_SM).color(rgb(TEXT_MUTED)).width(Length::Fixed(96.0)),
+                    iced::widget::slider(10.0_f32..=160.0_f32, c.scroll_speed, UiDesignerMessage::SetCreditsScrollSpeed).step(1.0_f32).width(Length::Fill),
+                    text(format!("{:.0} px/s", c.scroll_speed)).size(LABEL_SM).color(rgb(TEXT_SECONDARY)).width(Length::Fixed(58.0)),
+                ]
+                .spacing(SPACE_2)
+                .align_y(Alignment::Center),
+                row![
+                    text("Column W:").size(LABEL_SM).color(rgb(TEXT_MUTED)).width(Length::Fixed(96.0)),
+                    iced::widget::slider(360.0_f32..=1040.0_f32, c.panel_width, UiDesignerMessage::SetCreditsPanelWidth).step(10.0_f32).width(Length::Fill),
+                    text(format!("{:.0} px", c.panel_width)).size(LABEL_SM).color(rgb(TEXT_SECONDARY)).width(Length::Fixed(58.0)),
+                ]
+                .spacing(SPACE_2)
+                .align_y(Alignment::Center),
+                row![
+                    text("Overlay Dim:").size(LABEL_SM).color(rgb(TEXT_MUTED)).width(Length::Fixed(96.0)),
+                    iced::widget::slider(0.0_f32..=0.98_f32, c.overlay_dimming, UiDesignerMessage::SetCreditsOverlayDimming).step(0.05_f32).width(Length::Fill),
+                    text(format!("{:.0}%", c.overlay_dimming * 100.0)).size(LABEL_SM).color(rgb(TEXT_SECONDARY)).width(Length::Fixed(58.0)),
+                ]
+                .spacing(SPACE_2)
+                .align_y(Alignment::Center),
+            ]
+            .spacing(SPACE_2),
+        )
+        .map(DashboardMessage::UiDesigner)
+    });
+
+    let lines: Vec<String> = if c.credits_text.is_empty() {
+        vec![String::new()]
+    } else {
+        c.credits_text.lines().map(|s| s.to_string()).collect()
+    };
+
+    let mut lines_col = column![].spacing(SPACE_1);
+    for (idx, line) in lines.iter().enumerate() {
+        let lines_for_edit = lines.clone();
+        let lines_for_del = lines.clone();
+        let input = text_input("Role or Name (empty = spacer line)", line)
+            .size(LABEL_SM)
+            .padding(SPACE_1)
+            .style(input_field_style)
+            .on_input(move |val| {
+                let mut updated = lines_for_edit.clone();
+                if idx < updated.len() {
+                    updated[idx] = val;
+                }
+                UiDesignerMessage::SetCreditsText(updated.join("\n"))
+            });
+        let del_btn = button(text("×").size(LABEL_SM))
+            .padding([2.0, 8.0])
+            .style(secondary_button_style)
+            .on_press_with(move || {
+                let mut updated = lines_for_del.clone();
+                if updated.len() > 1 && idx < updated.len() {
+                    updated.remove(idx);
+                } else if idx < updated.len() {
+                    updated[idx].clear();
+                }
+                UiDesignerMessage::SetCreditsText(updated.join("\n"))
+            });
+        lines_col = lines_col.push(
+            row![input, del_btn]
+                .spacing(SPACE_1)
+                .align_y(Alignment::Center),
+        );
+    }
+
+    let add_text = if c.credits_text.is_empty() {
+        "Role - Name".to_string()
+    } else {
+        format!("{}\nRole - Name", c.credits_text)
+    };
+
+    let card_labels = section_card("Labels & Credits Entries", sections.colors_labels, UiSectionId::ColorsLabels, || {
+        column![
+            Element::from(two_col_grid(vec![
+                compact_label_field("Title", "Credits", &c.title_label, UiDesignerMessage::SetCreditsTitleLabel),
+                compact_label_field("Subtitle", "Thank you for playing", &c.subtitle_label, UiDesignerMessage::SetCreditsSubtitleLabel),
+                compact_label_field("Skip Button", "Continue", &c.skip_button_label, UiDesignerMessage::SetCreditsSkipButtonLabel),
+            ]))
+            .map(DashboardMessage::UiDesigner),
+            text("Credits Lines (scrolls bottom-to-top):").size(LABEL_SM).color(rgb(TEXT_MUTED)),
+            Element::from(lines_col).map(DashboardMessage::UiDesigner),
+            button(text("+ Add Credit Line").size(LABEL_SM))
+                .padding([SPACE_1, SPACE_3])
+                .style(secondary_button_style)
+                .on_press(DashboardMessage::UiDesigner(UiDesignerMessage::SetCreditsText(add_text))),
+        ]
+        .spacing(SPACE_2)
+        .into()
+    });
+
+    column![card_layout, card_labels]
+        .spacing(SPACE_2)
+        .width(Length::Fill)
+        .into()
+}
+
+fn view_game_over_tab<'a>(
+    ui: &'a RuntimeUiConfig,
+    sections: &'a UiDesignerSections,
+) -> Element<'a, DashboardMessage> {
+    let g = &ui.game_over;
+    let card_layout = section_card("Game Over Layout & Buttons", sections.position, UiSectionId::Position, || {
+        Element::from(
+            column![
+                row![
+                    text("Panel Box:").size(LABEL_SM).color(rgb(TEXT_MUTED)).width(Length::Fixed(96.0)),
+                    choice_pill("Shown", g.show_panel, UiDesignerMessage::SetGameOverShowPanel(true)),
+                    choice_pill("Panel-less", !g.show_panel, UiDesignerMessage::SetGameOverShowPanel(false)),
+                ]
+                .spacing(SPACE_1)
+                .align_y(Alignment::Center),
+                row![
+                    text("Load Save:").size(LABEL_SM).color(rgb(TEXT_MUTED)).width(Length::Fixed(96.0)),
+                    choice_pill("ON", g.show_load_button, UiDesignerMessage::SetGameOverShowLoad(true)),
+                    choice_pill("OFF", !g.show_load_button, UiDesignerMessage::SetGameOverShowLoad(false)),
+                ]
+                .spacing(SPACE_1)
+                .align_y(Alignment::Center),
+                row![
+                    text("Quick Load:").size(LABEL_SM).color(rgb(TEXT_MUTED)).width(Length::Fixed(96.0)),
+                    choice_pill("ON", g.show_quick_load_button, UiDesignerMessage::SetGameOverShowQuickLoad(true)),
+                    choice_pill("OFF", !g.show_quick_load_button, UiDesignerMessage::SetGameOverShowQuickLoad(false)),
+                ]
+                .spacing(SPACE_1)
+                .align_y(Alignment::Center),
+                row![
+                    text("Panel W:").size(LABEL_SM).color(rgb(TEXT_MUTED)).width(Length::Fixed(96.0)),
+                    iced::widget::slider(320.0_f32..=960.0_f32, g.panel_width, UiDesignerMessage::SetGameOverPanelWidth).step(10.0_f32).width(Length::Fill),
+                    text(format!("{:.0} px", g.panel_width)).size(LABEL_SM).color(rgb(TEXT_SECONDARY)).width(Length::Fixed(58.0)),
+                ]
+                .spacing(SPACE_2)
+                .align_y(Alignment::Center),
+                row![
+                    text("Button W:").size(LABEL_SM).color(rgb(TEXT_MUTED)).width(Length::Fixed(96.0)),
+                    iced::widget::slider(160.0_f32..=480.0_f32, g.button_width, UiDesignerMessage::SetGameOverButtonWidth).step(10.0_f32).width(Length::Fill),
+                    text(format!("{:.0} px", g.button_width)).size(LABEL_SM).color(rgb(TEXT_SECONDARY)).width(Length::Fixed(58.0)),
+                ]
+                .spacing(SPACE_2)
+                .align_y(Alignment::Center),
+                row![
+                    text("Overlay Dim:").size(LABEL_SM).color(rgb(TEXT_MUTED)).width(Length::Fixed(96.0)),
+                    iced::widget::slider(0.0_f32..=0.98_f32, g.overlay_dimming, UiDesignerMessage::SetGameOverOverlayDimming).step(0.05_f32).width(Length::Fill),
+                    text(format!("{:.0}%", g.overlay_dimming * 100.0)).size(LABEL_SM).color(rgb(TEXT_SECONDARY)).width(Length::Fixed(58.0)),
+                ]
+                .spacing(SPACE_2)
+                .align_y(Alignment::Center),
+            ]
+            .spacing(SPACE_2),
+        )
+        .map(DashboardMessage::UiDesigner)
+    });
+
+    let card_labels = section_card("Game Over Labels", sections.colors_labels, UiSectionId::ColorsLabels, || {
+        column![
+            Element::from(two_col_grid(vec![
+                compact_label_field("Title", "GAME OVER", &g.title_label, UiDesignerMessage::SetGameOverTitleLabel),
+                compact_label_field("Subtitle", "Your journey ends here.", &g.subtitle_label, UiDesignerMessage::SetGameOverSubtitleLabel),
+                compact_label_field("Load Button", "Load Save", &g.load_button_label, UiDesignerMessage::SetGameOverLoadButtonLabel),
+                compact_label_field("Quick Load", "Quick Load", &g.quick_load_button_label, UiDesignerMessage::SetGameOverQuickLoadButtonLabel),
+                compact_label_field("Title Button", "Return to Title", &g.title_button_label, UiDesignerMessage::SetGameOverTitleButtonLabel),
+            ]))
+            .map(DashboardMessage::UiDesigner),
+        ]
+        .spacing(SPACE_2)
+        .into()
+    });
+
+    column![card_layout, card_labels]
+        .spacing(SPACE_2)
+        .width(Length::Fill)
+        .into()
+}
+
 fn view_live_preview_pane<'a>(
     ui: &'a RuntimeUiConfig,
     mode: UiPreviewMode,
@@ -2407,6 +2668,8 @@ fn view_live_preview_pane<'a>(
         UiPreviewMode::SaveLoad => "Save & Load",
         UiPreviewMode::History => "History / Backlog",
         UiPreviewMode::Ending => "Ending / Return to Title",
+        UiPreviewMode::CreditsRoll => "Credits Roll",
+        UiPreviewMode::GameOver => "Game Over",
     };
 
     let mut mode_bar = row![
@@ -2508,48 +2771,8 @@ fn render_preview_stage<'a>(
                     ..Default::default()
                 });
 
-            let logo_widget: Element<'a, DashboardMessage> = if let Some(logo_id) = logo_asset_id {
-                if let Some(asset) = project.assets.get(logo_id) {
-                    let full = project_dir.join(&asset.relative_path);
-                    if full.exists() {
-                        image(image::Handle::from_path(full))
-                            .width(Length::Fixed((m.logo_width * 0.55).max(40.0)))
-                            .height(Length::Fixed(52.0))
-                            .content_fit(ContentFit::Contain)
-                            .into()
-                    } else {
-                        container(text("LOGO").size(LABEL_SM).color(accent))
-                            .center_x(Length::Fixed((m.logo_width * 0.55).max(40.0)))
-                            .center_y(Length::Fixed(36.0))
-                            .style(move |_| container::Style {
-                                background: Some(Background::Color(panel_bg)),
-                                border: Border { radius: radius.into(), width: 1.0, color: accent },
-                                ..Default::default()
-                            })
-                            .into()
-                    }
-                } else {
-                    container(text("LOGO").size(LABEL_SM).color(accent))
-                        .center_x(Length::Fixed((m.logo_width * 0.55).max(40.0)))
-                        .center_y(Length::Fixed(36.0))
-                        .style(move |_| container::Style {
-                            background: Some(Background::Color(panel_bg)),
-                            border: Border { radius: radius.into(), width: 1.0, color: accent },
-                            ..Default::default()
-                        })
-                        .into()
-                }
-            } else {
-                container(text("LOGO").size(LABEL_SM).color(accent))
-                    .center_x(Length::Fixed((m.logo_width * 0.55).max(40.0)))
-                    .center_y(Length::Fixed(36.0))
-                    .style(move |_| container::Style {
-                        background: Some(Background::Color(panel_bg)),
-                        border: Border { radius: radius.into(), width: 1.0, color: accent },
-                        ..Default::default()
-                    })
-                    .into()
-            };
+            let logo_w = (m.logo_width * 0.55).max(40.0);
+            let logo_widget = preview_logo_widget(logo_asset_id, project, project_dir, logo_w, 52.0);
 
             let mut brand_col = column![logo_widget]
             .spacing(SPACE_1)
@@ -3354,18 +3577,7 @@ fn render_preview_stage<'a>(
             };
             let mut inner = column![].spacing(SPACE_2).align_x(content_align).width(Length::Fill);
             if e.show_logo {
-                inner = inner.push(
-                    container(text("LOGO").size(10).color(accent))
-                        .padding([4.0, 10.0])
-                        .style(move |_| container::Style {
-                            border: Border {
-                                radius: 6.0.into(),
-                                width: 1.0,
-                                color: accent,
-                            },
-                            ..Default::default()
-                        }),
-                );
+                inner = inner.push(preview_logo_widget(logo_asset_id, project, project_dir, 40.0, 40.0));
             }
             inner = inner
                 .push(text(title_str).size(18).font(preview_font).color(title_col))
@@ -3413,6 +3625,142 @@ fn render_preview_stage<'a>(
 
             stack![dim, placed].into()
         }
+        UiPreviewMode::CreditsRoll => {
+            let c = &ui.credits;
+            let title_col = resolve_preview_text_color(&c.title_text_hex, text_col);
+            let body_col = resolve_preview_text_color(&c.body_text_hex, rgb(TEXT_SECONDARY));
+            let dim_alpha = c.overlay_dimming.clamp(0.0, 0.98);
+            let dim = container(Space::new(Length::Fill, Length::Fill))
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .style(move |_| container::Style {
+                    background: Some(Background::Color(Color::from_rgba(0.03, 0.04, 0.08, dim_alpha))),
+                    ..Default::default()
+                });
+
+            let mut lines_col = column![].spacing(SPACE_1).align_x(Alignment::Center).width(Length::Fill);
+            if c.show_logo {
+                lines_col = lines_col.push(preview_logo_widget(logo_asset_id, project, project_dir, 40.0, 40.0));
+            }
+            lines_col = lines_col
+                .push(
+                    text(if c.title_label.trim().is_empty() { "Credits" } else { c.title_label.as_str() })
+                        .size(20)
+                        .font(preview_font)
+                        .color(title_col),
+                )
+                .push(
+                    text(if c.subtitle_label.trim().is_empty() { "Thank you for playing" } else { c.subtitle_label.as_str() })
+                        .size(11)
+                        .font(preview_font)
+                        .color(rgb(TEXT_MUTED)),
+                )
+                .push(Space::with_height(SPACE_2));
+
+            for line in c.credits_text.lines().take(10) {
+                if line.trim().is_empty() {
+                    lines_col = lines_col.push(Space::with_height(SPACE_2));
+                } else {
+                    lines_col = lines_col.push(
+                        text(line.to_string())
+                            .size(11)
+                            .font(preview_font)
+                            .color(body_col),
+                    );
+                }
+            }
+
+            let skip_lbl = if c.skip_button_label.trim().is_empty() {
+                "Continue"
+            } else {
+                c.skip_button_label.as_str()
+            };
+            let skip_corner = container(
+                text(format!("{} >>", skip_lbl))
+                    .size(12)
+                    .font(preview_font)
+                    .color(Color::from_rgba(text_col.r, text_col.g, text_col.b, 0.78)),
+            )
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .align_x(Alignment::End)
+            .align_y(Alignment::End)
+            .padding(SPACE_4);
+
+            let content = container(
+                container(lines_col)
+                    .width(Length::Fixed((c.panel_width * 0.65).clamp(240.0, 520.0)))
+                    .padding(SPACE_4),
+            )
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .center_x(Length::Fill)
+            .center_y(Length::Fill);
+
+            stack![dim, content, skip_corner].into()
+        }
+        UiPreviewMode::GameOver => {
+            let g = &ui.game_over;
+            let title_col = resolve_preview_text_color(&g.title_text_hex, rgb(STATUS_ERROR));
+            let sub_col = resolve_preview_text_color(&g.subtitle_text_hex, rgb(TEXT_MUTED));
+            let btn_col = resolve_preview_text_color(&g.button_text_hex, text_col);
+            let dim_alpha = g.overlay_dimming.clamp(0.0, 0.98);
+            let dim = container(Space::new(Length::Fill, Length::Fill))
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .style(move |_| container::Style {
+                    background: Some(Background::Color(Color::from_rgba(0.06, 0.02, 0.04, dim_alpha))),
+                    ..Default::default()
+                });
+
+            let bw = (g.button_width * 0.65).clamp(130.0, 260.0);
+            let mut inner = column![
+                text(if g.title_label.trim().is_empty() { "GAME OVER" } else { g.title_label.as_str() })
+                    .size(22)
+                    .font(preview_font)
+                    .color(title_col),
+                text(if g.subtitle_label.trim().is_empty() { "Your journey ends here." } else { g.subtitle_label.as_str() })
+                    .size(11)
+                    .font(preview_font)
+                    .color(sub_col),
+                Space::with_height(SPACE_2),
+            ]
+            .spacing(SPACE_2)
+            .align_x(Alignment::Center)
+            .width(Length::Fill);
+
+            if g.show_quick_load_button {
+                let lbl = if g.quick_load_button_label.trim().is_empty() { "Quick Load" } else { g.quick_load_button_label.as_str() };
+                inner = inner.push(preview_ui_btn(lbl, true, accent, panel_bg, btn_col, radius, ui.theme.button_style, bw));
+            }
+            if g.show_load_button {
+                let lbl = if g.load_button_label.trim().is_empty() { "Load Save" } else { g.load_button_label.as_str() };
+                inner = inner.push(preview_ui_btn(lbl, false, accent, panel_bg, btn_col, radius, ui.theme.button_style, bw));
+            }
+            let title_btn_lbl = if g.title_button_label.trim().is_empty() { "Return to Title" } else { g.title_button_label.as_str() };
+            inner = inner.push(preview_ui_btn(title_btn_lbl, false, accent, panel_bg, btn_col, radius, ui.theme.button_style, bw));
+
+            let pw = (g.panel_width * 0.65).clamp(240.0, 420.0);
+            let panel: Element<'a, DashboardMessage> = if g.show_panel {
+                container(inner)
+                    .width(Length::Fixed(pw))
+                    .padding(SPACE_4)
+                    .style(move |_| container::Style {
+                        background: Some(Background::Color(panel_bg)),
+                        border: Border {
+                            radius: radius.into(),
+                            width: 1.0,
+                            color: Color::from_rgba(1.0, 1.0, 1.0, 0.16),
+                        },
+                        ..Default::default()
+                    })
+                    .into()
+            } else {
+                container(inner).width(Length::Fixed(pw)).padding(SPACE_3).into()
+            };
+
+            stack![dim, container(panel).width(Length::Fill).height(Length::Fill).center_x(Length::Fill).center_y(Length::Fill)].into()
+        }
     };
 
     container(stack![bg_layer, overlay])
@@ -3421,6 +3769,44 @@ fn render_preview_stage<'a>(
         .clip(true)
         .style(code_container_style)
         .into()
+}
+
+fn preview_logo_widget<'a>(
+    logo_asset_id: Option<&'a str>,
+    project: &'a Project,
+    project_dir: &'a PathBuf,
+    width_px: f32,
+    height_px: f32,
+) -> Element<'a, DashboardMessage> {
+    if let Some(logo_id) = logo_asset_id {
+        if let Some(asset) = project.assets.get(logo_id) {
+            let full = project_dir.join(&asset.relative_path);
+            if full.exists() {
+                return image(image::Handle::from_path(full))
+                    .width(Length::Fixed(width_px))
+                    .height(Length::Fixed(height_px))
+                    .content_fit(ContentFit::Contain)
+                    .into();
+            }
+        }
+    }
+    if project.use_custom_logo {
+        if let Some(rel) = &project.custom_logo_path {
+            let full = if std::path::Path::new(rel).is_absolute() {
+                PathBuf::from(rel)
+            } else {
+                project_dir.join(rel)
+            };
+            if full.exists() {
+                return image(image::Handle::from_path(full))
+                    .width(Length::Fixed(width_px))
+                    .height(Length::Fixed(height_px))
+                    .content_fit(ContentFit::Contain)
+                    .into();
+            }
+        }
+    }
+    engine_logo(height_px).into()
 }
 
 fn preview_ui_btn<'a>(

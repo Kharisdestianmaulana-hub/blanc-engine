@@ -1,3 +1,5 @@
+#![cfg_attr(all(target_os = "windows", not(test)), windows_subsystem = "windows")]
+
 mod app;
 mod icons;
 mod screens;
@@ -33,10 +35,12 @@ fn main() -> iced::Result {
                 },
             )
         })
+        .subscription(EditorApp::subscription)
         .window(iced::window::Settings {
             min_size: Some(iced::Size::new(960.0, 600.0)),
             size: iced::Size::new(1280.0, 800.0),
             icon: load_window_icon(),
+            exit_on_close_request: false,
             ..Default::default()
         })
         .run()

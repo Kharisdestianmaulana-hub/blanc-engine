@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use iced::widget::{
-    button, canvas, column, container, image, pick_list, progress_bar, row, scrollable,
+    button, canvas, column, container, image, progress_bar, row, scrollable,
     stack, text, text_editor, text_input, Space,
 };
 use iced::{Alignment, Element, Length};
@@ -72,10 +72,33 @@ pub struct AssetPickerModalState {
     pub selected_asset_id: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct WorkspaceUndoSnapshot {
+    pub selected_scene_index: usize,
+    pub current_scene: Option<Scene>,
+    pub flow_graph: StoryFlowGraph,
+    pub system_screens_config: SystemScreensConfig,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PendingUnsavedAction {
+    CloseProject,
+    ExitApp(iced::window::Id),
+}
+
 #[derive(Debug, Clone)]
 pub enum DashboardMessage {
     PlayPreview,
+    ClosePreview,
     CloseProject,
+    SaveAllProjectChanges,
+    Undo,
+    Redo,
+    ValidateProject,
+    CloseValidationModal,
+    ConfirmSaveAndContinue,
+    ConfirmDiscardAndContinue,
+    CancelUnsavedPrompt,
     SelectWorkflowTab(WorkflowTab),
     OpenProjectFolder,
 
@@ -93,6 +116,9 @@ pub enum DashboardMessage {
     StopAssetAudioPreview,
     ImportAssetClicked(AssetCategory),
     DeleteAssetClicked(String),
+    ConfirmDeleteAsset,
+    CancelDeleteAsset,
+    RelinkAssetClicked(String),
     OpenAssetFolder(AssetCategory),
     RevealAssetInExplorer(String),
 
@@ -102,6 +128,10 @@ pub enum DashboardMessage {
     ImportScriptFileClicked,
     SaveStoryChapterClicked,
     ConvertScriptToScenesClicked,
+    SetStoryScriptLanguage(String, String),
+    StoryLangCustomCodeChanged(String),
+    OpenFormatGuide,
+    CloseFormatGuide,
 
     // Scene Editor messages
     SelectScene(usize),
@@ -134,7 +164,8 @@ pub enum DashboardMessage {
 
     // Project & System Screen Settings messages
     UpdateTitleText(String),
-    UpdateStartingScene(String),
+    UpdateProjectVersion(String),
+    UpdateProjectAuthor(String),
     UpdateAspectScalingMode(AspectScalingMode),
     UpdateFullscreenDefault(bool),
     UpdateDefaultResolution(u32, u32),
@@ -224,6 +255,7 @@ pub enum DashboardMessage {
     LocaleExportCsv,
     LocaleImportCsv,
     LocaleToggleDefaultEditor,
+    LocaleToggleStoryLangEditor,
     LocaleToggleAddForm,
     LocaleFillPresetLanguage(String, String),
 }
@@ -301,6 +333,8 @@ pub struct DashboardState {
     pub parsed_story_elements: Vec<StoryElement>,
     pub story_chapter_name: String,
     pub story_status_message: Option<String>,
+    pub story_lang_custom_input: String,
+    pub show_format_guide_modal: bool,
 
     // Scene Editor state
     pub scenes_list: Vec<String>,
@@ -311,6 +345,15 @@ pub struct DashboardState {
 
     // Custom Modal Asset Picker state
     pub asset_picker_modal: Option<AssetPickerModalState>,
+    pub pending_delete_asset: Option<(String, String, Vec<String>)>,
+    pub has_unsaved_changes: bool,
+    pub is_preview_running: bool,
+    pub pending_unsaved_action: Option<PendingUnsavedAction>,
+    pub undo_stack: Vec<WorkspaceUndoSnapshot>,
+    pub redo_stack: Vec<WorkspaceUndoSnapshot>,
+    pub last_undo_burst: Option<(std::time::Instant, &'static str)>,
+    pub validation_report: Option<blanc_core::validator::ValidationReport>,
+    pub show_validation_modal: bool,
 
     // Settings state
     pub system_screens_config: SystemScreensConfig,
@@ -373,6 +416,7 @@ pub struct DashboardState {
     pub locale_status_message: Option<String>,
     pub locale_show_default_editor: bool,
     pub locale_show_add_form: bool,
+    pub locale_story_lang_open: bool,
 }
 
 impl DashboardState {
@@ -529,6 +573,8 @@ impl DashboardState {
             parsed_story_elements: parsed_elements,
             story_chapter_name,
             story_status_message: None,
+            story_lang_custom_input: String::new(),
+            show_format_guide_modal: false,
 
             scenes_list: scenes,
             selected_scene_index: 0,
@@ -537,6 +583,15 @@ impl DashboardState {
             scene_blocks_scroll_offset: scrollable::AbsoluteOffset::default(),
 
             asset_picker_modal: None,
+            pending_delete_asset: None,
+            has_unsaved_changes: false,
+            is_preview_running: false,
+            pending_unsaved_action: None,
+            undo_stack: Vec::new(),
+            redo_stack: Vec::new(),
+            last_undo_burst: None,
+            validation_report: None,
+            show_validation_modal: false,
             system_screens_config,
             settings_status_message: None,
 
@@ -588,11 +643,12 @@ impl DashboardState {
             locale_default_code,
             locale_default_name,
             locale_search_query: String::new(),
-            locale_filter_scope: LocaleFilterScope::All,
+            locale_filter_scope: LocaleFilterScope::Ui,
             locale_untranslated_only: false,
             locale_status_message: None,
             locale_show_default_editor: false,
             locale_show_add_form: false,
+            locale_story_lang_open: false,
         }
     }
 
@@ -654,6 +710,8 @@ impl Default for DashboardState {
             parsed_story_elements: parsed,
             story_chapter_name: "Chapter_01".to_string(),
             story_status_message: None,
+            story_lang_custom_input: String::new(),
+            show_format_guide_modal: false,
 
             scenes_list: vec!["01_opening".to_string()],
             selected_scene_index: 0,
@@ -662,6 +720,15 @@ impl Default for DashboardState {
             scene_blocks_scroll_offset: scrollable::AbsoluteOffset::default(),
 
             asset_picker_modal: None,
+            pending_delete_asset: None,
+            has_unsaved_changes: false,
+            is_preview_running: false,
+            pending_unsaved_action: None,
+            undo_stack: Vec::new(),
+            redo_stack: Vec::new(),
+            last_undo_burst: None,
+            validation_report: None,
+            show_validation_modal: false,
             system_screens_config: SystemScreensConfig::default(),
             settings_status_message: None,
 
@@ -713,11 +780,12 @@ impl Default for DashboardState {
             locale_default_code,
             locale_default_name,
             locale_search_query: String::new(),
-            locale_filter_scope: LocaleFilterScope::All,
+            locale_filter_scope: LocaleFilterScope::Ui,
             locale_untranslated_only: false,
             locale_status_message: None,
             locale_show_default_editor: false,
             locale_show_add_form: false,
+            locale_story_lang_open: false,
         }
     }
 }
@@ -765,6 +833,289 @@ impl DashboardState {
             let modal_overlay = self.view_asset_picker_modal(modal, project, project_dir);
             root_stack = root_stack.push(modal_overlay);
         }
+        if let Some((_id, name, used_in)) = &self.pending_delete_asset {
+            let mut modal_col = column![
+                text("Delete Asset?")
+                    .size(HEADING_SM)
+                    .color(iced::Color::from_rgb8(TEXT_PRIMARY.r, TEXT_PRIMARY.g, TEXT_PRIMARY.b)),
+                text(format!("Are you sure you want to permanently delete '{}' from the project and disk?", name))
+                    .size(BODY_SM)
+                    .color(iced::Color::from_rgb8(TEXT_SECONDARY.r, TEXT_SECONDARY.g, TEXT_SECONDARY.b)),
+            ]
+            .spacing(SPACE_2);
+
+            if !used_in.is_empty() {
+                modal_col = modal_col.push(
+                    container(
+                        column![
+                            text("Warning: This asset is currently referenced in:")
+                                .size(LABEL_SM)
+                                .color(iced::Color::from_rgb8(STATUS_WARNING.r, STATUS_WARNING.g, STATUS_WARNING.b)),
+                            text(used_in.join(", "))
+                                .size(BODY_SM)
+                                .color(iced::Color::from_rgb8(TEXT_PRIMARY.r, TEXT_PRIMARY.g, TEXT_PRIMARY.b)),
+                        ]
+                        .spacing(SPACE_1),
+                    )
+                    .padding(SPACE_3)
+                    .width(Length::Fill)
+                    .style(callout_container_style),
+                );
+            }
+
+            modal_col = modal_col.push(
+                row![
+                    Space::with_width(Length::Fill),
+                    button(text("Cancel").size(LABEL_SM))
+                        .padding([SPACE_2, SPACE_4])
+                        .style(secondary_button_style)
+                        .on_press(DashboardMessage::CancelDeleteAsset),
+                    button(text("Delete Permanently").size(LABEL_SM))
+                        .padding([SPACE_2, SPACE_4])
+                        .style(danger_icon_button_style)
+                        .on_press(DashboardMessage::ConfirmDeleteAsset),
+                ]
+                .spacing(SPACE_2)
+                .align_y(Alignment::Center),
+            );
+
+            let confirm_overlay = container(
+                container(modal_col)
+                    .padding(SPACE_5)
+                    .width(Length::Fixed(460.0))
+                    .style(card_container_style),
+            )
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .center_x(Length::Fill)
+            .center_y(Length::Fill)
+            .style(modal_backdrop_style);
+
+            root_stack = root_stack.push(confirm_overlay);
+        }
+        if self.pending_unsaved_action.is_some() {
+            let unsaved_modal = container(
+                container(
+                    column![
+                        text("Unsaved Changes")
+                            .size(HEADING_SM)
+                            .color(iced::Color::from_rgb8(TEXT_PRIMARY.r, TEXT_PRIMARY.g, TEXT_PRIMARY.b)),
+                        text("You have unsaved changes in this project. Do you want to save everything before closing?")
+                            .size(BODY_SM)
+                            .color(iced::Color::from_rgb8(TEXT_SECONDARY.r, TEXT_SECONDARY.g, TEXT_SECONDARY.b)),
+                        Space::with_height(SPACE_1),
+                        row![
+                            Space::with_width(Length::Fill),
+                            button(text("Cancel").size(LABEL_SM))
+                                .padding([SPACE_2, SPACE_3])
+                                .style(secondary_button_style)
+                                .on_press(DashboardMessage::CancelUnsavedPrompt),
+                            button(text("Discard Changes").size(LABEL_SM))
+                                .padding([SPACE_2, SPACE_3])
+                                .style(danger_icon_button_style)
+                                .on_press(DashboardMessage::ConfirmDiscardAndContinue),
+                            button(text("Save & Close").size(LABEL_SM))
+                                .padding([SPACE_2, SPACE_4])
+                                .style(primary_button_style)
+                                .on_press(DashboardMessage::ConfirmSaveAndContinue),
+                        ]
+                        .spacing(SPACE_2)
+                        .align_y(Alignment::Center),
+                    ]
+                    .spacing(SPACE_2),
+                )
+                .padding(SPACE_5)
+                .width(Length::Fixed(480.0))
+                .style(card_container_style),
+            )
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .center_x(Length::Fill)
+            .center_y(Length::Fill)
+            .style(modal_backdrop_style);
+
+            root_stack = root_stack.push(unsaved_modal);
+        }
+
+        if self.show_validation_modal {
+            let report = self.validation_report.clone().unwrap_or_default();
+            let err_count = report.error_count();
+            let warn_count = report.warning_count();
+            let summary_text = if report.is_clean() {
+                "All checks passed! Your project is ready to play and export.".to_string()
+            } else {
+                format!(
+                    "Found {} critical error(s) (block export) and {} warning(s).",
+                    err_count, warn_count
+                )
+            };
+
+            let mut issue_list = column![].spacing(SPACE_2);
+            if report.is_clean() {
+                issue_list = issue_list.push(
+                    text("No missing assets, broken links, or config issues detected.")
+                        .size(BODY_SM)
+                        .color(iced::Color::from_rgb8(STATUS_SUCCESS.r, STATUS_SUCCESS.g, STATUS_SUCCESS.b)),
+                );
+            } else {
+                for issue in &report.issues {
+                    let (badge, color) = match issue.severity {
+                        blanc_core::validator::ValidationSeverity::Error => ("ERROR", STATUS_ERROR),
+                        blanc_core::validator::ValidationSeverity::Warning => ("WARN", STATUS_WARNING),
+                    };
+                    issue_list = issue_list.push(
+                        container(
+                            column![
+                                row![
+                                    text(format!("[{}] [{}]", badge, issue.category.label()))
+                                        .size(LABEL_SM)
+                                        .color(iced::Color::from_rgb8(color.r, color.g, color.b)),
+                                    text(issue.title.clone())
+                                        .size(BODY_SM)
+                                        .color(iced::Color::from_rgb8(TEXT_PRIMARY.r, TEXT_PRIMARY.g, TEXT_PRIMARY.b)),
+                                ]
+                                .spacing(SPACE_2),
+                                text(issue.detail.clone())
+                                    .size(LABEL_SM)
+                                    .color(iced::Color::from_rgb8(TEXT_SECONDARY.r, TEXT_SECONDARY.g, TEXT_SECONDARY.b)),
+                            ]
+                            .spacing(2.0),
+                        )
+                        .padding(SPACE_2)
+                        .width(Length::Fill)
+                        .style(sidebar_container_style),
+                    );
+                }
+            }
+
+            let val_modal = container(
+                container(
+                    column![
+                        text("Project Validation Report")
+                            .size(HEADING_SM)
+                            .color(iced::Color::from_rgb8(TEXT_PRIMARY.r, TEXT_PRIMARY.g, TEXT_PRIMARY.b)),
+                        text(summary_text)
+                            .size(BODY_SM)
+                            .color(iced::Color::from_rgb8(
+                                if err_count > 0 {
+                                    STATUS_ERROR.r
+                                } else if warn_count > 0 {
+                                    STATUS_WARNING.r
+                                } else {
+                                    STATUS_SUCCESS.r
+                                },
+                                if err_count > 0 {
+                                    STATUS_ERROR.g
+                                } else if warn_count > 0 {
+                                    STATUS_WARNING.g
+                                } else {
+                                    STATUS_SUCCESS.g
+                                },
+                                if err_count > 0 {
+                                    STATUS_ERROR.b
+                                } else if warn_count > 0 {
+                                    STATUS_WARNING.b
+                                } else {
+                                    STATUS_SUCCESS.b
+                                },
+                            )),
+                        scrollable(issue_list).height(Length::Fixed(280.0)),
+                        Space::with_height(SPACE_2),
+                        row![
+                            Space::with_width(Length::Fill),
+                            button(text("Re-check").size(LABEL_SM))
+                                .padding([SPACE_2, SPACE_3])
+                                .style(secondary_button_style)
+                                .on_press(DashboardMessage::ValidateProject),
+                            button(text("Close").size(LABEL_SM))
+                                .padding([SPACE_2, SPACE_4])
+                                .style(primary_button_style)
+                                .on_press(DashboardMessage::CloseValidationModal),
+                        ]
+                        .spacing(SPACE_2)
+                        .align_y(Alignment::Center),
+                    ]
+                    .spacing(SPACE_2),
+                )
+                .padding(SPACE_5)
+                .width(Length::Fixed(580.0))
+                .style(card_container_style),
+            )
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .center_x(Length::Fill)
+            .center_y(Length::Fill)
+            .style(modal_backdrop_style);
+
+            root_stack = root_stack.push(val_modal);
+        }
+
+        if self.show_format_guide_modal {
+            let guide_section = |title: &'static str, syntax: &'static str, desc: &'static str| -> Element<'a, DashboardMessage> {
+                container(
+                    column![
+                        text(title)
+                            .size(BODY_SM)
+                            .color(iced::Color::from_rgb8(ACCENT_PRIMARY.r, ACCENT_PRIMARY.g, ACCENT_PRIMARY.b)),
+                        text(syntax)
+                            .size(LABEL_SM)
+                            .color(iced::Color::from_rgb8(TEXT_PRIMARY.r, TEXT_PRIMARY.g, TEXT_PRIMARY.b)),
+                        text(desc)
+                            .size(LABEL_SM)
+                            .color(iced::Color::from_rgb8(TEXT_SECONDARY.r, TEXT_SECONDARY.g, TEXT_SECONDARY.b)),
+                    ]
+                    .spacing(3.0),
+                )
+                .padding(SPACE_3)
+                .width(Length::Fill)
+                .style(sidebar_container_style)
+                .into()
+            };
+
+            let guide_modal = container(
+                container(
+                    column![
+                        text("Story Script Format Guide")
+                            .size(HEADING_SM)
+                            .color(iced::Color::from_rgb8(TEXT_PRIMARY.r, TEXT_PRIMARY.g, TEXT_PRIMARY.b)),
+                        text("Supported syntax when converting .txt / .md / .fountain scripts in Story Setup:")
+                            .size(LABEL_SM)
+                            .color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b)),
+                        scrollable(
+                            column![
+                                guide_section("1. Scene Separators", "[Scene: Scene_Name]   |   # Scene_Name   |   ## Scene_Name   |   INT. / EXT.", "Splits the script into separate .bscene files automatically."),
+                                guide_section("2. Dialogue & Emotion", "Rowan (Happy): \"Let's go!\"   or   Mina: Wait up!", "Quotes and (Emotion) tag are optional."),
+                                guide_section("3. Narration", "The afternoon bell rang across the empty hallway.", "Any normal line without a colon (:) becomes a Narration block."),
+                                guide_section("4. Audio Directives", "[BGM: School_Afternoon]   |   [SFX: Door_Slide]", "Plays background music or sound effects."),
+                                guide_section("5. Interactive Choices", "[Choice: Where to go?]\n- \"Rooftop\" -> Scene_2A\n- \"Cafe\" -> Scene_2B\n]", "Creates branching choice options jumping to target scenes."),
+                                guide_section("6. Comments", "// Writer note here", "Lines starting with // are ignored by the parser."),
+                            ]
+                            .spacing(SPACE_2),
+                        )
+                        .height(Length::Fixed(320.0)),
+                        Space::with_height(SPACE_1),
+                        row![
+                            Space::with_width(Length::Fill),
+                            button(text("Close").size(LABEL_SM))
+                                .padding([SPACE_2, SPACE_4])
+                                .style(primary_button_style)
+                                .on_press(DashboardMessage::CloseFormatGuide),
+                        ],
+                    ]
+                    .spacing(SPACE_2),
+                )
+                .padding(SPACE_5)
+                .width(Length::Fixed(600.0))
+                .style(card_container_style),
+            )
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .center_x(Length::Fill)
+            .center_y(Length::Fill)
+            .style(modal_backdrop_style);
+
+            root_stack = root_stack.push(guide_modal);
+        }
         root_stack.into()
     }
 
@@ -780,15 +1131,50 @@ impl DashboardState {
             .size(LABEL_SM)
             .color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b));
 
-        let saved_badge = text("● Saved")
-            .size(LABEL_SM)
-            .color(iced::Color::from_rgb8(STATUS_SUCCESS.r, STATUS_SUCCESS.g, STATUS_SUCCESS.b));
+        let saved_badge: Element<'a, DashboardMessage> = if self.has_unsaved_changes {
+            button(
+                text("● Unsaved (Ctrl+S)")
+                    .size(LABEL_SM)
+                    .color(iced::Color::from_rgb8(STATUS_WARNING.r, STATUS_WARNING.g, STATUS_WARNING.b)),
+            )
+            .padding([2.0, 6.0])
+            .style(subtle_button_style)
+            .on_press(DashboardMessage::SaveAllProjectChanges)
+            .into()
+        } else {
+            text("● Saved")
+                .size(LABEL_SM)
+                .color(iced::Color::from_rgb8(STATUS_SUCCESS.r, STATUS_SUCCESS.g, STATUS_SUCCESS.b))
+                .into()
+        };
 
         let info_col = column![
             project_name,
             row![manifest_label, Space::with_width(SPACE_3), saved_badge].align_y(Alignment::Center),
         ]
         .spacing(SPACE_1);
+
+        let btn_undo = {
+            let b = button(text("Undo").size(LABEL_SM))
+                .padding([SPACE_2, SPACE_3])
+                .style(if self.undo_stack.is_empty() { subtle_button_style } else { secondary_button_style });
+            if self.undo_stack.is_empty() {
+                b
+            } else {
+                b.on_press(DashboardMessage::Undo)
+            }
+        };
+
+        let btn_redo = {
+            let b = button(text("Redo").size(LABEL_SM))
+                .padding([SPACE_2, SPACE_3])
+                .style(if self.redo_stack.is_empty() { subtle_button_style } else { secondary_button_style });
+            if self.redo_stack.is_empty() {
+                b
+            } else {
+                b.on_press(DashboardMessage::Redo)
+            }
+        };
 
         let btn_folder = button(
             row![icon_folder(), text("Open Folder").size(LABEL_SM)]
@@ -799,14 +1185,30 @@ impl DashboardState {
         .style(secondary_button_style)
         .on_press(DashboardMessage::OpenProjectFolder);
 
-        let btn_play = button(
-            row![icon_play(), text("Play Preview").size(BODY_SM)]
-                .spacing(SPACE_2)
-                .align_y(Alignment::Center),
-        )
-        .padding([SPACE_2, SPACE_4])
-        .style(primary_button_style)
-        .on_press(DashboardMessage::PlayPreview);
+        let btn_validate = button(text("Validate").size(LABEL_SM))
+            .padding([SPACE_2, SPACE_3])
+            .style(secondary_button_style)
+            .on_press(DashboardMessage::ValidateProject);
+
+        let btn_play = if self.is_preview_running {
+            button(
+                row![icon_close(), text("Close Preview").size(BODY_SM)]
+                    .spacing(SPACE_2)
+                    .align_y(Alignment::Center),
+            )
+            .padding([SPACE_2, SPACE_4])
+            .style(danger_icon_button_style)
+            .on_press(DashboardMessage::ClosePreview)
+        } else {
+            button(
+                row![icon_play(), text("Play Preview").size(BODY_SM)]
+                    .spacing(SPACE_2)
+                    .align_y(Alignment::Center),
+            )
+            .padding([SPACE_2, SPACE_4])
+            .style(primary_button_style)
+            .on_press(DashboardMessage::PlayPreview)
+        };
 
         let btn_close = button(text("Close Project").size(BODY_SM))
             .padding([SPACE_2, SPACE_3])
@@ -842,7 +1244,7 @@ impl DashboardState {
         .spacing(SPACE_3)
         .align_y(Alignment::Center);
 
-        let actions = row![btn_folder, btn_play, btn_close]
+        let actions = row![btn_undo, btn_redo, btn_validate, btn_folder, btn_play, btn_close]
             .spacing(SPACE_3)
             .align_y(Alignment::Center);
 
@@ -905,10 +1307,70 @@ impl DashboardState {
     // ==========================================
     // TAB 1: OVERVIEW CONTENT
     // ==========================================
-    fn view_overview_content<'a>(&'a self, project: &'a Project, _project_dir: &'a PathBuf) -> Element<'a, DashboardMessage> {
+    fn view_overview_content<'a>(&'a self, project: &'a Project, project_dir: &'a PathBuf) -> Element<'a, DashboardMessage> {
         let overview_title = text("Project Overview")
             .size(HEADING_MD)
             .color(iced::Color::from_rgb8(TEXT_PRIMARY.r, TEXT_PRIMARY.g, TEXT_PRIMARY.b));
+
+        // Merge active unsaved scene edits into a temporary slice for live validation
+        let mut live_scenes = self.all_scenes.clone();
+        if let Some(cur) = &self.current_scene {
+            if let Some(existing) = live_scenes.iter_mut().find(|s| s.name == cur.name) {
+                *existing = cur.clone();
+            } else {
+                live_scenes.push(cur.clone());
+            }
+        }
+        let report = blanc_core::validator::validate_project(
+            project_dir,
+            &project.assets,
+            &self.flow_graph,
+            &live_scenes,
+            &self.system_screens_config,
+        );
+
+        let total_assets = project.assets.assets.len();
+        let missing_assets = project
+            .assets
+            .assets
+            .values()
+            .filter(|a| !project_dir.join(&a.relative_path).exists())
+            .count();
+
+        let scene_count = self.scenes_list.len();
+        let total_blocks: usize = live_scenes.iter().map(|s| s.blocks.len()).sum();
+        let empty_scenes = live_scenes.iter().filter(|s| s.blocks.is_empty()).count();
+        let flow_nodes = self.flow_graph.nodes.len();
+        let flow_wires = self.flow_graph.connections.len();
+
+        let story_lang_code = self.locale_manifest.effective_story_language().code.clone();
+        let all_langs = self.locale_manifest.all_languages();
+        let lang_count = all_langs.len();
+
+        // Check translation completion across languages (ignoring native strings)
+        let mut trans_needed_total = 0usize;
+        let mut trans_done_total = 0usize;
+        for lang in &all_langs {
+            let tbl = self.locale_tables.get(&lang.code.to_ascii_lowercase());
+            for item in &self.locale_items {
+                let needed = match &item.category {
+                    LocaleCategory::Ui => !lang.code.eq_ignore_ascii_case("en"),
+                    LocaleCategory::Speaker | LocaleCategory::Scene(_) => {
+                        !lang.code.eq_ignore_ascii_case(&story_lang_code)
+                    }
+                };
+                if needed {
+                    trans_needed_total += 1;
+                    if tbl
+                        .and_then(|t| t.entries.get(&item.key))
+                        .map(|v| !v.trim().is_empty())
+                        .unwrap_or(false)
+                    {
+                        trans_done_total += 1;
+                    }
+                }
+            }
+        }
 
         let card_author = column![
             text("Author / Studio").size(LABEL_SM).color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b)),
@@ -922,45 +1384,270 @@ impl DashboardState {
         ]
         .spacing(SPACE_1);
 
+        let assets_sub = if total_assets == 0 {
+            ("No assets yet".to_string(), TEXT_MUTED)
+        } else if missing_assets > 0 {
+            (format!("{} missing on disk", missing_assets), STATUS_ERROR)
+        } else {
+            ("All files verified".to_string(), STATUS_SUCCESS)
+        };
         let card_assets = column![
             text("Registered Assets").size(LABEL_SM).color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b)),
-            text(format!("{} files", project.assets.assets.len()))
+            text(format!("{} files", total_assets))
                 .size(BODY_MD)
                 .color(iced::Color::from_rgb8(TEXT_PRIMARY.r, TEXT_PRIMARY.g, TEXT_PRIMARY.b)),
+            text(assets_sub.0)
+                .size(LABEL_SM)
+                .color(iced::Color::from_rgb8(assets_sub.1.r, assets_sub.1.g, assets_sub.1.b)),
+        ]
+        .spacing(SPACE_1);
+
+        let card_scenes = column![
+            text("Scenes & Story Flow").size(LABEL_SM).color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b)),
+            text(format!("{} scenes", scene_count))
+                .size(BODY_MD)
+                .color(iced::Color::from_rgb8(TEXT_PRIMARY.r, TEXT_PRIMARY.g, TEXT_PRIMARY.b)),
+            text(format!("{} blocks · {} nodes · {} wires", total_blocks, flow_nodes, flow_wires))
+                .size(LABEL_SM)
+                .color(iced::Color::from_rgb8(TEXT_SECONDARY.r, TEXT_SECONDARY.g, TEXT_SECONDARY.b)),
+        ]
+        .spacing(SPACE_1);
+
+        let card_locales = column![
+            text("Localization").size(LABEL_SM).color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b)),
+            text(format!("{} language(s)", lang_count))
+                .size(BODY_MD)
+                .color(iced::Color::from_rgb8(TEXT_PRIMARY.r, TEXT_PRIMARY.g, TEXT_PRIMARY.b)),
+            text(format!("Story script: {}", story_lang_code.to_ascii_uppercase()))
+                .size(LABEL_SM)
+                .color(iced::Color::from_rgb8(ACCENT_PRIMARY.r, ACCENT_PRIMARY.g, ACCENT_PRIMARY.b)),
         ]
         .spacing(SPACE_1);
 
         let summary_cards = row![
-            container(card_author).padding(SPACE_4).width(Length::Fixed(220.0)).style(card_container_style),
-            container(card_version).padding(SPACE_4).width(Length::Fixed(220.0)).style(card_container_style),
-            container(card_assets).padding(SPACE_4).width(Length::Fixed(220.0)).style(card_container_style),
+            container(card_author).padding(SPACE_4).width(Length::FillPortion(1)).style(card_container_style),
+            container(card_version).padding(SPACE_4).width(Length::FillPortion(1)).style(card_container_style),
+            container(card_assets).padding(SPACE_4).width(Length::FillPortion(1)).style(card_container_style),
+            container(card_scenes).padding(SPACE_4).width(Length::FillPortion(1)).style(card_container_style),
+            container(card_locales).padding(SPACE_4).width(Length::FillPortion(1)).style(card_container_style),
         ]
-        .spacing(SPACE_4);
+        .spacing(SPACE_3)
+        .width(Length::Fill);
 
-        let next_step_box = container(
-            column![
-                text("Step 4: Block-Based Scene Editor").size(HEADING_SM).color(iced::Color::from_rgb8(ACCENT_PRIMARY.r, ACCENT_PRIMARY.g, ACCENT_PRIMARY.b)),
-                text("Switch to 'Scene Editor' to sequence modular action blocks: Dialogue, Character Sprites (with Left/Center/Right presets), Backgrounds, Audio, and Decision Choices.")
-                    .size(BODY_SM)
-                    .color(iced::Color::from_rgb8(TEXT_SECONDARY.r, TEXT_SECONDARY.g, TEXT_SECONDARY.b)),
-                Space::with_height(SPACE_2),
-                button(
-                    row![icon_film(), text("Open Scene Editor").size(BODY_SM)]
+        let checklist_row = |title: &'static str,
+                             status_label: String,
+                             status_color: iced::Color,
+                             detail: String,
+                             btn_label: &'static str,
+                             msg: DashboardMessage|
+         -> Element<'a, DashboardMessage> {
+            container(
+                row![
+                    text("●")
+                        .size(12)
+                        .color(status_color),
+                    column![
+                        row![
+                            text(title)
+                                .size(BODY_SM)
+                                .color(iced::Color::from_rgb8(TEXT_PRIMARY.r, TEXT_PRIMARY.g, TEXT_PRIMARY.b)),
+                            text(format!("[{}]", status_label))
+                                .size(LABEL_SM)
+                                .color(status_color),
+                        ]
                         .spacing(SPACE_2)
                         .align_y(Alignment::Center),
-                )
-                .padding([SPACE_2, SPACE_4])
-                .style(primary_button_style)
-                .on_press(DashboardMessage::SelectWorkflowTab(WorkflowTab::SceneEditor)),
+                        text(detail)
+                            .size(LABEL_SM)
+                            .color(iced::Color::from_rgb8(TEXT_SECONDARY.r, TEXT_SECONDARY.g, TEXT_SECONDARY.b)),
+                    ]
+                    .spacing(2.0)
+                    .width(Length::Fill),
+                    button(text(btn_label).size(LABEL_SM))
+                        .padding([SPACE_1, SPACE_3])
+                        .style(secondary_button_style)
+                        .on_press(msg),
+                ]
+                .spacing(SPACE_3)
+                .align_y(Alignment::Center),
+            )
+            .padding([SPACE_2, SPACE_3])
+            .width(Length::Fill)
+            .style(sidebar_container_style)
+            .into()
+        };
+
+        let asset_status = if total_assets == 0 {
+            ("Not Started".to_string(), TEXT_MUTED, "Import backgrounds, character sprites, and audio.".to_string())
+        } else if missing_assets > 0 {
+            ("Missing Files".to_string(), STATUS_ERROR, format!("{} asset(s) missing on disk. Relink them in Asset Manager.", missing_assets))
+        } else {
+            ("Ready".to_string(), STATUS_SUCCESS, format!("{} asset(s) registered and verified on disk.", total_assets))
+        };
+
+        let scene_status = if scene_count == 0 {
+            ("Not Started".to_string(), TEXT_MUTED, "Create scenes in Story Setup or Scene Editor.".to_string())
+        } else if empty_scenes > 0 {
+            ("Draft".to_string(), STATUS_WARNING, format!("{} scene(s) configured ({} empty scene(s)).", scene_count, empty_scenes))
+        } else {
+            ("Ready".to_string(), STATUS_SUCCESS, format!("{} scene(s) with {} total action blocks.", scene_count, total_blocks))
+        };
+
+        let flow_errors = report
+            .issues
+            .iter()
+            .filter(|i| {
+                i.severity == blanc_core::validator::ValidationSeverity::Error
+                    && i.category == blanc_core::validator::ValidationCategory::StoryFlow
+            })
+            .count();
+        let flow_warns = report
+            .issues
+            .iter()
+            .filter(|i| {
+                i.severity == blanc_core::validator::ValidationSeverity::Warning
+                    && i.category == blanc_core::validator::ValidationCategory::StoryFlow
+            })
+            .count();
+        let flow_status = if flow_errors > 0 {
+            ("Broken Links".to_string(), STATUS_ERROR, format!("{} critical Story Flow error(s) found.", flow_errors))
+        } else if flow_wires == 0 || flow_warns > 0 {
+            ("Needs Attention".to_string(), STATUS_WARNING, format!("{} nodes, {} wires ({} unreachable warning(s)).", flow_nodes, flow_wires, flow_warns))
+        } else {
+            ("Connected".to_string(), STATUS_SUCCESS, format!("All {} nodes connected cleanly with {} wires.", flow_nodes, flow_wires))
+        };
+
+        let locale_status = if trans_needed_total == 0 {
+            ("Native".to_string(), STATUS_SUCCESS, format!("Single-language project ({}). Add target languages anytime.", story_lang_code.to_ascii_uppercase()))
+        } else if trans_done_total >= trans_needed_total {
+            ("Complete".to_string(), STATUS_SUCCESS, format!("All {}/{} target strings translated.", trans_done_total, trans_needed_total))
+        } else {
+            let pct = (trans_done_total * 100) / trans_needed_total.max(1);
+            ("In Progress".to_string(), STATUS_WARNING, format!("{}/{} strings translated ({}%) across {} languages.", trans_done_total, trans_needed_total, pct, lang_count))
+        };
+
+        let export_status = if report.has_errors() {
+            ("Blocked".to_string(), STATUS_ERROR, format!("{} critical error(s) block export. Click Validate to inspect.", report.error_count()))
+        } else if report.warning_count() > 0 {
+            ("Ready (Warnings)".to_string(), STATUS_WARNING, format!("0 errors, {} warning(s). Ready to Play Preview & Export.", report.warning_count()))
+        } else {
+            ("Ready to Export".to_string(), STATUS_SUCCESS, "All project checks passed with 0 errors and 0 warnings.".to_string())
+        };
+
+        let checklist_card = container(
+            column![
+                text("Project Readiness Checklist")
+                    .size(HEADING_SM)
+                    .color(iced::Color::from_rgb8(TEXT_PRIMARY.r, TEXT_PRIMARY.g, TEXT_PRIMARY.b)),
+                checklist_row("1. Assets", asset_status.0, iced::Color::from_rgb8(asset_status.1.r, asset_status.1.g, asset_status.1.b), asset_status.2, "Open Assets", DashboardMessage::SelectWorkflowTab(WorkflowTab::Assets)),
+                checklist_row("2. Scenes & Story", scene_status.0, iced::Color::from_rgb8(scene_status.1.r, scene_status.1.g, scene_status.1.b), scene_status.2, "Open Scene Editor", DashboardMessage::SelectWorkflowTab(WorkflowTab::SceneEditor)),
+                checklist_row("3. Story Flow", flow_status.0, iced::Color::from_rgb8(flow_status.1.r, flow_status.1.g, flow_status.1.b), flow_status.2, "Open Story Flow", DashboardMessage::SelectWorkflowTab(WorkflowTab::StoryFlow)),
+                checklist_row("4. Localization", locale_status.0, iced::Color::from_rgb8(locale_status.1.r, locale_status.1.g, locale_status.1.b), locale_status.2, "Open Localization", DashboardMessage::SelectWorkflowTab(WorkflowTab::Localization)),
+                checklist_row("5. Validation & Export", export_status.0, iced::Color::from_rgb8(export_status.1.r, export_status.1.g, export_status.1.b), export_status.2, "Validate Now", DashboardMessage::ValidateProject),
             ]
-            .spacing(SPACE_3),
+            .spacing(SPACE_2),
         )
         .padding(SPACE_5)
         .width(Length::Fill)
         .style(card_container_style);
 
-        let content = column![overview_title, summary_cards, next_step_box]
-            .spacing(SPACE_5)
+        let (next_title, next_desc, next_actions): (&str, String, Element<'a, DashboardMessage>) = if missing_assets > 0 {
+            (
+                "Recommended: Relink Missing Assets",
+                format!("{} registered asset(s) could not be found on disk. Relink them so scenes and exports stay intact.", missing_assets),
+                button(text("Open Asset Manager").size(BODY_SM))
+                    .padding([SPACE_2, SPACE_4])
+                    .style(primary_button_style)
+                    .on_press(DashboardMessage::SelectWorkflowTab(WorkflowTab::Assets))
+                    .into(),
+            )
+        } else if total_assets == 0 {
+            (
+                "Recommended: Import Your Game Assets",
+                "Start by importing backgrounds, character sprites, and BGM/SFX in Asset Manager.".to_string(),
+                button(text("Open Asset Manager").size(BODY_SM))
+                    .padding([SPACE_2, SPACE_4])
+                    .style(primary_button_style)
+                    .on_press(DashboardMessage::SelectWorkflowTab(WorkflowTab::Assets))
+                    .into(),
+            )
+        } else if scene_count == 0 {
+            (
+                "Recommended: Create Your First Scene",
+                "Draft your screenplay in Story Setup or build scenes directly in Scene Editor.".to_string(),
+                button(text("Open Story Setup").size(BODY_SM))
+                    .padding([SPACE_2, SPACE_4])
+                    .style(primary_button_style)
+                    .on_press(DashboardMessage::SelectWorkflowTab(WorkflowTab::Story))
+                    .into(),
+            )
+        } else if report.has_errors() {
+            (
+                "Recommended: Fix Critical Validation Errors",
+                format!("Found {} critical error(s) that block export. Review the Validation Report to resolve them.", report.error_count()),
+                button(text("Open Validation Report").size(BODY_SM))
+                    .padding([SPACE_2, SPACE_4])
+                    .style(primary_button_style)
+                    .on_press(DashboardMessage::ValidateProject)
+                    .into(),
+            )
+        } else {
+            (
+                "Project Ready to Play & Export!",
+                "All core checks passed. Test your visual novel with Play Preview or package it in Export.".to_string(),
+                row![
+                    if self.is_preview_running {
+                        button(
+                            row![icon_close(), text("Close Preview").size(BODY_SM)]
+                                .spacing(SPACE_2)
+                                .align_y(Alignment::Center),
+                        )
+                        .padding([SPACE_2, SPACE_4])
+                        .style(danger_icon_button_style)
+                        .on_press(DashboardMessage::ClosePreview)
+                    } else {
+                        button(
+                            row![icon_play(), text("Play Preview").size(BODY_SM)]
+                                .spacing(SPACE_2)
+                                .align_y(Alignment::Center),
+                        )
+                        .padding([SPACE_2, SPACE_4])
+                        .style(primary_button_style)
+                        .on_press(DashboardMessage::PlayPreview)
+                    },
+                    button(text("Go to Export").size(BODY_SM))
+                        .padding([SPACE_2, SPACE_4])
+                        .style(secondary_button_style)
+                        .on_press(DashboardMessage::SelectWorkflowTab(WorkflowTab::Export)),
+                ]
+                .spacing(SPACE_3)
+                .into(),
+            )
+        };
+
+        let next_step_box = container(
+            column![
+                text(next_title)
+                    .size(HEADING_SM)
+                    .color(iced::Color::from_rgb8(
+                        if report.has_errors() || missing_assets > 0 { STATUS_WARNING.r } else { ACCENT_PRIMARY.r },
+                        if report.has_errors() || missing_assets > 0 { STATUS_WARNING.g } else { ACCENT_PRIMARY.g },
+                        if report.has_errors() || missing_assets > 0 { STATUS_WARNING.b } else { ACCENT_PRIMARY.b },
+                    )),
+                text(next_desc)
+                    .size(BODY_SM)
+                    .color(iced::Color::from_rgb8(TEXT_SECONDARY.r, TEXT_SECONDARY.g, TEXT_SECONDARY.b)),
+                Space::with_height(SPACE_1),
+                next_actions,
+            ]
+            .spacing(SPACE_2),
+        )
+        .padding(SPACE_5)
+        .width(Length::Fill)
+        .style(card_container_style);
+
+        let content = column![overview_title, summary_cards, checklist_card, next_step_box]
+            .spacing(SPACE_4)
             .padding(SPACE_6)
             .width(Length::Fill);
 
@@ -1311,22 +1998,37 @@ impl DashboardState {
             asset.name.clone()
         };
 
-        let details = column![
-            row![
-                text(name_display)
-                    .size(HEADING_SM)
-                    .wrapping(text::Wrapping::None)
-                    .color(iced::Color::from_rgb8(TEXT_PRIMARY.r, TEXT_PRIMARY.g, TEXT_PRIMARY.b)),
+        let is_missing = !full_path.exists();
+        let mut title_badges = row![
+            text(name_display)
+                .size(HEADING_SM)
+                .wrapping(text::Wrapping::None)
+                .color(iced::Color::from_rgb8(TEXT_PRIMARY.r, TEXT_PRIMARY.g, TEXT_PRIMARY.b)),
+            container(
+                text(asset.category.display_name())
+                    .size(LABEL_SM)
+                    .color(iced::Color::from_rgb8(ACCENT_PRIMARY.r, ACCENT_PRIMARY.g, ACCENT_PRIMARY.b)),
+            )
+            .padding([2.0, 6.0])
+            .style(badge_container_style),
+        ]
+        .spacing(SPACE_2)
+        .align_y(Alignment::Center);
+
+        if is_missing {
+            title_badges = title_badges.push(
                 container(
-                    text(asset.category.display_name())
+                    text("Missing")
                         .size(LABEL_SM)
-                        .color(iced::Color::from_rgb8(ACCENT_PRIMARY.r, ACCENT_PRIMARY.g, ACCENT_PRIMARY.b)),
+                        .color(iced::Color::from_rgb8(STATUS_ERROR.r, STATUS_ERROR.g, STATUS_ERROR.b)),
                 )
                 .padding([2.0, 6.0])
                 .style(badge_container_style),
-            ]
-            .spacing(SPACE_3)
-            .align_y(Alignment::Center),
+            );
+        }
+
+        let details = column![
+            title_badges,
             text(format!("{} • {}", asset.relative_path, size_str))
                 .size(LABEL_SM)
                 .wrapping(text::Wrapping::None)
@@ -1335,7 +2037,14 @@ impl DashboardState {
         .spacing(SPACE_1);
 
         let mut actions = row![].spacing(SPACE_2).align_y(Alignment::Center);
-        if Self::asset_is_audio(asset.category) {
+        if is_missing {
+            actions = actions.push(
+                button(text("Relink...").size(LABEL_SM))
+                    .padding([SPACE_1, SPACE_3])
+                    .style(secondary_button_style)
+                    .on_press(DashboardMessage::RelinkAssetClicked(asset.id.clone())),
+            );
+        } else if Self::asset_is_audio(asset.category) {
             let is_playing = self.playing_audio_asset_id.as_deref() == Some(&asset.id);
             actions = actions.push(
                 button(text(if is_playing { "Stop" } else { "Play" }).size(LABEL_SM))
@@ -1548,7 +2257,8 @@ impl DashboardState {
                         .into()
                 };
 
-                let meta = column![
+                let is_missing = !full_path.exists();
+                let mut meta = column![
                     text(&asset.name)
                         .size(HEADING_SM)
                         .color(iced::Color::from_rgb8(TEXT_PRIMARY.r, TEXT_PRIMARY.g, TEXT_PRIMARY.b)),
@@ -1564,15 +2274,35 @@ impl DashboardState {
                 ]
                 .spacing(SPACE_1);
 
-                let actions = row![
-                    button(
-                        row![icon_external_link(), text("Explorer").size(LABEL_SM)]
-                            .spacing(SPACE_1)
-                            .align_y(Alignment::Center),
-                    )
-                    .padding([SPACE_2, SPACE_3])
-                    .style(secondary_button_style)
-                    .on_press(DashboardMessage::RevealAssetInExplorer(asset.relative_path.clone())),
+                if is_missing {
+                    meta = meta.push(
+                        text("File missing on disk. Click Relink to restore.")
+                            .size(LABEL_SM)
+                            .color(iced::Color::from_rgb8(STATUS_ERROR.r, STATUS_ERROR.g, STATUS_ERROR.b)),
+                    );
+                }
+
+                let mut actions = row![].spacing(SPACE_2);
+                if is_missing {
+                    actions = actions.push(
+                        button(text("Relink...").size(LABEL_SM))
+                            .padding([SPACE_2, SPACE_3])
+                            .style(primary_button_style)
+                            .on_press(DashboardMessage::RelinkAssetClicked(asset.id.clone())),
+                    );
+                } else {
+                    actions = actions.push(
+                        button(
+                            row![icon_external_link(), text("Explorer").size(LABEL_SM)]
+                                .spacing(SPACE_1)
+                                .align_y(Alignment::Center),
+                        )
+                        .padding([SPACE_2, SPACE_3])
+                        .style(secondary_button_style)
+                        .on_press(DashboardMessage::RevealAssetInExplorer(asset.relative_path.clone())),
+                    );
+                }
+                actions = actions.push(
                     button(
                         row![icon_trash(), text("Delete").size(LABEL_SM)]
                             .spacing(SPACE_1)
@@ -1581,8 +2311,7 @@ impl DashboardState {
                     .padding([SPACE_2, SPACE_3])
                     .style(danger_icon_button_style)
                     .on_press(DashboardMessage::DeleteAssetClicked(asset.id.clone())),
-                ]
-                .spacing(SPACE_2);
+                );
 
                 column![preview_box, meta, actions].spacing(SPACE_4).into()
             } else {
@@ -1670,9 +2399,15 @@ impl DashboardState {
         .style(primary_button_style)
         .on_press(DashboardMessage::ConvertScriptToScenesClicked);
 
+        let btn_guide = button(text("? Format Guide").size(LABEL_MD))
+            .padding([SPACE_2, SPACE_3])
+            .style(secondary_button_style)
+            .on_press(DashboardMessage::OpenFormatGuide);
+
         let action_bar = row![
             title_col,
             Space::with_width(Length::Fill),
+            btn_guide,
             btn_template,
             btn_import,
             btn_save,
@@ -1680,6 +2415,79 @@ impl DashboardState {
         ]
         .spacing(SPACE_3)
         .align_y(Alignment::Center);
+
+        let story_lang = self.locale_manifest.effective_story_language();
+        let story_lang_code = story_lang.code.clone();
+        let story_lang_presets = [
+            ("en", "English"),
+            ("id", "Indonesia"),
+            ("ja", "Japanese"),
+            ("ko", "Korean"),
+            ("zh", "Chinese"),
+            ("es", "Spanish"),
+        ];
+        let mut story_lang_row = row![
+            text("Story Script Language:")
+                .size(LABEL_SM)
+                .color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b)),
+        ]
+        .spacing(SPACE_2)
+        .align_y(Alignment::Center);
+
+        for (code, name) in story_lang_presets {
+            let active = story_lang_code.eq_ignore_ascii_case(code);
+            story_lang_row = story_lang_row.push(
+                button(text(format!("{} ({})", name, code)).size(LABEL_SM))
+                    .padding([3.0, 9.0])
+                    .style(if active { primary_button_style } else { secondary_button_style })
+                    .on_press(DashboardMessage::SetStoryScriptLanguage(
+                        code.to_string(),
+                        name.to_string(),
+                    )),
+            );
+        }
+
+        let custom_code_trimmed = self.story_lang_custom_input.trim().to_ascii_lowercase();
+        let custom_apply_btn = {
+            let b = button(text("Set").size(LABEL_SM))
+                .padding([3.0, 9.0])
+                .style(if custom_code_trimmed.is_empty() {
+                    subtle_button_style
+                } else {
+                    secondary_button_style
+                });
+            if custom_code_trimmed.is_empty() {
+                b
+            } else {
+                let code_upper = custom_code_trimmed.to_ascii_uppercase();
+                b.on_press(DashboardMessage::SetStoryScriptLanguage(
+                    custom_code_trimmed.clone(),
+                    code_upper,
+                ))
+            }
+        };
+
+        let story_lang_bar = container(
+            row![
+                story_lang_row,
+                Space::with_width(Length::Fill),
+                text(format!("Active: {} ({})", story_lang.display_name, story_lang.code))
+                    .size(LABEL_SM)
+                    .color(iced::Color::from_rgb8(ACCENT_PRIMARY.r, ACCENT_PRIMARY.g, ACCENT_PRIMARY.b)),
+                text_input("Other code (e.g. fr, de)", &self.story_lang_custom_input)
+                    .on_input(DashboardMessage::StoryLangCustomCodeChanged)
+                    .size(LABEL_SM)
+                    .padding([3.0, 8.0])
+                    .width(Length::Fixed(150.0))
+                    .style(input_field_style),
+                custom_apply_btn,
+            ]
+            .spacing(SPACE_2)
+            .align_y(Alignment::Center),
+        )
+        .padding([SPACE_2, SPACE_3])
+        .width(Length::Fill)
+        .style(sidebar_container_style);
 
         let left_editor_pane = self.view_script_editor_pane();
         let right_preview_pane = self.view_script_parsed_preview_pane();
@@ -1692,7 +2500,7 @@ impl DashboardState {
         .width(Length::Fill)
         .height(Length::Fill);
 
-        let mut pane = column![action_bar, Space::with_height(SPACE_4), split_view]
+        let mut pane = column![action_bar, story_lang_bar, Space::with_height(SPACE_2), split_view]
             .spacing(SPACE_2)
             .padding(SPACE_6)
             .width(Length::Fill)
@@ -1921,7 +2729,7 @@ impl DashboardState {
                             .size(BODY_SM)
                             .color(iced::Color::from_rgb8(TEXT_PRIMARY.r, TEXT_PRIMARY.g, TEXT_PRIMARY.b)),
                         Space::with_width(Length::Fill),
-                        text(format!("➔ {}", opt.target_scene))
+                        text(format!("-> {}", opt.target_scene))
                             .size(LABEL_SM)
                             .color(iced::Color::from_rgb8(ACCENT_PRIMARY.r, ACCENT_PRIMARY.g, ACCENT_PRIMARY.b)),
                     ]
@@ -2661,7 +3469,7 @@ impl DashboardState {
                     let opt_item = row![
                         text(format!("{}. \"{}\"", opt_idx + 1, opt.text)).size(BODY_SM),
                         Space::with_width(Length::Fill),
-                        text(format!("➔ Jump to: {}", opt.target_scene_id))
+                        text(format!("-> Jump to: {}", opt.target_scene_id))
                             .size(LABEL_SM)
                             .color(iced::Color::from_rgb8(ACCENT_PRIMARY.r, ACCENT_PRIMARY.g, ACCENT_PRIMARY.b)),
                     ]
@@ -2989,7 +3797,7 @@ impl DashboardState {
                 };
 
                 let status_badge: Element<'a, DashboardMessage> = if is_selected {
-                    text("✓ Selected")
+                    text("Selected")
                         .size(LABEL_SM)
                         .wrapping(text::Wrapping::None)
                         .color(iced::Color::from_rgb8(ACCENT_PRIMARY.r, ACCENT_PRIMARY.g, ACCENT_PRIMARY.b))
@@ -3066,7 +3874,7 @@ impl DashboardState {
 
         let btn_confirm = if modal.selected_asset_id.is_some() {
             button(
-                row![icon_sparkle(), text("Use Selected Asset").size(LABEL_MD)]
+                row![icon_sparkle_white(), text("Use Selected Asset").size(LABEL_MD)]
                     .spacing(SPACE_2)
                     .align_y(Alignment::Center),
             )
@@ -3178,7 +3986,7 @@ impl DashboardState {
             .style(code_container_style)
         } else {
             container(
-                text("⚠ Unconnected Path(s)")
+                text("! Unconnected Path(s)")
                     .size(LABEL_SM)
                     .color(iced::Color::from_rgb8(
                         STATUS_WARNING.r,
@@ -3227,11 +4035,18 @@ impl DashboardState {
             let node_id = format!("scene_{}", scene_name);
             let is_on_canvas = self.flow_graph.nodes.iter().any(|n| n.id == node_id);
 
+            let scene_label = container(
+                text(scene_name)
+                    .size(LABEL_SM)
+                    .wrapping(iced::widget::text::Wrapping::None),
+            )
+            .width(Length::Fill)
+            .clip(true);
+
             let row_item = if is_on_canvas {
                 row![
                     icon_film(),
-                    text(scene_name).size(BODY_SM),
-                    Space::with_width(Length::Fill),
+                    scene_label,
                     button(icon_close())
                         .padding([2.0, 6.0])
                         .style(danger_icon_button_style)
@@ -3239,6 +4054,7 @@ impl DashboardState {
                     container(
                         text("In Flow")
                             .size(LABEL_SM)
+                            .wrapping(iced::widget::text::Wrapping::None)
                             .color(iced::Color::from_rgb8(
                                 STATUS_SUCCESS.r,
                                 STATUS_SUCCESS.g,
@@ -3251,19 +4067,24 @@ impl DashboardState {
                 .spacing(SPACE_2)
                 .align_y(Alignment::Center)
                 .padding([SPACE_1, SPACE_2])
+                .width(Length::Fill)
             } else {
                 row![
                     icon_film(),
-                    text(scene_name).size(BODY_SM),
-                    Space::with_width(Length::Fill),
-                    button(text("+ Add").size(LABEL_SM))
-                        .padding([2.0, 8.0])
-                        .style(primary_button_style)
-                        .on_press(DashboardMessage::FlowAddScene(scene_name.clone())),
+                    scene_label,
+                    button(
+                        text("+ Add")
+                            .size(LABEL_SM)
+                            .wrapping(iced::widget::text::Wrapping::None),
+                    )
+                    .padding([2.0, 8.0])
+                    .style(primary_button_style)
+                    .on_press(DashboardMessage::FlowAddScene(scene_name.clone())),
                 ]
                 .spacing(SPACE_2)
                 .align_y(Alignment::Center)
                 .padding([SPACE_1, SPACE_2])
+                .width(Length::Fill)
             };
 
             scenes_list_col = scenes_list_col.push(
@@ -3288,14 +4109,22 @@ impl DashboardState {
                 self.flow_graph.nodes.iter().any(|n| n.id == check_id)
             };
 
+            let sys_label = container(
+                text(label)
+                    .size(LABEL_SM)
+                    .wrapping(iced::widget::text::Wrapping::None),
+            )
+            .width(Length::Fill)
+            .clip(true);
+
             let row_item = if is_on_canvas {
                 row![
                     icon_sparkle(),
-                    text(label).size(BODY_SM),
-                    Space::with_width(Length::Fill),
+                    sys_label,
                     container(
                         text("In Flow")
                             .size(LABEL_SM)
+                            .wrapping(iced::widget::text::Wrapping::None)
                             .color(iced::Color::from_rgb8(
                                 STATUS_SUCCESS.r,
                                 STATUS_SUCCESS.g,
@@ -3308,19 +4137,24 @@ impl DashboardState {
                 .spacing(SPACE_2)
                 .align_y(Alignment::Center)
                 .padding([SPACE_1, SPACE_2])
+                .width(Length::Fill)
             } else {
                 row![
                     icon_sparkle(),
-                    text(label).size(BODY_SM),
-                    Space::with_width(Length::Fill),
-                    button(text("+ Add").size(LABEL_SM))
-                        .padding([2.0, 8.0])
-                        .style(primary_button_style)
-                        .on_press(DashboardMessage::FlowAddSystemNode(sys_type.to_string())),
+                    sys_label,
+                    button(
+                        text("+ Add")
+                            .size(LABEL_SM)
+                            .wrapping(iced::widget::text::Wrapping::None),
+                    )
+                    .padding([2.0, 8.0])
+                    .style(primary_button_style)
+                    .on_press(DashboardMessage::FlowAddSystemNode(sys_type.to_string())),
                 ]
                 .spacing(SPACE_2)
                 .align_y(Alignment::Center)
                 .padding([SPACE_1, SPACE_2])
+                .width(Length::Fill)
             };
 
             sys_nodes_col = sys_nodes_col.push(
@@ -3369,27 +4203,36 @@ impl DashboardState {
         .style(code_container_style);
 
         let library_scroll = scrollable(
-            column![
-                text("Available Scenes:")
-                    .size(LABEL_SM)
-                    .color(iced::Color::from_rgb8(
-                        TEXT_MUTED.r,
-                        TEXT_MUTED.g,
-                        TEXT_MUTED.b,
-                    )),
-                search_input,
-                scenes_list_col,
-                Space::with_height(SPACE_2),
-                text("Ending & Flow Nodes:")
-                    .size(LABEL_SM)
-                    .color(iced::Color::from_rgb8(
-                        TEXT_MUTED.r,
-                        TEXT_MUTED.g,
-                        TEXT_MUTED.b,
-                    )),
-                sys_nodes_col,
-            ]
-            .spacing(SPACE_2),
+            container(
+                column![
+                    text("Available Scenes:")
+                        .size(LABEL_SM)
+                        .color(iced::Color::from_rgb8(
+                            TEXT_MUTED.r,
+                            TEXT_MUTED.g,
+                            TEXT_MUTED.b,
+                        )),
+                    search_input,
+                    scenes_list_col,
+                    Space::with_height(SPACE_2),
+                    text("Ending & Flow Nodes:")
+                        .size(LABEL_SM)
+                        .color(iced::Color::from_rgb8(
+                            TEXT_MUTED.r,
+                            TEXT_MUTED.g,
+                            TEXT_MUTED.b,
+                        )),
+                    sys_nodes_col,
+                ]
+                .spacing(SPACE_2),
+            )
+            .padding(iced::Padding {
+                top: 0.0,
+                right: SPACE_3,
+                bottom: 0.0,
+                left: 0.0,
+            })
+            .width(Length::Fill),
         )
         .width(Length::Fill)
         .height(Length::Fill);
@@ -3403,7 +4246,7 @@ impl DashboardState {
         ]
         .spacing(SPACE_3)
         .padding(SPACE_4)
-        .width(Length::Fixed(320.0))
+        .width(Length::Fixed(340.0))
         .height(Length::Fill);
 
         if let Some(msg) = &self.flow_status_message {
@@ -3433,8 +4276,9 @@ impl DashboardState {
         }
 
         let sidebar_container = container(sidebar)
-            .width(Length::Fixed(320.0))
+            .width(Length::Fixed(340.0))
             .height(Length::Fill)
+            .clip(true)
             .style(sidebar_container_style);
 
         // --- 2. Right Canvas Area & Top Toolbar ---
@@ -3569,6 +4413,7 @@ impl DashboardState {
         let canvas_container = container(canvas_element.map(DashboardMessage::FlowAction))
             .width(Length::Fill)
             .height(Length::Fill)
+            .clip(true)
             .style(canvas_container_style);
 
         let canvas_area = column![
@@ -3625,7 +4470,7 @@ impl DashboardState {
         .spacing(SPACE_2)
         .align_y(Alignment::Center);
 
-        // Left Column: Identity & Starting Scene
+        // Left Column: Identity & Version
         let title_text_label = text("Game Title Text (Displayed on Main Menu):")
             .size(LABEL_SM)
             .color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b));
@@ -3634,52 +4479,44 @@ impl DashboardState {
             .padding([SPACE_2, SPACE_3])
             .style(input_field_style);
 
-        let starting_scene_label = text("Starting Scene (New Game Target):")
+        let version_col = column![
+            text("Project / Game Version:")
+                .size(LABEL_SM)
+                .color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b)),
+            text_input("e.g. 0.1.0", &project.version)
+                .on_input(DashboardMessage::UpdateProjectVersion)
+                .padding([SPACE_2, SPACE_3])
+                .style(input_field_style),
+        ]
+        .spacing(SPACE_1)
+        .width(Length::FillPortion(1));
+
+        let author_col = column![
+            text("Author / Studio:")
+                .size(LABEL_SM)
+                .color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b)),
+            text_input("e.g. Studio Kharis", &project.author)
+                .on_input(DashboardMessage::UpdateProjectAuthor)
+                .padding([SPACE_2, SPACE_3])
+                .style(input_field_style),
+        ]
+        .spacing(SPACE_1)
+        .width(Length::FillPortion(1));
+
+        let identity_row = row![version_col, author_col]
+            .spacing(SPACE_3)
+            .width(Length::Fill);
+
+        let flow_hint = text("Starting scene is configured visually in Story Flow (Main Menu -> New Game).")
             .size(LABEL_SM)
             .color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b));
-        let current_start_scene = self.system_screens_config.starting_scene_id.as_deref().unwrap_or(
-            self.scenes_list.first().map(|s| s.as_str()).unwrap_or("01_opening")
-        );
-
-        let mut scenes_grid = column![].spacing(SPACE_2).width(Length::Fill);
-        for chunk in self.scenes_list.chunks(2) {
-            let mut chunk_row = row![].spacing(SPACE_2).width(Length::Fill);
-            for scene_name in chunk {
-                let is_selected = scene_name == current_start_scene;
-                let display_name = if scene_name.chars().count() > 24 {
-                    let truncated: String = scene_name.chars().take(21).collect();
-                    format!("{}...", truncated)
-                } else {
-                    scene_name.clone()
-                };
-                let btn_scene = button(
-                    row![
-                        icon_film(),
-                        text(display_name)
-                            .size(LABEL_SM)
-                            .wrapping(text::Wrapping::None),
-                    ]
-                    .spacing(SPACE_2)
-                    .align_y(Alignment::Center),
-                )
-                .padding([SPACE_2, SPACE_3])
-                .width(Length::FillPortion(1))
-                .style(if is_selected { primary_button_style } else { secondary_button_style })
-                .on_press(DashboardMessage::UpdateStartingScene(scene_name.clone()));
-                chunk_row = chunk_row.push(btn_scene);
-            }
-            if chunk.len() == 1 {
-                chunk_row = chunk_row.push(Space::with_width(Length::FillPortion(1)));
-            }
-            scenes_grid = scenes_grid.push(chunk_row);
-        }
 
         let left_col = column![
             title_text_label,
             title_text_input,
             Space::with_height(SPACE_1),
-            starting_scene_label,
-            scenes_grid,
+            identity_row,
+            flow_hint,
         ]
         .spacing(SPACE_2)
         .width(Length::FillPortion(1));
@@ -4265,7 +5102,7 @@ impl DashboardState {
 
         let item_engine = row![
             text("Engine: ").size(LABEL_SM).color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b)),
-            text("Blanc Engine 0.1.0-beta")
+            text("Blanc Engine 0.1.0")
                 .size(BODY_SM)
                 .color(iced::Color::from_rgb8(ACCENT_PRIMARY.r, ACCENT_PRIMARY.g, ACCENT_PRIMARY.b)),
         ]
@@ -5041,8 +5878,6 @@ impl DashboardState {
     // LOCALIZATION TAB
     // ==========================================
     fn view_localization_content(&self) -> Element<'_, DashboardMessage> {
-        let total_items = self.locale_items.len();
-        let total_items_denom = total_items.max(1);
         let selected_key = self.locale_selected_code.to_ascii_lowercase();
         let active_table = self.locale_tables.get(&selected_key);
 
@@ -5055,15 +5890,37 @@ impl DashboardState {
             .as_ref()
             .map(|l| l.display_name.clone())
             .unwrap_or_else(|| self.locale_selected_code.clone());
+        let story_lang_code = self.locale_manifest.effective_story_language().code.clone();
+        let needs_translation = |item: &blanc_core::localization::LocalizationItem, lang_code: &str| -> bool {
+            match &item.category {
+                LocaleCategory::Ui => !lang_code.eq_ignore_ascii_case("en"),
+                LocaleCategory::Speaker | LocaleCategory::Scene(_) => {
+                    !lang_code.eq_ignore_ascii_case(&story_lang_code)
+                }
+            }
+        };
+
+        let active_total = self
+            .locale_items
+            .iter()
+            .filter(|it| needs_translation(it, &self.locale_selected_code))
+            .count();
         let active_translated = active_table
             .map(|tbl| {
                 self.locale_items
                     .iter()
-                    .filter(|it| tbl.entries.get(&it.key).map(|v| !v.is_empty()).unwrap_or(false))
+                    .filter(|it| {
+                        needs_translation(it, &self.locale_selected_code)
+                            && tbl.entries.get(&it.key).map(|v| !v.trim().is_empty()).unwrap_or(false)
+                    })
                     .count()
             })
             .unwrap_or(0);
-        let active_pct = (active_translated * 100) / total_items_denom;
+        let active_pct = if active_total == 0 {
+            100
+        } else {
+            (active_translated * 100) / active_total
+        };
 
         let header = container(
             row![
@@ -5241,42 +6098,76 @@ impl DashboardState {
             let is_default = lang
                 .code
                 .eq_ignore_ascii_case(&self.locale_manifest.default_language.code);
+            let is_story_lang = lang.code.eq_ignore_ascii_case(&story_lang_code);
             let is_selected = lang.code.eq_ignore_ascii_case(&self.locale_selected_code);
+
+            let lang_total = self
+                .locale_items
+                .iter()
+                .filter(|it| needs_translation(it, &lang.code))
+                .count();
             let translated_count = self
                 .locale_tables
                 .get(&lang.code.to_ascii_lowercase())
                 .map(|tbl| {
                     self.locale_items
                         .iter()
-                        .filter(|it| tbl.entries.get(&it.key).map(|v| !v.is_empty()).unwrap_or(false))
+                        .filter(|it| {
+                            needs_translation(it, &lang.code)
+                                && tbl.entries.get(&it.key).map(|v| !v.trim().is_empty()).unwrap_or(false)
+                        })
                         .count()
                 })
                 .unwrap_or(0);
-            let pct = (translated_count * 100) / total_items_denom;
-            let bar_total_w = 190.0f32;
+            let pct = if lang_total == 0 {
+                100
+            } else {
+                (translated_count * 100) / lang_total
+            };
+            let bar_total_w = 124.0f32;
             let bar_fill_w = ((pct as f32 / 100.0) * bar_total_w).clamp(0.0, bar_total_w);
 
             let mut title_row = row![
-                text(lang.display_name.clone())
-                    .size(LABEL_MD)
-                    .color(iced::Color::from_rgb8(TEXT_PRIMARY.r, TEXT_PRIMARY.g, TEXT_PRIMARY.b)),
+                container(
+                    text(lang.display_name.clone())
+                        .size(LABEL_MD)
+                        .wrapping(iced::widget::text::Wrapping::None)
+                        .color(iced::Color::from_rgb8(TEXT_PRIMARY.r, TEXT_PRIMARY.g, TEXT_PRIMARY.b)),
+                )
+                .width(Length::Fill)
+                .clip(true),
                 container(
                     text(lang.code.to_ascii_uppercase())
                         .size(10)
+                        .wrapping(iced::widget::text::Wrapping::None)
                         .color(iced::Color::from_rgb8(TEXT_SECONDARY.r, TEXT_SECONDARY.g, TEXT_SECONDARY.b)),
                 )
                 .padding([1, 6])
                 .style(badge_container_style),
             ]
             .spacing(SPACE_1)
-            .align_y(Alignment::Center);
+            .align_y(Alignment::Center)
+            .width(Length::Fill);
 
             if is_default {
                 title_row = title_row.push(
                     container(
-                        text("DEFAULT")
+                        text("DEF")
                             .size(9)
+                            .wrapping(iced::widget::text::Wrapping::None)
                             .color(iced::Color::from_rgb8(ACCENT_PRIMARY.r, ACCENT_PRIMARY.g, ACCENT_PRIMARY.b)),
+                    )
+                    .padding([1, 5])
+                    .style(badge_container_style),
+                );
+            }
+            if is_story_lang {
+                title_row = title_row.push(
+                    container(
+                        text("STORY")
+                            .size(9)
+                            .wrapping(iced::widget::text::Wrapping::None)
+                            .color(iced::Color::from_rgb8(STATUS_SUCCESS.r, STATUS_SUCCESS.g, STATUS_SUCCESS.b)),
                     )
                     .padding([1, 5])
                     .style(badge_container_style),
@@ -5294,6 +6185,12 @@ impl DashboardState {
             .height(Length::Fixed(4.0))
             .style(meter_bg_style);
 
+            let count_text = if lang_total == 0 {
+                "Native (no translation needed)".to_string()
+            } else {
+                format!("{} / {} strings", translated_count, lang_total)
+            };
+
             let info_col = column![
                 title_row,
                 row![
@@ -5301,17 +6198,19 @@ impl DashboardState {
                     Space::new(Length::Fill, Length::Shrink),
                     text(format!("{}%", pct))
                         .size(10)
+                        .wrapping(iced::widget::text::Wrapping::None)
                         .color(if pct == 100 {
                             iced::Color::from_rgb8(STATUS_SUCCESS.r, STATUS_SUCCESS.g, STATUS_SUCCESS.b)
                         } else {
                             iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b)
                         }),
                 ]
-                .spacing(SPACE_1)
+                .spacing(SPACE_2)
                 .align_y(Alignment::Center)
                 .width(Length::Fill),
-                text(format!("{} / {} strings", translated_count, total_items))
+                text(count_text)
                     .size(10)
+                    .wrapping(iced::widget::text::Wrapping::None)
                     .color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b)),
             ]
             .spacing(4)
@@ -5339,9 +6238,93 @@ impl DashboardState {
             lang_list_col = lang_list_col.push(card_row);
         }
 
+        let story_lang_entry = self.locale_manifest.effective_story_language();
+        let mut story_lang_section = column![
+            row![
+                column![
+                    text("STORY LANGUAGE")
+                        .size(10)
+                        .color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b)),
+                    text(format!(
+                        "{} ({})",
+                        story_lang_entry.display_name, story_lang_entry.code
+                    ))
+                    .size(LABEL_MD)
+                    .color(iced::Color::from_rgb8(STATUS_SUCCESS.r, STATUS_SUCCESS.g, STATUS_SUCCESS.b)),
+                ]
+                .spacing(2)
+                .width(Length::Fill),
+                button(text(if self.locale_story_lang_open { "Close" } else { "Edit" }).size(LABEL_SM))
+                    .padding([4, 10])
+                    .style(secondary_button_style)
+                    .on_press(DashboardMessage::LocaleToggleStoryLangEditor),
+            ]
+            .align_y(Alignment::Center),
+        ]
+        .spacing(SPACE_2);
+
+        if self.locale_story_lang_open {
+            let presets = [
+                ("en", "English"),
+                ("id", "Indonesia"),
+                ("ja", "Japanese"),
+                ("ko", "Korean"),
+                ("zh", "Chinese"),
+                ("es", "Spanish"),
+            ];
+            let mut preset_grid = column![].spacing(4);
+            for chunk in presets.chunks(2) {
+                let mut r = row![].spacing(4);
+                for (code, name) in chunk {
+                    let active = story_lang_entry.code.eq_ignore_ascii_case(code);
+                    r = r.push(
+                        button(text(format!("{} ({})", name, code)).size(10))
+                            .padding([4, 6])
+                            .width(Length::FillPortion(1))
+                            .style(if active { primary_button_style } else { secondary_button_style })
+                            .on_press(DashboardMessage::SetStoryScriptLanguage(
+                                (*code).to_string(),
+                                (*name).to_string(),
+                            )),
+                    );
+                }
+                preset_grid = preset_grid.push(r);
+            }
+            let custom_trim = self.story_lang_custom_input.trim().to_ascii_lowercase();
+            let set_btn = {
+                let b = button(text("Set").size(10))
+                    .padding([4, 8])
+                    .style(if custom_trim.is_empty() { subtle_button_style } else { secondary_button_style });
+                if custom_trim.is_empty() {
+                    b
+                } else {
+                    let upper = custom_trim.to_ascii_uppercase();
+                    b.on_press(DashboardMessage::SetStoryScriptLanguage(custom_trim, upper))
+                }
+            };
+            story_lang_section = story_lang_section.push(preset_grid);
+            story_lang_section = story_lang_section.push(
+                row![
+                    text_input("Other code (e.g. fr)", &self.story_lang_custom_input)
+                        .on_input(DashboardMessage::StoryLangCustomCodeChanged)
+                        .size(11)
+                        .padding(SPACE_1)
+                        .width(Length::Fill)
+                        .style(input_field_style),
+                    set_btn,
+                ]
+                .spacing(4)
+                .align_y(Alignment::Center),
+            );
+        }
+
         let left_pane = container(
             column![
                 container(default_section)
+                    .padding(SPACE_3)
+                    .width(Length::Fill)
+                    .style(card_container_style),
+                container(story_lang_section)
                     .padding(SPACE_3)
                     .width(Length::Fill)
                     .style(card_container_style),
@@ -5353,42 +6336,151 @@ impl DashboardState {
             .width(Length::Fill),
         )
         .padding(SPACE_3)
-        .width(Length::Fixed(296.0))
+        .width(Length::Fixed(264.0))
         .height(Length::Fill)
         .style(sidebar_container_style);
 
-        // Right pane: Clean translation workspace without nested cards
-        let mut scopes = vec![
-            LocaleFilterScope::All,
-            LocaleFilterScope::Ui,
-            LocaleFilterScope::Speaker,
-        ];
-        let mut seen_scenes: Vec<String> = Vec::new();
-        for item in &self.locale_items {
-            if let LocaleCategory::Scene(name) = &item.category {
-                if !seen_scenes.contains(name) {
-                    seen_scenes.push(name.clone());
+        // Middle pane: Vertical Sections / Groups column with per-group progress
+        let ui_needed = !self.locale_selected_code.eq_ignore_ascii_case("en");
+        let story_needed = !self.locale_selected_code.eq_ignore_ascii_case(&story_lang_code);
+
+        let mut scopes = Vec::new();
+        if ui_needed {
+            scopes.push(LocaleFilterScope::Ui);
+        }
+        if story_needed {
+            scopes.push(LocaleFilterScope::Speaker);
+            let mut seen_scenes: Vec<String> = Vec::new();
+            for item in &self.locale_items {
+                if let LocaleCategory::Scene(name) = &item.category {
+                    if !seen_scenes.contains(name) {
+                        seen_scenes.push(name.clone());
+                    }
                 }
             }
+            for s in seen_scenes {
+                scopes.push(LocaleFilterScope::Scene(s));
+            }
         }
-        for s in seen_scenes {
-            scopes.push(LocaleFilterScope::Scene(s));
+        if !scopes.is_empty() {
+            scopes.push(LocaleFilterScope::All);
         }
 
+        let effective_scope = if scopes.contains(&self.locale_filter_scope) {
+            self.locale_filter_scope.clone()
+        } else {
+            scopes.first().cloned().unwrap_or(LocaleFilterScope::All)
+        };
+
+        let mut groups_col = column![].spacing(SPACE_1).width(Length::Fill);
+        for scope in &scopes {
+            let mut grp_total = 0usize;
+            let mut grp_done = 0usize;
+            for item in &self.locale_items {
+                if !needs_translation(item, &self.locale_selected_code) {
+                    continue;
+                }
+                let in_scope = match scope {
+                    LocaleFilterScope::All => true,
+                    LocaleFilterScope::Ui => item.category == LocaleCategory::Ui,
+                    LocaleFilterScope::Speaker => item.category == LocaleCategory::Speaker,
+                    LocaleFilterScope::Scene(name) => {
+                        matches!(&item.category, LocaleCategory::Scene(s) if s == name)
+                    }
+                };
+                if in_scope {
+                    grp_total += 1;
+                    let translated = active_table
+                        .and_then(|t| t.entries.get(&item.key))
+                        .map(|v| !v.trim().is_empty())
+                        .unwrap_or(false);
+                    if translated {
+                        grp_done += 1;
+                    }
+                }
+            }
+
+            let is_selected = &effective_scope == scope;
+            let is_complete = grp_total > 0 && grp_done == grp_total;
+            let label_str = match scope {
+                LocaleFilterScope::All => "All Strings".to_string(),
+                LocaleFilterScope::Ui => "UI Labels".to_string(),
+                LocaleFilterScope::Speaker => "Speakers".to_string(),
+                LocaleFilterScope::Scene(name) => name.clone(),
+            };
+            let badge_str = format!("{}/{}", grp_done, grp_total);
+            let badge_color = if is_complete {
+                iced::Color::from_rgb8(STATUS_SUCCESS.r, STATUS_SUCCESS.g, STATUS_SUCCESS.b)
+            } else if is_selected {
+                iced::Color::WHITE
+            } else {
+                iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b)
+            };
+
+            let btn_content = row![
+                container(
+                    text(label_str)
+                        .size(LABEL_SM)
+                        .wrapping(iced::widget::text::Wrapping::None),
+                )
+                .width(Length::Fill)
+                .clip(true),
+                text(badge_str)
+                    .size(10)
+                    .wrapping(iced::widget::text::Wrapping::None)
+                    .color(badge_color),
+            ]
+            .spacing(SPACE_2)
+            .align_y(Alignment::Center)
+            .width(Length::Fill);
+
+            groups_col = groups_col.push(
+                button(btn_content)
+                    .padding([SPACE_2, SPACE_2])
+                    .width(Length::Fill)
+                    .style(if is_selected {
+                        primary_button_style
+                    } else {
+                        subtle_button_style
+                    })
+                    .on_press(DashboardMessage::LocaleFilterScopeChanged(scope.clone())),
+            );
+        }
+
+        let groups_pane = container(
+            column![
+                text("SECTIONS")
+                    .size(11)
+                    .color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b)),
+                scrollable(
+                    container(groups_col)
+                        .padding(iced::Padding {
+                            top: 0.0,
+                            right: SPACE_2,
+                            bottom: 0.0,
+                            left: 0.0,
+                        })
+                        .width(Length::Fill),
+                )
+                .height(Length::Fill)
+                .width(Length::Fill),
+            ]
+            .spacing(SPACE_2)
+            .height(Length::Fill)
+            .width(Length::Fill),
+        )
+        .padding(SPACE_3)
+        .width(Length::Fixed(236.0))
+        .height(Length::Fill)
+        .style(sidebar_container_style);
+
         let filter_bar = row![
-            text_input("Search key, source text, or translation...", &self.locale_search_query)
+            text_input("Search across all groups (key, source, or translation)...", &self.locale_search_query)
                 .on_input(DashboardMessage::LocaleSearchChanged)
                 .size(BODY_SM)
                 .padding(SPACE_2)
                 .width(Length::Fill)
                 .style(input_field_style),
-            pick_list(
-                scopes,
-                Some(self.locale_filter_scope.clone()),
-                DashboardMessage::LocaleFilterScopeChanged,
-            )
-            .width(Length::Fixed(220.0))
-            .padding([6, 10]),
             container(
                 row![
                     button(text("All").size(LABEL_SM))
@@ -5409,12 +6501,25 @@ impl DashboardState {
         .align_y(Alignment::Center)
         .width(Length::Fill);
 
+        let source_header_code = match &effective_scope {
+            LocaleFilterScope::Ui => "EN".to_string(),
+            LocaleFilterScope::Speaker | LocaleFilterScope::Scene(_) => {
+                story_lang_code.to_ascii_uppercase()
+            }
+            LocaleFilterScope::All => {
+                if ui_needed && story_needed && !story_lang_code.eq_ignore_ascii_case("en") {
+                    format!("EN / {}", story_lang_code.to_ascii_uppercase())
+                } else if story_needed {
+                    story_lang_code.to_ascii_uppercase()
+                } else {
+                    "EN".to_string()
+                }
+            }
+        };
+
         let table_header = container(
             row![
-                text(format!(
-                    "SOURCE ({})",
-                    self.locale_manifest.default_language.code.to_ascii_uppercase()
-                ))
+                text(format!("SOURCE ({})", source_header_code))
                 .size(10)
                 .color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b))
                 .width(Length::FillPortion(1)),
@@ -5437,12 +6542,19 @@ impl DashboardState {
         let mut shown_count = 0usize;
 
         for item in &self.locale_items {
-            let scope_ok = match &self.locale_filter_scope {
-                LocaleFilterScope::All => true,
-                LocaleFilterScope::Ui => item.category == LocaleCategory::Ui,
-                LocaleFilterScope::Speaker => item.category == LocaleCategory::Speaker,
-                LocaleFilterScope::Scene(name) => {
-                    matches!(&item.category, LocaleCategory::Scene(s) if s == name)
+            if !needs_translation(item, &self.locale_selected_code) {
+                continue;
+            }
+            let scope_ok = if !query.is_empty() {
+                true
+            } else {
+                match &effective_scope {
+                    LocaleFilterScope::All => true,
+                    LocaleFilterScope::Ui => item.category == LocaleCategory::Ui,
+                    LocaleFilterScope::Speaker => item.category == LocaleCategory::Speaker,
+                    LocaleFilterScope::Scene(name) => {
+                        matches!(&item.category, LocaleCategory::Scene(s) if s == name)
+                    }
                 }
             };
             if !scope_ok {
@@ -5527,9 +6639,14 @@ impl DashboardState {
         }
 
         if shown_count == 0 {
+            let empty_msg = if scopes.is_empty() {
+                "All strings in this language are already native — no translation needed."
+            } else {
+                "No strings match the current filter."
+            };
             rows_col = rows_col.push(
                 container(
-                    text("No strings match the current filter.")
+                    text(empty_msg)
                         .size(BODY_SM)
                         .color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b)),
                 )
@@ -5547,7 +6664,11 @@ impl DashboardState {
                             .size(HEADING_SM)
                             .color(iced::Color::from_rgb8(TEXT_PRIMARY.r, TEXT_PRIMARY.g, TEXT_PRIMARY.b)),
                         container(
-                            text(format!("{}/{} translated · {}%", active_translated, total_items, active_pct))
+                            text(if active_total == 0 {
+                                "Native · 100%".to_string()
+                            } else {
+                                format!("{}/{} translated · {}%", active_translated, active_total, active_pct)
+                            })
                                 .size(LABEL_SM)
                                 .color(if active_pct == 100 {
                                     iced::Color::from_rgb8(STATUS_SUCCESS.r, STATUS_SUCCESS.g, STATUS_SUCCESS.b)
@@ -5561,7 +6682,13 @@ impl DashboardState {
                     .spacing(SPACE_2)
                     .align_y(Alignment::Center),
                     Space::new(Length::Fill, Length::Shrink),
-                    text(format!("Showing {} string(s)", shown_count))
+                    text(if !query.is_empty() {
+                        format!("Searching all groups · {} match(es)", shown_count)
+                    } else if scopes.is_empty() {
+                        "Native · 0 string(s) to translate".to_string()
+                    } else {
+                        format!("{} · {} string(s)", effective_scope, shown_count)
+                    })
                         .size(LABEL_SM)
                         .color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b)),
                 ]
@@ -5594,7 +6721,7 @@ impl DashboardState {
             );
         }
         root = root.push(
-            row![left_pane, right_pane]
+            row![left_pane, groups_pane, right_pane]
                 .spacing(SPACE_3)
                 .width(Length::Fill)
                 .height(Length::Fill),

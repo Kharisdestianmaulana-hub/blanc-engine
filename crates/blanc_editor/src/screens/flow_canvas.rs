@@ -596,21 +596,21 @@ impl<'a> Program<FlowCanvasAction, Theme, Renderer> for FlowCanvasWidget<'a> {
                     } else {
                         (nw - 16.0 * zoom).max(0.0)
                     };
-                    frame.with_clip(
+                    draw_clipped_text(
+                        frame,
+                        bounds.size(),
                         Rectangle {
                             x: nx,
                             y: ny,
                             width: title_clip_w,
                             height: header_h,
                         },
-                        |frame| {
-                            frame.fill_text(Text {
-                                content: node.title.clone(),
-                                position: Point::new(12.0 * zoom, 9.0 * zoom),
-                                color: Color::WHITE,
-                                size: (13.0 * zoom).max(1.0).into(),
-                                ..Default::default()
-                            });
+                        Point::new(12.0 * zoom, 9.0 * zoom),
+                        Text {
+                            content: node.title.clone(),
+                            color: Color::WHITE,
+                            size: (13.0 * zoom).max(1.0).into(),
+                            ..Default::default()
                         },
                     );
                 }
@@ -658,21 +658,21 @@ impl<'a> Program<FlowCanvasAction, Theme, Renderer> for FlowCanvasWidget<'a> {
                 frame.fill(&pill_rect, Color::from_rgba8(30, 41, 59, 0.7));
 
                 if zoom >= 0.42 {
-                    frame.with_clip(
+                    draw_clipped_text(
+                        frame,
+                        bounds.size(),
                         Rectangle {
                             x: nx + 12.0 * zoom,
                             y: ny + 42.0 * zoom,
                             width: (nw - 24.0 * zoom).max(0.0),
                             height: 22.0 * zoom,
                         },
-                        |frame| {
-                            frame.fill_text(Text {
-                                content: info_text,
-                                position: Point::new(4.0 * zoom, 5.0 * zoom),
-                                color: Color::from_rgb8(148, 163, 184),
-                                size: (11.0 * zoom).max(1.0).into(),
-                                ..Default::default()
-                            });
+                        Point::new(4.0 * zoom, 5.0 * zoom),
+                        Text {
+                            content: info_text,
+                            color: Color::from_rgb8(148, 163, 184),
+                            size: (11.0 * zoom).max(1.0).into(),
+                            ..Default::default()
                         },
                     );
                 }
@@ -710,21 +710,21 @@ impl<'a> Program<FlowCanvasAction, Theme, Renderer> for FlowCanvasWidget<'a> {
                             "In"
                         };
 
-                        frame.with_clip(
+                        draw_clipped_text(
+                            frame,
+                            bounds.size(),
                             Rectangle {
                                 x: nx + 8.0 * zoom,
                                 y: ny + header_h,
                                 width: (nw - 16.0 * zoom).max(0.0),
                                 height: (nh - header_h).max(0.0),
                             },
-                            |frame| {
-                                frame.fill_text(Text {
-                                    content: in_label.to_string(),
-                                    position: Point::new(6.0 * zoom, (pin_y - ny - header_h) - 7.0 * zoom),
-                                    color: Color::from_rgb8(148, 163, 184),
-                                    size: (11.0 * zoom).max(1.0).into(),
-                                    ..Default::default()
-                                });
+                            Point::new(6.0 * zoom, (pin_y - ny - header_h) - 7.0 * zoom),
+                            Text {
+                                content: in_label.to_string(),
+                                color: Color::from_rgb8(148, 163, 184),
+                                size: (11.0 * zoom).max(1.0).into(),
+                                ..Default::default()
                             },
                         );
                     }
@@ -753,22 +753,22 @@ impl<'a> Program<FlowCanvasAction, Theme, Renderer> for FlowCanvasWidget<'a> {
                     if zoom >= 0.42 {
                         // Pin Label inside node (right-aligned & clipped within node bounds)
                         let clip_w = (nw - 60.0 * zoom).max(0.0);
-                        frame.with_clip(
+                        draw_clipped_text(
+                            frame,
+                            bounds.size(),
                             Rectangle {
                                 x: nx + 48.0 * zoom,
                                 y: pin_y - 11.0 * zoom,
                                 width: clip_w,
                                 height: 22.0 * zoom,
                             },
-                            |frame| {
-                                frame.fill_text(Text {
-                                    content: label.clone(),
-                                    position: Point::new((clip_w - 2.0 * zoom).max(0.0), 4.0 * zoom),
-                                    color: Color::from_rgb8(226, 232, 240),
-                                    size: (11.0 * zoom).max(1.0).into(),
-                                    horizontal_alignment: iced::alignment::Horizontal::Right,
-                                    ..Default::default()
-                                });
+                            Point::new((clip_w - 2.0 * zoom).max(0.0), 4.0 * zoom),
+                            Text {
+                                content: label.clone(),
+                                color: Color::from_rgb8(226, 232, 240),
+                                size: (11.0 * zoom).max(1.0).into(),
+                                horizontal_alignment: iced::alignment::Horizontal::Right,
+                                ..Default::default()
                             },
                         );
                     }
@@ -779,21 +779,21 @@ impl<'a> Program<FlowCanvasAction, Theme, Renderer> for FlowCanvasWidget<'a> {
                     if let FlowNodeType::Scene { .. } = &node.node_type {
                         let is_connected = self.graph.connections.iter().any(|c| c.from_node_id == node.id);
                         if !is_connected {
-                            frame.with_clip(
+                            draw_clipped_text(
+                                frame,
+                                bounds.size(),
                                 Rectangle {
                                     x: nx + 8.0 * zoom,
                                     y: ny + header_h,
                                     width: (nw - 16.0 * zoom).max(0.0),
                                     height: (nh - header_h).max(0.0),
                                 },
-                                |frame| {
-                                    frame.fill_text(Text {
-                                        content: "! Unconnected".to_string(),
-                                        position: Point::new(6.0 * zoom, (nh - header_h) - 14.0 * zoom),
-                                        color: Color::from_rgb8(251, 191, 36),
-                                        size: (10.0 * zoom).max(1.0).into(),
-                                        ..Default::default()
-                                    });
+                                Point::new(6.0 * zoom, (nh - header_h) - 14.0 * zoom),
+                                Text {
+                                    content: "! Unconnected".to_string(),
+                                    color: Color::from_rgb8(251, 191, 36),
+                                    size: (10.0 * zoom).max(1.0).into(),
+                                    ..Default::default()
                                 },
                             );
                         }
@@ -951,4 +951,39 @@ impl<'a> FlowCanvasWidget<'a> {
             .map(|s| s.blocks.len())
             .unwrap_or(0)
     }
+}
+
+/// Clips a canvas text region strictly to the visible canvas viewport `(0..width, 0..height)`
+/// so text on panned/zoomed nodes never bleeds over adjacent UI panels (like the left sidebar).
+fn draw_clipped_text(
+    frame: &mut canvas::Frame,
+    viewport: Size,
+    clip_rect: Rectangle,
+    text_pos_in_clip: Point,
+    mut text: Text,
+) {
+    let x0 = clip_rect.x.max(0.0);
+    let y0 = clip_rect.y.max(0.0);
+    let x1 = (clip_rect.x + clip_rect.width).min(viewport.width);
+    let y1 = (clip_rect.y + clip_rect.height).min(viewport.height);
+    let w = x1 - x0;
+    let h = y1 - y0;
+    if w <= 0.5 || h <= 0.5 {
+        return;
+    }
+    text.position = Point::new(
+        text_pos_in_clip.x + (clip_rect.x - x0),
+        text_pos_in_clip.y + (clip_rect.y - y0),
+    );
+    frame.with_clip(
+        Rectangle {
+            x: x0,
+            y: y0,
+            width: w,
+            height: h,
+        },
+        |frame| {
+            frame.fill_text(text);
+        },
+    );
 }

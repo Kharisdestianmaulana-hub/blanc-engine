@@ -105,6 +105,8 @@ pub enum RuntimeScreen {
     SaveLoad { mode: SaveLoadMode, return_to_pause: bool },
     Backlog,
     Ending { title: String, ending_node_id: Option<String> },
+    CreditsRoll { ending_node_id: Option<String> },
+    GameOver { ending_node_id: Option<String> },
     Error(String),
 }
 
@@ -217,6 +219,8 @@ pub struct StageState {
     pub flash_alpha: f32,
     pub shake_remaining: f32,
     pub shake_phase: f32,
+    pub last_character_pos: Option<CharacterPosition>,
+    pub speaker_slot_memory: std::collections::HashMap<String, CharacterPosition>,
 }
 
 pub struct AudioController {
@@ -408,6 +412,7 @@ pub struct RuntimeEngine {
     pub save_load_action_index: usize,
     pub settings_category: SettingsCategory,
     pub ui_anim_time: f32,
+    pub credits_scroll_offset: f32,
     pub toast: Option<(String, std::time::Instant)>,
     char_accumulator: f32,
     auto_timer: f32,
@@ -440,6 +445,7 @@ impl RuntimeEngine {
             save_load_action_index: 0,
             settings_category: SettingsCategory::Audio,
             ui_anim_time: 0.0,
+            credits_scroll_offset: 0.0,
             toast: None,
             char_accumulator: 0.0,
             auto_timer: 0.0,
@@ -566,19 +572,34 @@ impl RuntimeEngine {
     fn settings_path(&self) -> Option<PathBuf> {
         self.loaded
             .as_ref()
+            .map(|l| l.save_dir.join("settings.bprefs"))
+    }
+
+    fn legacy_settings_path(&self) -> Option<PathBuf> {
+        self.loaded
+            .as_ref()
             .map(|l| l.save_dir.join("settings.json"))
     }
 
     fn read_history_path(&self) -> Option<PathBuf> {
         self.loaded
             .as_ref()
+            .map(|l| l.save_dir.join("read_history.bhist"))
+    }
+
+    fn legacy_read_history_path(&self) -> Option<PathBuf> {
+        self.loaded
+            .as_ref()
             .map(|l| l.save_dir.join("read_history.json"))
     }
 
     fn load_user_settings(&mut self) {
-        if let Some(path) = self.settings_path() {
-            if let Ok(raw) = std::fs::read_to_string(&path) {
-                if let Ok(settings) = serde_json::from_str::<RuntimeUserSettings>(&raw) {
+        let raw_opt = [self.settings_path(), self.legacy_settings_path()]
+            .into_iter()
+            .flatten()
+            .find_map(|p| std::fs::read_to_string(p).ok());
+        if let Some(raw) = raw_opt {
+            if let Ok(settings) = serde_json::from_str::<RuntimeUserSettings>(&raw) {
                     self.skip_rule = settings.skip_mode;
                     self.auto_forward_delay = settings.auto_forward_delay.clamp(0.5, 5.0);
                     if let Some(vv) = settings.voice_volume {
@@ -595,9 +616,8 @@ impl RuntimeEngine {
                     return;
                 }
             }
-        }
 
-        // First launch without settings.json: inherit installer language if supported by project
+        // First launch without settings.bprefs: inherit installer language if supported by project
         if let Some(loaded) = &self.loaded {
             let meta_candidates = [
                 std::env::current_exe()
@@ -766,10 +786,11 @@ impl RuntimeEngine {
     }
 
     fn load_read_history(&mut self) {
-        let Some(path) = self.read_history_path() else {
-            return;
-        };
-        if let Ok(raw) = std::fs::read_to_string(&path) {
+        let raw_opt = [self.read_history_path(), self.legacy_read_history_path()]
+            .into_iter()
+            .flatten()
+            .find_map(|p| std::fs::read_to_string(p).ok());
+        if let Some(raw) = raw_opt {
             if let Ok(items) = serde_json::from_str::<Vec<String>>(&raw) {
                 self.read_lines = items.into_iter().collect();
             }
@@ -1304,6 +1325,7 @@ impl RuntimeEngine {
                         anim_offset_x,
                         image_path,
                     });
+                    self.stage.last_character_pos = Some(position);
                     self.stage.block_index += 1;
                 }
                 ActionBlock::HideCharacter { character_id, .. } => {
@@ -1386,6 +1408,13 @@ impl RuntimeEngine {
                         }
                     }
                     self.push_backlog_entry(spk.clone(), text_disp.clone());
+                    if let Some(sid) = &speaker_id {
+                        if let Some(pos) = nameplate_position.or(self.stage.last_character_pos.take()) {
+                            self.stage
+                                .speaker_slot_memory
+                                .insert(sid.to_ascii_lowercase(), pos);
+                        }
+                    }
                     let mut dlg = ActiveDialogue::new(spk, text_disp);
                     dlg.speaker_id = speaker_id;
                     dlg.nameplate_position = nameplate_position;
@@ -1548,6 +1577,23 @@ impl RuntimeEngine {
 
     pub fn tick(&mut self, dt_seconds: f32) {
         self.ui_anim_time += dt_seconds;
+        if let RuntimeScreen::CreditsRoll { ending_node_id } = self.screen.clone() {
+            let credits_cfg = self.ui_config().credits;
+            self.credits_scroll_offset += credits_cfg.scroll_speed.max(10.0) * dt_seconds;
+            if credits_cfg.auto_return_to_title {
+                let line_count = credits_cfg.credits_text.lines().count().max(1) as f32;
+                let total_h = 660.0 + line_count * 34.0;
+                if self.credits_scroll_offset >= total_h {
+                    if let Some(node_id) = ending_node_id {
+                        if self.follow_flow_connection(&node_id, "title") {
+                            return;
+                        }
+                    }
+                    self.enter_title_screen();
+                }
+            }
+            return;
+        }
         if self.screen != RuntimeScreen::Playing {
             return;
         }
@@ -1699,10 +1745,25 @@ impl RuntimeEngine {
                 true
             }
             FlowNodeType::Ending { ending_name } => {
-                self.screen = RuntimeScreen::Ending {
-                    title: ending_name,
-                    ending_node_id: Some(node.id),
-                };
+                if node.id.starts_with("ending_credits_")
+                    || ending_name.eq_ignore_ascii_case("Credits Roll")
+                {
+                    self.credits_scroll_offset = 0.0;
+                    self.screen = RuntimeScreen::CreditsRoll {
+                        ending_node_id: Some(node.id),
+                    };
+                } else if node.id.starts_with("ending_game_over_")
+                    || ending_name.to_ascii_lowercase().contains("game over")
+                {
+                    self.screen = RuntimeScreen::GameOver {
+                        ending_node_id: Some(node.id),
+                    };
+                } else {
+                    self.screen = RuntimeScreen::Ending {
+                        title: ending_name,
+                        ending_node_id: Some(node.id),
+                    };
+                }
                 true
             }
         }
@@ -1798,6 +1859,8 @@ impl RuntimeEngine {
             RuntimeScreen::SaveLoad { .. } => self.list_save_slots().len() + 1,
             RuntimeScreen::Backlog => 1,
             RuntimeScreen::Ending { .. } => 1,
+            RuntimeScreen::CreditsRoll { .. } => 1,
+            RuntimeScreen::GameOver { .. } => 3,
             RuntimeScreen::Error(_) => 0,
         }
     }
@@ -1844,7 +1907,7 @@ impl RuntimeEngine {
     }
 }
 
-fn same_character_identity(a: &str, b: &str) -> bool {
+pub(crate) fn same_character_identity(a: &str, b: &str) -> bool {
     if a.eq_ignore_ascii_case(b) {
         return true;
     }
@@ -2015,6 +2078,111 @@ mod tests {
         // Follow ending's title wire back to Main Menu
         assert!(engine.follow_flow_connection("ending_return_to_title", "title"));
         assert_eq!(engine.screen, RuntimeScreen::TitleScreen);
+
+        let _ = std::fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn test_runtime_save_load_slot_roundtrip_and_corrupt_slot_resilience() {
+        let unique_id = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let temp_dir = std::env::temp_dir().join(format!("blanc_runtime_save_test_{}", unique_id));
+        let mut project = Project::create_project_structure(&temp_dir, "Save Test VN", "Tester").unwrap();
+        project.starting_scene_id = Some("01_intro".to_string());
+        project.save_manifest(&temp_dir.join("Save_Test_VN.blanc")).unwrap();
+
+        let mut scene1 = Scene::new("01_intro", "ch1");
+        scene1.add_block(ActionBlock::Dialogue {
+            speaker: "Alice".to_string(),
+            text: "Checkpoint 1".to_string(),
+            voice_asset_id: None,
+            nameplate_position: None,
+        });
+        scene1.add_block(ActionBlock::SceneEnd {
+            action: SceneEndAction::JumpToScene("02_next".to_string()),
+        });
+        scene1.save_to_file(&temp_dir.join("Scenes").join("01_intro.bscene")).unwrap();
+
+        let mut scene2 = Scene::new("02_next", "ch1");
+        scene2.add_block(ActionBlock::Dialogue {
+            speaker: "Bob".to_string(),
+            text: "Checkpoint 2".to_string(),
+            voice_asset_id: None,
+            nameplate_position: None,
+        });
+        scene2.save_to_file(&temp_dir.join("Scenes").join("02_next.bscene")).unwrap();
+
+        let flow = StoryFlowGraph::starter_graph(Some("01_intro"));
+        flow.save_to_file(&temp_dir.join("Story").join("story_flow.bgraph")).unwrap();
+
+        let mut engine = RuntimeEngine::new(Some(temp_dir.clone()), None);
+        engine.start_new_game();
+        assert_eq!(engine.stage.current_scene_name, "01_intro");
+        engine.save_to_slot(1);
+
+        // Move to scene2
+        engine.load_scene("02_next");
+        assert_eq!(engine.stage.current_scene_name, "02_next");
+
+        // Load slot 1 -> restores 01_intro
+        engine.load_from_slot(1);
+        assert_eq!(engine.screen, RuntimeScreen::Playing);
+        assert_eq!(engine.stage.current_scene_name, "01_intro");
+        assert_eq!(engine.stage.dialogue.as_ref().unwrap().full_text, "Checkpoint 1");
+
+        // Corrupt slot 2 and ensure listing/loading does not panic
+        let saves_dir = temp_dir.join("Saves");
+        let _ = std::fs::create_dir_all(&saves_dir);
+        let _ = std::fs::write(saves_dir.join("slot_2.json"), b"{invalid json");
+        let slots = engine.list_save_slots();
+        assert!(slots.len() >= 2);
+        engine.load_from_slot(2);
+
+        let _ = std::fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn test_runtime_missing_asset_fallback_does_not_panic() {
+        let unique_id = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let temp_dir = std::env::temp_dir().join(format!("blanc_runtime_missing_test_{}", unique_id));
+        let mut project = Project::create_project_structure(&temp_dir, "Missing Asset VN", "Tester").unwrap();
+        project.starting_scene_id = Some("01_intro".to_string());
+        project.save_manifest(&temp_dir.join("Missing_Asset_VN.blanc")).unwrap();
+
+        let mut scene1 = Scene::new("01_intro", "ch1");
+        scene1.add_block(ActionBlock::Background {
+            asset_id: "missing_bg".to_string(),
+            transition: None,
+        });
+        scene1.add_block(ActionBlock::PlayBgm {
+            asset_id: "missing_bgm".to_string(),
+            volume: 0.8,
+            looping: true,
+        });
+        scene1.add_block(ActionBlock::PlaySfx {
+            asset_id: "missing_sfx".to_string(),
+            volume: 1.0,
+        });
+        scene1.add_block(ActionBlock::Dialogue {
+            speaker: "Alice".to_string(),
+            text: "Still works!".to_string(),
+            voice_asset_id: Some("missing_voice".to_string()),
+            nameplate_position: None,
+        });
+        scene1.save_to_file(&temp_dir.join("Scenes").join("01_intro.bscene")).unwrap();
+
+        let flow = StoryFlowGraph::starter_graph(Some("01_intro"));
+        flow.save_to_file(&temp_dir.join("Story").join("story_flow.bgraph")).unwrap();
+
+        let mut engine = RuntimeEngine::new(Some(temp_dir.clone()), None);
+        engine.start_new_game();
+        assert_eq!(engine.screen, RuntimeScreen::Playing);
+        assert_eq!(engine.stage.dialogue.as_ref().unwrap().full_text, "Still works!");
 
         let _ = std::fs::remove_dir_all(temp_dir);
     }

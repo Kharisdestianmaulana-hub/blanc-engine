@@ -7,7 +7,8 @@ use serde::{Deserialize, Serialize};
 use crate::scene::{ActionBlock, Scene};
 
 pub const LOCALES_DIR: &str = "locales";
-pub const LOCALE_MANIFEST_FILE: &str = "manifest.json";
+pub const LOCALE_MANIFEST_FILE: &str = "manifest.bloc";
+pub const LEGACY_LOCALE_MANIFEST_FILE: &str = "manifest.json";
 
 /// A language configured by the game developer in a project's Localization settings.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -40,6 +41,8 @@ impl fmt::Display for LanguageEntry {
 pub struct LocaleManifest {
     pub default_language: LanguageEntry,
     #[serde(default)]
+    pub story_language: Option<LanguageEntry>,
+    #[serde(default)]
     pub languages: Vec<LanguageEntry>,
 }
 
@@ -47,6 +50,7 @@ impl Default for LocaleManifest {
     fn default() -> Self {
         Self {
             default_language: LanguageEntry::new("en", "English"),
+            story_language: None,
             languages: Vec::new(),
         }
     }
@@ -57,11 +61,19 @@ impl LocaleManifest {
         project_dir.join(LOCALES_DIR).join(LOCALE_MANIFEST_FILE)
     }
 
+    pub fn legacy_manifest_path(project_dir: &Path) -> PathBuf {
+        project_dir.join(LOCALES_DIR).join(LEGACY_LOCALE_MANIFEST_FILE)
+    }
+
     pub fn load_from_dir(project_dir: &Path) -> Self {
-        let path = Self::manifest_path(project_dir);
-        if let Ok(raw) = std::fs::read_to_string(&path) {
-            if let Ok(parsed) = serde_json::from_str::<Self>(&raw) {
-                return parsed;
+        for path in [
+            Self::manifest_path(project_dir),
+            Self::legacy_manifest_path(project_dir),
+        ] {
+            if let Ok(raw) = std::fs::read_to_string(&path) {
+                if let Ok(parsed) = serde_json::from_str::<Self>(&raw) {
+                    return parsed;
+                }
             }
         }
         Self::default()
@@ -74,6 +86,11 @@ impl LocaleManifest {
             .map_err(|e| format!("Failed to serialize locale manifest: {}", e))?;
         std::fs::write(Self::manifest_path(project_dir), json)
             .map_err(|e| format!("Failed to write locale manifest: {}", e))
+    }
+
+    /// Returns the language the Story / Scene scripts are originally written in.
+    pub fn effective_story_language(&self) -> &LanguageEntry {
+        self.story_language.as_ref().unwrap_or(&self.default_language)
     }
 
     /// Returns default language first, followed by all additional developer-configured languages.
@@ -124,20 +141,34 @@ pub struct LocaleStrings {
 
 impl LocaleStrings {
     pub fn file_rel_path(code: &str) -> String {
+        format!("{}/{}.blang", LOCALES_DIR, sanitize_lang_code(code))
+    }
+
+    pub fn legacy_file_rel_path(code: &str) -> String {
         format!("{}/{}.json", LOCALES_DIR, sanitize_lang_code(code))
     }
 
     pub fn file_path(project_dir: &Path, code: &str) -> PathBuf {
         project_dir
             .join(LOCALES_DIR)
+            .join(format!("{}.blang", sanitize_lang_code(code)))
+    }
+
+    pub fn legacy_file_path(project_dir: &Path, code: &str) -> PathBuf {
+        project_dir
+            .join(LOCALES_DIR)
             .join(format!("{}.json", sanitize_lang_code(code)))
     }
 
     pub fn load_from_dir(project_dir: &Path, code: &str) -> Self {
-        let path = Self::file_path(project_dir, code);
-        if let Ok(raw) = std::fs::read_to_string(&path) {
-            if let Ok(parsed) = serde_json::from_str::<Self>(&raw) {
-                return parsed;
+        for path in [
+            Self::file_path(project_dir, code),
+            Self::legacy_file_path(project_dir, code),
+        ] {
+            if let Ok(raw) = std::fs::read_to_string(&path) {
+                if let Ok(parsed) = serde_json::from_str::<Self>(&raw) {
+                    return parsed;
+                }
             }
         }
         Self::default()

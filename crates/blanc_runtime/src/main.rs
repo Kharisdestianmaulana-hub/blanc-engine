@@ -203,11 +203,13 @@ impl RuntimeApp {
                 self.engine.enter_title_screen();
             }
             RuntimeMessage::FollowEndingTitle => {
-                if let RuntimeScreen::Ending {
-                    ending_node_id: Some(node_id),
-                    ..
-                } = self.engine.screen.clone()
-                {
+                let ending_node_id = match self.engine.screen.clone() {
+                    RuntimeScreen::Ending { ending_node_id, .. }
+                    | RuntimeScreen::CreditsRoll { ending_node_id }
+                    | RuntimeScreen::GameOver { ending_node_id } => ending_node_id,
+                    _ => None,
+                };
+                if let Some(node_id) = ending_node_id {
                     if self.engine.follow_flow_connection(&node_id, "title") {
                         return Task::none();
                     }
@@ -294,6 +296,7 @@ impl RuntimeApp {
 
     fn subscription(&self) -> Subscription<RuntimeMessage> {
         let needs_tick = self.engine.screen == RuntimeScreen::Playing
+            || matches!(self.engine.screen, RuntimeScreen::CreditsRoll { .. })
             || self.engine.toast.is_some()
             || self.gilrs.is_some();
         let tick_sub = if needs_tick {
@@ -425,7 +428,10 @@ impl RuntimeApp {
             RuntimeScreen::Backlog => {
                 return self.update(RuntimeMessage::CloseBacklog);
             }
-            RuntimeScreen::Ending { .. } => {
+            RuntimeScreen::Ending { .. } | RuntimeScreen::CreditsRoll { .. } => {
+                return self.update(RuntimeMessage::FollowEndingTitle);
+            }
+            RuntimeScreen::GameOver { .. } => {
                 return self.update(RuntimeMessage::FollowEndingTitle);
             }
             RuntimeScreen::Error(_) => {}
@@ -527,7 +533,11 @@ impl RuntimeApp {
             | RuntimeScreen::Playing => {
                 self.engine.move_focus(delta);
             }
-            RuntimeScreen::Backlog | RuntimeScreen::Ending { .. } | RuntimeScreen::Error(_) => {}
+            RuntimeScreen::Backlog
+            | RuntimeScreen::Ending { .. }
+            | RuntimeScreen::CreditsRoll { .. }
+            | RuntimeScreen::GameOver { .. }
+            | RuntimeScreen::Error(_) => {}
         }
         Task::none()
     }

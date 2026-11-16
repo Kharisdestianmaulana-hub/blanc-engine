@@ -5,7 +5,9 @@ use std::sync::Arc;
 use blanc_core::asset::AssetCategory;
 use blanc_core::config::SystemScreensConfig;
 use blanc_core::flow::StoryFlowGraph;
-use blanc_core::localization::{LocaleManifest, LocaleStrings, LOCALES_DIR, LOCALE_MANIFEST_FILE};
+use blanc_core::localization::{
+    LocaleManifest, LocaleStrings, LEGACY_LOCALE_MANIFEST_FILE, LOCALES_DIR, LOCALE_MANIFEST_FILE,
+};
 use blanc_core::pack::{BpackArchive, ExportMetadata, ExportSaveMode, EXPORT_META_ENTRY};
 use blanc_core::project::Project;
 use blanc_core::scene::Scene;
@@ -167,15 +169,19 @@ impl LoadedProject {
             .and_then(|b| serde_json::from_slice(&b).ok());
         let save_dir = resolve_save_dir(exe_dir, &project.name, export_meta.as_ref());
         let manifest_rel = format!("{}/{}", LOCALES_DIR, LOCALE_MANIFEST_FILE);
+        let legacy_manifest_rel = format!("{}/{}", LOCALES_DIR, LEGACY_LOCALE_MANIFEST_FILE);
         let locale_manifest = archive
             .read_file(&manifest_rel)
+            .or_else(|| archive.read_file(&legacy_manifest_rel))
             .and_then(|b| serde_json::from_slice::<LocaleManifest>(&b).ok())
             .unwrap_or_default();
         let mut locale_tables = HashMap::new();
         for lang in locale_manifest.all_languages() {
             let rel = LocaleStrings::file_rel_path(&lang.code);
+            let legacy_rel = LocaleStrings::legacy_file_rel_path(&lang.code);
             let strings = archive
                 .read_file(&rel)
+                .or_else(|| archive.read_file(&legacy_rel))
                 .and_then(|b| serde_json::from_slice::<LocaleStrings>(&b).ok())
                 .unwrap_or_default();
             locale_tables.insert(lang.code.to_ascii_lowercase(), strings);

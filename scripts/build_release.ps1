@@ -68,7 +68,8 @@ if (-not $SkipSetup) {
     if ($IsccPath) {
         Write-Host "`n[4/4] Building BlancEngine-$Version-Setup.exe with Inno Setup..." -ForegroundColor Yellow
         $IssPath = Join-Path $RepoRoot "installer\blanc_engine.iss"
-        & $IsccPath "/DMyAppVersion=$Version" "/DStagingDir=$StagingDir" "/DOutputDir=$DistDir" $IssPath
+        $IconPath = Join-Path $RepoRoot "assets\icons\blanc_engine.ico"
+        & $IsccPath "/DMyAppVersion=$Version" "/DStagingDir=$StagingDir" "/DOutputDir=$DistDir" "/DAppIconFile=$IconPath" $IssPath
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
         $SetupOut = Join-Path $DistDir "BlancEngine-$Version-Setup.exe"
         Write-Host "Created Setup: $SetupOut" -ForegroundColor Green

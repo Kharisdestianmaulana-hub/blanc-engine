@@ -21,3 +21,6 @@ rodio.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 ureq = "2"
+
+[target.'cfg(windows)'.build-dependencies]
+winres = "0.1"

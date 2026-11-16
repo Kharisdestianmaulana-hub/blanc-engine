@@ -7,16 +7,24 @@ use blanc_core::flow::FlowNodeType;
 use blanc_core::project::Project;
 use blanc_core::scene::{ActionBlock, CharacterPosition, ChoiceOption as SceneChoiceOption, Scene};
 use blanc_core::story::{Chapter, Story, StoryElement};
+use crate::screens::dashboard::PendingUnsavedAction;
+use crate::screens::ui_designer::UiDesignerMessage;
 use crate::screens::{
     handle_ui_designer_message, AssetPickerModalState, AssetPickerTarget, DashboardMessage,
-    DashboardState, FlowCanvasAction, UiAssetSlot, WelcomeMessage, WelcomeState, WorkflowTab,
-    DEFAULT_SCRIPT_TEMPLATE,
+    DashboardState, FlowCanvasAction, UiAssetSlot, WelcomeMessage,
+    WelcomeState, WorkflowTab, DEFAULT_SCRIPT_TEMPLATE,
 };
 
 #[derive(Debug, Clone)]
 pub enum AppMessage {
     Welcome(WelcomeMessage),
     Dashboard(DashboardMessage),
+    SaveShortcut,
+    UndoShortcut,
+    RedoShortcut,
+    AutoSaveTick,
+    PreviewPollTick,
+    WindowCloseRequested(iced::window::Id),
 }
 
 struct ExportJobSnapshot {
@@ -81,21 +89,136 @@ impl Default for CurrentScreen {
 
 pub struct EditorApp {
     screen: CurrentScreen,
+    periodic_auto_save: bool,
+    auto_save_interval_minutes: u32,
+    preview_child: Option<std::process::Child>,
 }
 
 impl Default for EditorApp {
     fn default() -> Self {
+        let cfg = crate::screens::welcome::HubConfig::load();
         Self {
             screen: CurrentScreen::default(),
+            periodic_auto_save: cfg.periodic_auto_save,
+            auto_save_interval_minutes: cfg.auto_save_interval_minutes.max(1),
+            preview_child: None,
         }
     }
 }
 
 impl EditorApp {
+    pub fn subscription(&self) -> iced::Subscription<AppMessage> {
+        let mut subs = vec![
+            iced::event::listen_with(|event, _status, _id| {
+                if let iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
+                    key,
+                    modifiers,
+                    ..
+                }) = event
+                {
+                    if modifiers.command() {
+                        return match key.as_ref() {
+                            iced::keyboard::Key::Character("s" | "S") => {
+                                Some(AppMessage::SaveShortcut)
+                            }
+                            iced::keyboard::Key::Character("z" | "Z") if modifiers.shift() => {
+                                Some(AppMessage::RedoShortcut)
+                            }
+                            iced::keyboard::Key::Character("z" | "Z") => {
+                                Some(AppMessage::UndoShortcut)
+                            }
+                            iced::keyboard::Key::Character("y" | "Y") => {
+                                Some(AppMessage::RedoShortcut)
+                            }
+                            _ => None,
+                        };
+                    }
+                }
+                None
+            }),
+            iced::window::close_requests().map(AppMessage::WindowCloseRequested),
+        ];
+        if matches!(self.screen, CurrentScreen::Workspace { .. }) && self.periodic_auto_save {
+            let secs = u64::from(self.auto_save_interval_minutes.max(1)) * 60;
+            subs.push(
+                iced::time::every(std::time::Duration::from_secs(secs))
+                    .map(|_| AppMessage::AutoSaveTick),
+            );
+        }
+        if self.preview_child.is_some() {
+            subs.push(
+                iced::time::every(std::time::Duration::from_millis(500))
+                    .map(|_| AppMessage::PreviewPollTick),
+            );
+        }
+        iced::Subscription::batch(subs)
+    }
+
     pub fn update(&mut self, message: AppMessage) -> Task<AppMessage> {
         match message {
             AppMessage::Welcome(w_msg) => self.update_welcome(w_msg),
             AppMessage::Dashboard(d_msg) => self.update_dashboard(d_msg),
+            AppMessage::SaveShortcut => {
+                if matches!(self.screen, CurrentScreen::Workspace { .. }) {
+                    self.update_dashboard(DashboardMessage::SaveAllProjectChanges)
+                } else {
+                    Task::none()
+                }
+            }
+            AppMessage::UndoShortcut => {
+                if matches!(self.screen, CurrentScreen::Workspace { .. }) {
+                    self.update_dashboard(DashboardMessage::Undo)
+                } else {
+                    Task::none()
+                }
+            }
+            AppMessage::RedoShortcut => {
+                if matches!(self.screen, CurrentScreen::Workspace { .. }) {
+                    self.update_dashboard(DashboardMessage::Redo)
+                } else {
+                    Task::none()
+                }
+            }
+            AppMessage::AutoSaveTick => {
+                if let CurrentScreen::Workspace {
+                    project,
+                    project_dir,
+                    dashboard,
+                } = &mut self.screen
+                {
+                    if dashboard.has_unsaved_changes && dashboard.pending_unsaved_action.is_none() {
+                        Self::save_all_workspace_changes(project, project_dir, dashboard);
+                        dashboard.status_message = Some(format!(
+                            "Auto-saved ({} min interval).",
+                            self.auto_save_interval_minutes
+                        ));
+                    }
+                }
+                Task::none()
+            }
+            AppMessage::PreviewPollTick => {
+                let exited = if let Some(child) = &mut self.preview_child {
+                    matches!(child.try_wait(), Ok(Some(_)) | Err(_))
+                } else {
+                    true
+                };
+                if exited {
+                    self.preview_child = None;
+                    if let CurrentScreen::Workspace { dashboard, .. } = &mut self.screen {
+                        dashboard.is_preview_running = false;
+                    }
+                }
+                Task::none()
+            }
+            AppMessage::WindowCloseRequested(id) => {
+                if let CurrentScreen::Workspace { dashboard, .. } = &mut self.screen {
+                    if dashboard.has_unsaved_changes {
+                        dashboard.pending_unsaved_action = Some(PendingUnsavedAction::ExitApp(id));
+                        return Task::none();
+                    }
+                }
+                iced::window::close(id)
+            }
         }
     }
 
@@ -334,6 +457,8 @@ impl EditorApp {
                 state.selected_folder = state.config.default_folder.clone();
                 state.input_author = state.config.default_author.clone();
                 state.config.save();
+                self.periodic_auto_save = state.config.periodic_auto_save;
+                self.auto_save_interval_minutes = state.config.auto_save_interval_minutes.max(1);
                 state.settings_status_message = Some("Global preferences reset to defaults (recent projects kept).".to_string());
             }
             WelcomeMessage::DefaultAuthorChanged(val) => {
@@ -354,6 +479,27 @@ impl EditorApp {
             WelcomeMessage::ToggleAutoSaveOnPlayPreview(val) => {
                 state.config.auto_save_on_play_preview = val;
                 state.config.save();
+            }
+            WelcomeMessage::TogglePeriodicAutoSave(val) => {
+                state.config.periodic_auto_save = val;
+                self.periodic_auto_save = val;
+                state.config.save();
+                state.settings_status_message = Some(if val {
+                    format!(
+                        "Periodic auto-save enabled (every {} min).",
+                        self.auto_save_interval_minutes
+                    )
+                } else {
+                    "Periodic auto-save disabled.".to_string()
+                });
+            }
+            WelcomeMessage::SetAutoSaveIntervalMinutes(mins) => {
+                let mins = mins.max(1);
+                state.config.auto_save_interval_minutes = mins;
+                self.auto_save_interval_minutes = mins;
+                state.config.save();
+                state.settings_status_message =
+                    Some(format!("Periodic auto-save interval set to {} min.", mins));
             }
             WelcomeMessage::ToggleReopenLastProject(val) => {
                 state.config.reopen_last_project = val;
@@ -555,14 +701,125 @@ impl EditorApp {
             return Task::none();
         };
 
+        let modifies_project = Self::message_modifies_project(&message);
+        if modifies_project {
+            dashboard.has_unsaved_changes = true;
+        }
+        let pre_undo = if modifies_project {
+            Some((
+                Self::capture_undo_snapshot(dashboard),
+                Self::undo_burst_tag(&message),
+            ))
+        } else {
+            None
+        };
+
         match message {
             DashboardMessage::CloseProject => {
+                if dashboard.has_unsaved_changes {
+                    dashboard.pending_unsaved_action = Some(PendingUnsavedAction::CloseProject);
+                    return Task::none();
+                }
+                Self::kill_preview_process(&mut self.preview_child);
+                dashboard.is_preview_running = false;
                 if let Some(sink) = dashboard.audio_sink.take() {
                     sink.stop();
                 }
                 dashboard.playing_audio_asset_id = None;
-                Self::auto_save_current_scene(dashboard, project_dir);
                 self.screen = CurrentScreen::Welcome(WelcomeState::new());
+                return Task::none();
+            }
+            DashboardMessage::SaveAllProjectChanges => {
+                Self::save_all_workspace_changes(project, project_dir, dashboard);
+                dashboard.status_message = Some("All changes saved (Ctrl+S).".to_string());
+                dashboard.scene_status_message = Some("All changes saved (Ctrl+S).".to_string());
+                dashboard.settings_status_message = Some("All changes saved (Ctrl+S).".to_string());
+            }
+            DashboardMessage::Undo => {
+                if let Some(prev) = dashboard.undo_stack.pop() {
+                    let current = Self::capture_undo_snapshot(dashboard);
+                    dashboard.redo_stack.push(current);
+                    if dashboard.redo_stack.len() > 50 {
+                        dashboard.redo_stack.remove(0);
+                    }
+                    Self::apply_undo_snapshot(dashboard, prev);
+                    dashboard.last_undo_burst = None;
+                    dashboard.has_unsaved_changes = true;
+                    dashboard.status_message = Some("Undid last change (Ctrl+Z).".to_string());
+                }
+                return Task::none();
+            }
+            DashboardMessage::Redo => {
+                if let Some(next) = dashboard.redo_stack.pop() {
+                    let current = Self::capture_undo_snapshot(dashboard);
+                    dashboard.undo_stack.push(current);
+                    if dashboard.undo_stack.len() > 50 {
+                        dashboard.undo_stack.remove(0);
+                    }
+                    Self::apply_undo_snapshot(dashboard, next);
+                    dashboard.last_undo_burst = None;
+                    dashboard.has_unsaved_changes = true;
+                    dashboard.status_message = Some("Redid change (Ctrl+Y).".to_string());
+                }
+                return Task::none();
+            }
+            DashboardMessage::ValidateProject => {
+                let report = Self::run_project_validation(project, project_dir, dashboard);
+                dashboard.status_message = Some(if report.is_clean() {
+                    "Validation passed: 0 errors, 0 warnings.".to_string()
+                } else {
+                    format!(
+                        "Validation found {} error(s) and {} warning(s).",
+                        report.error_count(),
+                        report.warning_count()
+                    )
+                });
+                dashboard.validation_report = Some(report);
+                dashboard.show_validation_modal = true;
+                return Task::none();
+            }
+            DashboardMessage::CloseValidationModal => {
+                dashboard.show_validation_modal = false;
+                return Task::none();
+            }
+            DashboardMessage::ConfirmSaveAndContinue => {
+                let pending = dashboard.pending_unsaved_action.take();
+                Self::save_all_workspace_changes(project, project_dir, dashboard);
+                if let Some(sink) = dashboard.audio_sink.take() {
+                    sink.stop();
+                }
+                dashboard.playing_audio_asset_id = None;
+                match pending {
+                    Some(PendingUnsavedAction::CloseProject) => {
+                        self.screen = CurrentScreen::Welcome(WelcomeState::new());
+                        return Task::none();
+                    }
+                    Some(PendingUnsavedAction::ExitApp(id)) => {
+                        return iced::window::close(id);
+                    }
+                    None => {}
+                }
+            }
+            DashboardMessage::ConfirmDiscardAndContinue => {
+                let pending = dashboard.pending_unsaved_action.take();
+                dashboard.has_unsaved_changes = false;
+                if let Some(sink) = dashboard.audio_sink.take() {
+                    sink.stop();
+                }
+                dashboard.playing_audio_asset_id = None;
+                match pending {
+                    Some(PendingUnsavedAction::CloseProject) => {
+                        self.screen = CurrentScreen::Welcome(WelcomeState::new());
+                        return Task::none();
+                    }
+                    Some(PendingUnsavedAction::ExitApp(id)) => {
+                        return iced::window::close(id);
+                    }
+                    None => {}
+                }
+            }
+            DashboardMessage::CancelUnsavedPrompt => {
+                dashboard.pending_unsaved_action = None;
             }
             DashboardMessage::SelectWorkflowTab(tab) => {
                 if tab != WorkflowTab::Assets {
@@ -689,21 +946,61 @@ impl EditorApp {
                 }
             }
             DashboardMessage::DeleteAssetClicked(asset_id) => {
-                if dashboard.playing_audio_asset_id.as_deref() == Some(asset_id.as_str()) {
-                    if let Some(sink) = dashboard.audio_sink.take() {
-                        sink.stop();
+                let confirm = crate::screens::welcome::HubConfig::load().confirm_before_delete;
+                if confirm {
+                    let asset_name = project
+                        .assets
+                        .assets
+                        .get(&asset_id)
+                        .map(|a| a.name.clone())
+                        .unwrap_or_else(|| asset_id.clone());
+                    let mut used_in: Vec<String> = Vec::new();
+                    if let Ok(cfg_json) = serde_json::to_string(&dashboard.system_screens_config) {
+                        if cfg_json.contains(&asset_id) {
+                            used_in.push("UI Designer / System Settings".to_string());
+                        }
                     }
-                    dashboard.playing_audio_asset_id = None;
-                }
-                if dashboard.selected_preview_asset_id.as_deref() == Some(asset_id.as_str()) {
-                    dashboard.selected_preview_asset_id = None;
-                }
-                match project.delete_asset(project_dir, &asset_id, true) {
-                    Ok(_) => {
-                        dashboard.status_message = Some("Asset deleted successfully.".to_string());
+                    for sc in &dashboard.all_scenes {
+                        if let Ok(sc_json) = serde_json::to_string(sc) {
+                            if sc_json.contains(&asset_id) {
+                                used_in.push(format!("Scene '{}'", sc.name));
+                            }
+                        }
                     }
-                    Err(err) => {
-                        dashboard.status_message = Some(format!("Failed to delete asset: {}", err));
+                    dashboard.pending_delete_asset = Some((asset_id, asset_name, used_in));
+                } else {
+                    Self::perform_delete_asset(project, project_dir, dashboard, &asset_id);
+                }
+            }
+            DashboardMessage::ConfirmDeleteAsset => {
+                if let Some((asset_id, _, _)) = dashboard.pending_delete_asset.take() {
+                    Self::perform_delete_asset(project, project_dir, dashboard, &asset_id);
+                }
+            }
+            DashboardMessage::CancelDeleteAsset => {
+                dashboard.pending_delete_asset = None;
+            }
+            DashboardMessage::RelinkAssetClicked(asset_id) => {
+                let Some(existing) = project.assets.assets.get(&asset_id).cloned() else {
+                    return Task::none();
+                };
+                if let Some(picked) = rfd::FileDialog::new().pick_file() {
+                    let target_path = project_dir.join(&existing.relative_path);
+                    if let Some(parent) = target_path.parent() {
+                        let _ = std::fs::create_dir_all(parent);
+                    }
+                    match std::fs::copy(&picked, &target_path) {
+                        Ok(bytes) => {
+                            if let Some(asset_mut) = project.assets.assets.get_mut(&asset_id) {
+                                asset_mut.file_size = bytes;
+                            }
+                            let manifest_filename = format!("{}.{}", project.name.replace(' ', "_"), Project::MANIFEST_EXTENSION);
+                            let _ = project.save_manifest(&project_dir.join(manifest_filename));
+                            dashboard.status_message = Some(format!("Relinked '{}' successfully.", existing.name));
+                        }
+                        Err(e) => {
+                            dashboard.status_message = Some(format!("Failed to relink '{}': {}", existing.name, e));
+                        }
                     }
                 }
             }
@@ -832,6 +1129,39 @@ impl EditorApp {
                         dashboard.story_status_message = Some(format!("Failed to save story file: {}", err));
                     }
                 }
+            }
+            DashboardMessage::StoryLangCustomCodeChanged(val) => {
+                dashboard.story_lang_custom_input = val;
+            }
+            DashboardMessage::OpenFormatGuide => {
+                dashboard.show_format_guide_modal = true;
+            }
+            DashboardMessage::CloseFormatGuide => {
+                dashboard.show_format_guide_modal = false;
+            }
+            DashboardMessage::SetStoryScriptLanguage(code, display_name) => {
+                let norm = code.trim().to_ascii_lowercase();
+                if norm.is_empty() {
+                    return Task::none();
+                }
+                let entry = blanc_core::localization::LanguageEntry::new(&norm, &display_name);
+                dashboard.locale_manifest.story_language = Some(entry.clone());
+                if !dashboard
+                    .locale_manifest
+                    .all_languages()
+                    .iter()
+                    .any(|l| l.code.eq_ignore_ascii_case(&norm))
+                {
+                    dashboard.locale_manifest.languages.push(entry);
+                    let tbl = blanc_core::localization::LocaleStrings::load_from_dir(project_dir, &norm);
+                    dashboard.locale_tables.entry(norm.clone()).or_insert(tbl);
+                }
+                let _ = dashboard.locale_manifest.save_to_dir(project_dir);
+                dashboard.story_lang_custom_input.clear();
+                dashboard.story_status_message = Some(format!(
+                    "Story Script Language set to {} ({}).",
+                    display_name, norm
+                ));
             }
             DashboardMessage::ConvertScriptToScenesClicked => {
                 let elements = &dashboard.parsed_story_elements;
@@ -1313,6 +1643,14 @@ impl EditorApp {
                 dashboard.locale_show_default_editor = !dashboard.locale_show_default_editor;
                 if dashboard.locale_show_default_editor {
                     dashboard.locale_show_add_form = false;
+                    dashboard.locale_story_lang_open = false;
+                }
+            }
+            DashboardMessage::LocaleToggleStoryLangEditor => {
+                dashboard.locale_story_lang_open = !dashboard.locale_story_lang_open;
+                if dashboard.locale_story_lang_open {
+                    dashboard.locale_show_default_editor = false;
+                    dashboard.locale_show_add_form = false;
                 }
             }
             DashboardMessage::LocaleToggleAddForm => {
@@ -1365,6 +1703,7 @@ impl EditorApp {
             DashboardMessage::LocaleSaveAll => {
                 match Self::save_localization(dashboard, project_dir) {
                     Ok(()) => {
+                        dashboard.has_unsaved_changes = false;
                         dashboard.locale_status_message = Some("Saved localization manifest and all language files.".to_string());
                     }
                     Err(err) => {
@@ -1629,8 +1968,11 @@ impl EditorApp {
             DashboardMessage::UpdateTitleText(text) => {
                 dashboard.system_screens_config.title_text = text;
             }
-            DashboardMessage::UpdateStartingScene(scene) => {
-                dashboard.system_screens_config.starting_scene_id = if scene.is_empty() { None } else { Some(scene) };
+            DashboardMessage::UpdateProjectVersion(ver) => {
+                project.version = ver;
+            }
+            DashboardMessage::UpdateProjectAuthor(author) => {
+                project.author = author;
             }
             DashboardMessage::UpdateAspectScalingMode(mode) => {
                 dashboard.system_screens_config.aspect_scaling_mode = mode;
@@ -1669,6 +2011,13 @@ impl EditorApp {
                 let config_path = config_dir.join("system_screens.bconfig");
                 match dashboard.system_screens_config.save_to_file(&config_path) {
                     Ok(_) => {
+                        let manifest_filename = format!(
+                            "{}.{}",
+                            project.name.replace(' ', "_"),
+                            Project::MANIFEST_EXTENSION
+                        );
+                        let _ = project.save_manifest(&project_dir.join(manifest_filename));
+                        dashboard.has_unsaved_changes = false;
                         dashboard.settings_status_message = Some("System screen settings saved successfully.".to_string());
                         return Task::perform(
                             tokio::time::sleep(std::time::Duration::from_secs(3)),
@@ -1970,6 +2319,17 @@ impl EditorApp {
             }
             DashboardMessage::RunExportGame => {
                 if dashboard.export_in_progress {
+                    return Task::none();
+                }
+                let report = Self::run_project_validation(project, project_dir, dashboard);
+                if report.has_errors() {
+                    let err_count = report.error_count();
+                    dashboard.validation_report = Some(report);
+                    dashboard.show_validation_modal = true;
+                    dashboard.export_status_message = Some(format!(
+                        "Export blocked: {} critical validation error(s) found.",
+                        err_count
+                    ));
                     return Task::none();
                 }
                 Self::auto_save_current_scene(dashboard, project_dir);
@@ -2380,6 +2740,7 @@ impl EditorApp {
                 let graph_path = story_dir.join("story_flow.bgraph");
                 match dashboard.flow_graph.save_to_file(&graph_path) {
                     Ok(_) => {
+                        dashboard.has_unsaved_changes = false;
                         dashboard.flow_status_message =
                             Some("Saved story flow graph successfully.".to_string());
                         return Task::perform(
@@ -2409,19 +2770,266 @@ impl EditorApp {
                 if crate::screens::welcome::HubConfig::load().auto_save_on_play_preview {
                     Self::auto_save_current_scene(dashboard, project_dir);
                 }
-                Self::launch_runtime_preview(dashboard, project_dir, None);
+                let report = Self::run_project_validation(project, project_dir, dashboard);
+                Self::kill_preview_process(&mut self.preview_child);
+                self.preview_child = Self::launch_runtime_preview(dashboard, project_dir, None);
+                dashboard.is_preview_running = self.preview_child.is_some();
+                if !report.is_clean() {
+                    dashboard.status_message = Some(format!(
+                        "Play Preview launched ({} error(s), {} warning(s) — click Validate to inspect).",
+                        report.error_count(),
+                        report.warning_count()
+                    ));
+                }
+            }
+            DashboardMessage::ClosePreview => {
+                Self::kill_preview_process(&mut self.preview_child);
+                dashboard.is_preview_running = false;
+                dashboard.status_message = Some("Preview closed.".to_string());
+                return Task::none();
             }
             DashboardMessage::PlayFromCurrentScene => {
                 Self::auto_save_current_scene(dashboard, project_dir);
+                let report = Self::run_project_validation(project, project_dir, dashboard);
                 let scene_name = dashboard
                     .scenes_list
                     .get(dashboard.selected_scene_index)
                     .cloned();
-                Self::launch_runtime_preview(dashboard, project_dir, scene_name.as_deref());
+                Self::kill_preview_process(&mut self.preview_child);
+                self.preview_child = Self::launch_runtime_preview(dashboard, project_dir, scene_name.as_deref());
+                dashboard.is_preview_running = self.preview_child.is_some();
+                if !report.is_clean() {
+                    dashboard.status_message = Some(format!(
+                        "Play Preview launched ({} error(s), {} warning(s) — click Validate to inspect).",
+                        report.error_count(),
+                        report.warning_count()
+                    ));
+                }
             }
         }
 
+        if let Some((snap, burst_tag)) = pre_undo {
+            Self::record_undo_snapshot(dashboard, snap, burst_tag);
+        }
+
         Task::none()
+    }
+
+    fn capture_undo_snapshot(
+        dashboard: &DashboardState,
+    ) -> crate::screens::dashboard::WorkspaceUndoSnapshot {
+        crate::screens::dashboard::WorkspaceUndoSnapshot {
+            selected_scene_index: dashboard.selected_scene_index,
+            current_scene: dashboard.current_scene.clone(),
+            flow_graph: dashboard.flow_graph.clone(),
+            system_screens_config: dashboard.system_screens_config.clone(),
+        }
+    }
+
+    fn apply_undo_snapshot(
+        dashboard: &mut DashboardState,
+        snap: crate::screens::dashboard::WorkspaceUndoSnapshot,
+    ) {
+        dashboard.selected_scene_index = snap.selected_scene_index;
+        dashboard.current_scene = snap.current_scene;
+        dashboard.flow_graph = snap.flow_graph;
+        dashboard.system_screens_config = snap.system_screens_config;
+        if let Some(scene) = &dashboard.current_scene {
+            if let Some(existing) = dashboard.all_scenes.iter_mut().find(|s| s.name == scene.name) {
+                *existing = scene.clone();
+            }
+        }
+    }
+
+    fn undo_burst_tag(msg: &DashboardMessage) -> Option<&'static str> {
+        match msg {
+            DashboardMessage::UpdateSpeakerName(_, _)
+            | DashboardMessage::UpdateDialogueText(_, _)
+            | DashboardMessage::UpdateChoicePrompt(_, _)
+            | DashboardMessage::UpdateTitleText(_)
+            | DashboardMessage::UpdateProjectVersion(_)
+            | DashboardMessage::UpdateProjectAuthor(_)
+            | DashboardMessage::UpdateMasterVolume(_)
+            | DashboardMessage::UpdateBgmVolume(_)
+            | DashboardMessage::UpdateSfxVolume(_)
+            | DashboardMessage::UpdateVoiceVolume(_)
+            | DashboardMessage::UpdateTextSpeed(_)
+            | DashboardMessage::UpdateAutoForwardDelay(_) => Some("text_or_slider"),
+            DashboardMessage::FlowAction(_) => Some("flow_action"),
+            DashboardMessage::UiDesigner(_) => Some("ui_edit"),
+            _ => None,
+        }
+    }
+
+    fn record_undo_snapshot(
+        dashboard: &mut DashboardState,
+        pre_snap: crate::screens::dashboard::WorkspaceUndoSnapshot,
+        burst_tag: Option<&'static str>,
+    ) {
+        let now_snap = Self::capture_undo_snapshot(dashboard);
+        if pre_snap == now_snap {
+            return;
+        }
+
+        let now = std::time::Instant::now();
+        if let Some(tag) = burst_tag {
+            if let Some((last_time, last_tag)) = dashboard.last_undo_burst {
+                if last_tag == tag && now.duration_since(last_time).as_millis() < 800 {
+                    dashboard.last_undo_burst = Some((now, tag));
+                    dashboard.redo_stack.clear();
+                    return;
+                }
+            }
+            dashboard.last_undo_burst = Some((now, tag));
+        } else {
+            dashboard.last_undo_burst = None;
+        }
+
+        dashboard.undo_stack.push(pre_snap);
+        if dashboard.undo_stack.len() > 50 {
+            dashboard.undo_stack.remove(0);
+        }
+        dashboard.redo_stack.clear();
+    }
+
+    fn run_project_validation(
+        project: &Project,
+        project_dir: &std::path::Path,
+        dashboard: &mut DashboardState,
+    ) -> blanc_core::validator::ValidationReport {
+        if let Some(scene) = &dashboard.current_scene {
+            if let Some(existing) = dashboard.all_scenes.iter_mut().find(|s| s.name == scene.name) {
+                *existing = scene.clone();
+            } else {
+                dashboard.all_scenes.push(scene.clone());
+            }
+        }
+        blanc_core::validator::validate_project(
+            project_dir,
+            &project.assets,
+            &dashboard.flow_graph,
+            &dashboard.all_scenes,
+            &dashboard.system_screens_config,
+        )
+    }
+
+    fn message_modifies_project(msg: &DashboardMessage) -> bool {
+        match msg {
+            DashboardMessage::PlayPreview
+            | DashboardMessage::ClosePreview
+            | DashboardMessage::PlayFromCurrentScene
+            | DashboardMessage::CloseProject
+            | DashboardMessage::SaveAllProjectChanges
+            | DashboardMessage::Undo
+            | DashboardMessage::Redo
+            | DashboardMessage::ValidateProject
+            | DashboardMessage::CloseValidationModal
+            | DashboardMessage::OpenFormatGuide
+            | DashboardMessage::CloseFormatGuide
+            | DashboardMessage::StoryLangCustomCodeChanged(_)
+            | DashboardMessage::ConfirmSaveAndContinue
+            | DashboardMessage::ConfirmDiscardAndContinue
+            | DashboardMessage::CancelUnsavedPrompt
+            | DashboardMessage::SelectWorkflowTab(_)
+            | DashboardMessage::OpenProjectFolder
+            | DashboardMessage::DismissSceneStatusMessage
+            | DashboardMessage::DismissSettingsStatusMessage
+            | DashboardMessage::DismissFlowStatusMessage
+            | DashboardMessage::SelectAssetCategory(_)
+            | DashboardMessage::AssetSearchChanged(_)
+            | DashboardMessage::SetAssetViewMode(_)
+            | DashboardMessage::SelectAssetForPreview(_)
+            | DashboardMessage::ToggleAssetPreviewBg
+            | DashboardMessage::PlayAssetAudioPreview(_)
+            | DashboardMessage::StopAssetAudioPreview
+            | DashboardMessage::OpenAssetFolder(_)
+            | DashboardMessage::RevealAssetInExplorer(_)
+            | DashboardMessage::CancelDeleteAsset
+            | DashboardMessage::SelectScene(_)
+            | DashboardMessage::SceneEditorBlocksScrolled(_)
+            | DashboardMessage::OpenAssetPickerModal { .. }
+            | DashboardMessage::CloseAssetPickerModal
+            | DashboardMessage::AssetPickerSearchChanged(_)
+            | DashboardMessage::SaveSystemSettings
+            | DashboardMessage::SaveStoryFlow
+            | DashboardMessage::SaveStoryChapterClicked
+            | DashboardMessage::LocaleSelectLanguage(_)
+            | DashboardMessage::LocaleSearchChanged(_)
+            | DashboardMessage::LocaleFilterScopeChanged(_)
+            | DashboardMessage::LocaleToggleUntranslatedOnly(_)
+            | DashboardMessage::LocaleToggleDefaultEditor
+            | DashboardMessage::LocaleToggleStoryLangEditor
+            | DashboardMessage::LocaleToggleAddForm
+            | DashboardMessage::LocaleFillPresetLanguage(_, _)
+            | DashboardMessage::LocaleSaveAll
+            | DashboardMessage::LocaleExportCsv
+            | DashboardMessage::FlowSearchChanged(_) => false,
+            DashboardMessage::ScriptEditorAction(action) => action.is_edit(),
+            DashboardMessage::UiDesigner(ui_msg) => !matches!(
+                ui_msg,
+                UiDesignerMessage::SelectSubTab(_)
+                    | UiDesignerMessage::ToggleSection(_)
+                    | UiDesignerMessage::SelectPreviewMode(_)
+                    | UiDesignerMessage::ToggleColorPicker(_)
+            ),
+            _ => true,
+        }
+    }
+
+    fn save_all_workspace_changes(
+        project: &mut Project,
+        project_dir: &std::path::Path,
+        dashboard: &mut DashboardState,
+    ) {
+        Self::auto_save_current_scene(dashboard, project_dir);
+
+        let config_dir = project_dir.join("Settings");
+        let _ = std::fs::create_dir_all(&config_dir);
+        let _ = dashboard
+            .system_screens_config
+            .save_to_file(&config_dir.join("system_screens.bconfig"));
+
+        let story_dir = project_dir.join("Story");
+        let _ = std::fs::create_dir_all(&story_dir);
+        let _ = dashboard
+            .flow_graph
+            .save_to_file(&story_dir.join("story_flow.bgraph"));
+
+        let _ = Self::save_localization(dashboard, project_dir);
+
+        let manifest_filename = format!(
+            "{}.{}",
+            project.name.replace(' ', "_"),
+            Project::MANIFEST_EXTENSION
+        );
+        let _ = project.save_manifest(&project_dir.join(manifest_filename));
+
+        dashboard.has_unsaved_changes = false;
+    }
+
+    fn perform_delete_asset(
+        project: &mut Project,
+        project_dir: &std::path::Path,
+        dashboard: &mut DashboardState,
+        asset_id: &str,
+    ) {
+        if dashboard.playing_audio_asset_id.as_deref() == Some(asset_id) {
+            if let Some(sink) = dashboard.audio_sink.take() {
+                sink.stop();
+            }
+            dashboard.playing_audio_asset_id = None;
+        }
+        if dashboard.selected_preview_asset_id.as_deref() == Some(asset_id) {
+            dashboard.selected_preview_asset_id = None;
+        }
+        match project.delete_asset(project_dir, asset_id, true) {
+            Ok(_) => {
+                dashboard.status_message = Some("Asset deleted successfully.".to_string());
+            }
+            Err(err) => {
+                dashboard.status_message = Some(format!("Failed to delete asset: {}", err));
+            }
+        }
     }
 
     #[cfg(feature = "bundle-binaries")]
@@ -2472,7 +3080,27 @@ impl EditorApp {
         }
     }
 
-    fn launch_runtime_preview(dashboard: &DashboardState, project_dir: &PathBuf, start_scene: Option<&str>) {
+    fn kill_preview_process(slot: &mut Option<std::process::Child>) {
+        if let Some(mut child) = slot.take() {
+            #[cfg(windows)]
+            {
+                use std::os::windows::process::CommandExt;
+                const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+                let _ = Command::new("taskkill")
+                    .args(["/PID", &child.id().to_string(), "/T", "/F"])
+                    .creation_flags(CREATE_NO_WINDOW)
+                    .output();
+            }
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+
+    fn launch_runtime_preview(
+        dashboard: &DashboardState,
+        project_dir: &PathBuf,
+        start_scene: Option<&str>,
+    ) -> Option<std::process::Child> {
         // Ensure latest system screen settings are persisted before launching runtime
         let config_dir = project_dir.join("Settings");
         let _ = std::fs::create_dir_all(&config_dir);
@@ -2501,14 +3129,14 @@ impl EditorApp {
             Command::new("blanc_runtime").args(&runtime_args).spawn()
         };
 
-        let _ = launched.or_else(|_| {
+        launched.or_else(|_| {
             let mut cargo_args = vec!["run", "-p", "blanc_runtime", "--", &target_dir];
             if let Some(scene_name) = start_scene {
                 cargo_args.push("--scene");
                 cargo_args.push(scene_name);
             }
             Command::new("cargo").args(&cargo_args).spawn()
-        });
+        }).ok()
     }
 
     fn export_game_package_with_progress(

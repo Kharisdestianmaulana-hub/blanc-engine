@@ -147,6 +147,53 @@ fn load_image_handle(engine: &RuntimeEngine, path: impl AsRef<std::path::Path>) 
     image::Handle::from_path(path)
 }
 
+fn load_dimmed_image_handle(engine: &RuntimeEngine, path: impl AsRef<std::path::Path>) -> image::Handle {
+    use std::collections::HashMap;
+    use std::sync::{Mutex, OnceLock};
+
+    static DIMMED_CACHE: OnceLock<Mutex<HashMap<std::path::PathBuf, image::Handle>>> = OnceLock::new();
+    let path_buf = path.as_ref().to_path_buf();
+    let cache = DIMMED_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+
+    if let Ok(guard) = cache.lock() {
+        if let Some(handle) = guard.get(&path_buf) {
+            return handle.clone();
+        }
+    }
+
+    let bytes_opt = engine
+        .loaded
+        .as_ref()
+        .and_then(|l| {
+            if l.pack.is_some() {
+                l.read_path_bytes(&path_buf)
+            } else {
+                None
+            }
+        })
+        .or_else(|| std::fs::read(&path_buf).ok());
+
+    if let Some(bytes) = bytes_opt {
+        if let Ok(decoded) = ::image::load_from_memory(&bytes) {
+            let mut rgba = decoded.to_rgba8();
+            for px in rgba.pixels_mut() {
+                // Darken RGB brightness to 55% while preserving alpha (opaque, not transparent)
+                px[0] = ((px[0] as f32) * 0.55) as u8;
+                px[1] = ((px[1] as f32) * 0.55) as u8;
+                px[2] = ((px[2] as f32) * 0.55) as u8;
+            }
+            let (w, h) = rgba.dimensions();
+            let handle = image::Handle::from_rgba(w, h, rgba.into_raw());
+            if let Ok(mut guard) = cache.lock() {
+                guard.insert(path_buf, handle.clone());
+            }
+            return handle;
+        }
+    }
+
+    load_image_handle(engine, &path_buf)
+}
+
 fn project_logo_widget<'a>(engine: &RuntimeEngine, width: f32) -> Element<'a, RuntimeMessage> {
     if let Some(loaded) = &engine.loaded {
         if let Some(custom_path) = loaded.resolve_custom_logo() {
@@ -535,6 +582,8 @@ pub fn view_runtime(engine: &RuntimeEngine) -> Element<'_, RuntimeMessage> {
         RuntimeScreen::SaveLoad { mode, .. } => view_save_load(engine, *mode),
         RuntimeScreen::Backlog => view_backlog(engine),
         RuntimeScreen::Ending { title, .. } => view_ending(engine, title),
+        RuntimeScreen::CreditsRoll { .. } => view_credits_roll(engine),
+        RuntimeScreen::GameOver { .. } => view_game_over(engine),
         RuntimeScreen::Error(err) => view_error(err),
     }
 }
@@ -667,11 +716,28 @@ fn view_character_slot<'a>(
             .stage
             .characters
             .iter()
-            .any(|c| c.character_id.eq_ignore_ascii_case(spk))
+            .any(|c| crate::engine::same_character_identity(&c.character_id, spk))
     });
-    let is_dimmed = any_speaker_on_stage
-        && active_speaker.is_some_and(|spk| !ch.character_id.eq_ignore_ascii_case(spk));
-    let char_opacity = if is_dimmed { 0.52_f32 } else { 1.0_f32 };
+    let fallback_speaking_pos = if !any_speaker_on_stage {
+        active_speaker
+            .and_then(|spk| {
+                engine
+                    .stage
+                    .speaker_slot_memory
+                    .get(&spk.trim().to_ascii_lowercase())
+                    .copied()
+            })
+            .filter(|pos| engine.stage.characters.iter().any(|c| c.position == *pos))
+    } else {
+        None
+    };
+    let is_dimmed = if any_speaker_on_stage {
+        active_speaker.is_some_and(|spk| !crate::engine::same_character_identity(&ch.character_id, spk))
+    } else if let Some(speaking_pos) = fallback_speaking_pos {
+        ch.position != speaking_pos
+    } else {
+        false
+    };
 
     if let Some(img_path) = &ch.image_path {
         let pad = Padding {
@@ -680,11 +746,15 @@ fn view_character_slot<'a>(
             left: 12.0 + if ch.anim_offset_x > 0.0 { ch.anim_offset_x } else { 0.0 },
             right: 12.0 + if ch.anim_offset_x < 0.0 { -ch.anim_offset_x } else { 0.0 },
         };
+        let handle = if is_dimmed {
+            load_dimmed_image_handle(engine, img_path)
+        } else {
+            load_image_handle(engine, img_path)
+        };
         container(
-            image(load_image_handle(engine, img_path))
+            image(handle)
                 .height(Length::FillPortion(1))
-                .content_fit(ContentFit::Contain)
-                .opacity(char_opacity),
+                .content_fit(ContentFit::Contain),
         )
         .width(Length::Fill)
         .height(Length::Fill)
@@ -842,7 +912,7 @@ fn view_stage(engine: &RuntimeEngine, is_paused: bool) -> Element<'_, RuntimeMes
     }
     if g.show_skip_button {
         let skip_lbl = if engine.skip_mode_active {
-            engine.tr_or("ui.hud.skip_active", "Skip ▶▶")
+            engine.tr_or("ui.hud.skip_active", "Skip >>")
         } else {
             engine.tr_or("ui.hud.skip", "Skip (S)")
         };
@@ -2755,6 +2825,261 @@ fn view_ending<'a>(engine: &'a RuntimeEngine, ending_title: &'a str) -> Element<
         });
         stack![render_background(engine, title_bg.as_ref(), scaling), dim_layer, card_placed].into()
     }
+}
+
+fn view_credits_roll(engine: &RuntimeEngine) -> Element<'_, RuntimeMessage> {
+    let ui = engine.ui_config();
+    let c = &ui.credits;
+    let theme = resolve_theme(&ui);
+
+    let bg_rgb = parse_hex_rgb(&c.background_hex).unwrap_or((11, 16, 29));
+    let title_col = parse_hex_rgb(&c.title_text_hex)
+        .map(|(r, g, b)| Color::from_rgb8(r, g, b))
+        .unwrap_or(theme.text_main);
+    let body_col = parse_hex_rgb(&c.body_text_hex)
+        .map(|(r, g, b)| Color::from_rgb8(r, g, b))
+        .unwrap_or(Color::from_rgb8(203, 213, 225));
+    let dim_alpha = c.overlay_dimming.clamp(0.0, 0.98);
+
+    let bg_layer = container(Space::new(Length::Fill, Length::Fill))
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .style(move |_| container::Style {
+            background: Some(Background::Color(Color::from_rgba8(
+                bg_rgb.0,
+                bg_rgb.1,
+                bg_rgb.2,
+                dim_alpha,
+            ))),
+            ..Default::default()
+        });
+
+    let title_lbl = if c.title_label.trim().is_empty() {
+        "Credits"
+    } else {
+        c.title_label.as_str()
+    };
+    let sub_lbl = if c.subtitle_label.trim().is_empty() {
+        "Thank you for playing"
+    } else {
+        c.subtitle_label.as_str()
+    };
+    let skip_lbl = if c.skip_button_label.trim().is_empty() {
+        "Continue"
+    } else {
+        c.skip_button_label.as_str()
+    };
+
+    let base_y = 560.0 - engine.credits_scroll_offset;
+    let mut credits_col = column![].spacing(10.0).align_x(Alignment::Center).width(Length::Fill);
+
+    if c.show_logo {
+        credits_col = credits_col.push(project_logo_widget(engine, 64.0));
+    }
+
+    credits_col = credits_col
+        .push(text(title_lbl.to_string()).size(32).color(title_col))
+        .push(text(sub_lbl.to_string()).size(16).color(TEXT_MUTED))
+        .push(Space::with_height(24.0));
+
+    for line in c.credits_text.lines() {
+        if line.trim().is_empty() {
+            credits_col = credits_col.push(Space::with_height(18.0));
+        } else {
+            credits_col = credits_col.push(text(line.to_string()).size(18).color(body_col));
+        }
+    }
+
+    // Start below the bottom of the screen and scroll upward based on credits_scroll_offset
+    let top_offset = base_y.max(-2000.0);
+    let scrolled_container = container(
+        column![
+            Space::with_height(top_offset.max(0.0)),
+            container(credits_col).width(Length::Fixed(c.panel_width.clamp(360.0, 1040.0))),
+        ]
+        .width(Length::Fill)
+        .align_x(Alignment::Center),
+    )
+    .width(Length::Fill)
+    .height(Length::Fill)
+    .padding(Padding {
+        top: if top_offset < 0.0 { top_offset } else { 0.0 },
+        right: 24.0,
+        bottom: 64.0,
+        left: 24.0,
+    })
+    .clip(true);
+
+    // Subtle text-only button pinned strictly at bottom-right with smooth fade in/out
+    let pulse_alpha = 0.05 + 0.95 * ((engine.ui_anim_time * 1.8).sin() * 0.5 + 0.5);
+    let skip_btn = button(
+        text(format!("{} >>", skip_lbl))
+            .size(15)
+            .color(Color::from_rgba(
+                theme.text_main.r,
+                theme.text_main.g,
+                theme.text_main.b,
+                pulse_alpha,
+            )),
+    )
+    .padding([8.0, 14.0])
+    .style(|_, status| {
+        let bg = match status {
+            button::Status::Hovered | button::Status::Pressed => {
+                Some(Background::Color(Color::from_rgba(1.0, 1.0, 1.0, 0.08)))
+            }
+            _ => None,
+        };
+        button::Style {
+            background: bg,
+            text_color: Color::WHITE,
+            border: iced::Border {
+                radius: 6.0.into(),
+                width: 0.0,
+                color: Color::TRANSPARENT,
+            },
+            ..Default::default()
+        }
+    })
+    .on_press(RuntimeMessage::FollowEndingTitle);
+
+    let skip_bar = container(skip_btn)
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .align_x(Alignment::End)
+        .align_y(Alignment::End)
+        .padding(28.0);
+
+    stack![view_stage_visual(engine, theme), bg_layer, scrolled_container, skip_bar].into()
+}
+
+fn view_game_over(engine: &RuntimeEngine) -> Element<'_, RuntimeMessage> {
+    let ui = engine.ui_config();
+    let g = &ui.game_over;
+    let theme = with_button_color(resolve_theme(&ui), &g.button_text_hex, &g.button_text_hex);
+
+    let bg_rgb = parse_hex_rgb(&g.background_hex).unwrap_or((18, 11, 16));
+    let title_col = parse_hex_rgb(&g.title_text_hex)
+        .map(|(r, g_c, b)| Color::from_rgb8(r, g_c, b))
+        .unwrap_or(Color::from_rgb8(248, 113, 113));
+    let sub_col = parse_hex_rgb(&g.subtitle_text_hex)
+        .map(|(r, g_c, b)| Color::from_rgb8(r, g_c, b))
+        .unwrap_or(TEXT_MUTED);
+    let dim_alpha = g.overlay_dimming.clamp(0.0, 0.98);
+
+    let dim_layer = container(Space::new(Length::Fill, Length::Fill))
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .style(move |_| container::Style {
+            background: Some(Background::Color(Color::from_rgba8(
+                bg_rgb.0,
+                bg_rgb.1,
+                bg_rgb.2,
+                dim_alpha,
+            ))),
+            ..Default::default()
+        });
+
+    let title_lbl = if g.title_label.trim().is_empty() {
+        "GAME OVER"
+    } else {
+        g.title_label.as_str()
+    };
+    let sub_lbl = if g.subtitle_label.trim().is_empty() {
+        "Your journey ends here."
+    } else {
+        g.subtitle_label.as_str()
+    };
+    let bw = g.button_width.clamp(160.0, 480.0);
+    let pw = g.panel_width.clamp(320.0, 960.0);
+
+    let mut content_col = column![
+        text(title_lbl.to_string()).size(34).color(title_col),
+        text(sub_lbl.to_string()).size(15).color(sub_col),
+        Space::with_height(16.0),
+    ]
+    .spacing(12.0)
+    .align_x(Alignment::Center)
+    .width(Length::Fill);
+
+    if g.show_quick_load_button && engine.has_quicksave() {
+        let ql_lbl = if g.quick_load_button_label.trim().is_empty() {
+            "Quick Load"
+        } else {
+            g.quick_load_button_label.as_str()
+        };
+        content_col = content_col.push(themed_button(
+            engine,
+            theme,
+            None,
+            ql_lbl,
+            bw,
+            true,
+            false,
+            None,
+            RuntimeMessage::QuickLoad,
+        ));
+    }
+    if g.show_load_button {
+        let ld_lbl = if g.load_button_label.trim().is_empty() {
+            "Load Save"
+        } else {
+            g.load_button_label.as_str()
+        };
+        content_col = content_col.push(themed_button(
+            engine,
+            theme,
+            None,
+            ld_lbl,
+            bw,
+            !g.show_quick_load_button || !engine.has_quicksave(),
+            false,
+            None,
+            RuntimeMessage::OpenLoadScreen {
+                return_to_pause: false,
+            },
+        ));
+    }
+    let title_btn_lbl = if g.title_button_label.trim().is_empty() {
+        "Return to Title"
+    } else {
+        g.title_button_label.as_str()
+    };
+    content_col = content_col.push(themed_button(
+        engine,
+        theme,
+        None,
+        title_btn_lbl,
+        bw,
+        !g.show_load_button && (!g.show_quick_load_button || !engine.has_quicksave()),
+        false,
+        None,
+        RuntimeMessage::FollowEndingTitle,
+    ));
+
+    let card: Element<'_, RuntimeMessage> = if g.show_panel {
+        container(content_col)
+            .width(Length::Fixed(pw))
+            .padding([36.0, 48.0])
+            .style(themed_panel_style(theme.panel_bg, theme.radius))
+            .into()
+    } else {
+        container(content_col)
+            .width(Length::Fixed(pw))
+            .padding([36.0, 48.0])
+            .into()
+    };
+
+    stack![
+        view_stage_visual(engine, theme),
+        dim_layer,
+        container(card)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .center_x(Length::Fill)
+            .center_y(Length::Fill),
+    ]
+    .into()
 }
 
 fn view_error(err: &str) -> Element<'_, RuntimeMessage> {

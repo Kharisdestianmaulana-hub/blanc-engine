@@ -1,5 +1,5 @@
 #ifndef MyAppVersion
-  #define MyAppVersion "0.1.0-beta"
+  #define MyAppVersion "0.1.0"
 #endif
 
 #ifndef StagingDir
@@ -8,6 +8,10 @@
 
 #ifndef OutputDir
   #define OutputDir "..\dist"
+#endif
+
+#ifndef AppIconFile
+  #define AppIconFile "..\assets\icons\blanc_engine.ico"
 #endif
 
 [Setup]
@@ -19,6 +23,8 @@ AppPublisher=Blanc Engine Contributors
 DefaultDirName={autopf}\Blanc Engine
 DefaultGroupName=Blanc Engine
 AllowNoIcons=yes
+SetupIconFile={#AppIconFile}
+UninstallDisplayIcon={app}\BlancEngine.exe
 OutputDir={#OutputDir}
 OutputBaseFilename=BlancEngine-{#MyAppVersion}-Setup
 Compression=lzma2
@@ -39,9 +45,9 @@ Source: "{#StagingDir}\blanc_runtime.exe"; DestDir: "{app}"; Flags: ignoreversio
 Source: "{#StagingDir}\blanc_installer.exe"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
-Name: "{group}\Blanc Engine"; Filename: "{app}\BlancEngine.exe"
+Name: "{group}\Blanc Engine"; Filename: "{app}\BlancEngine.exe"; IconFilename: "{app}\BlancEngine.exe"
 Name: "{group}\{cm:UninstallProgram,Blanc Engine}"; Filename: "{uninstallexe}"
-Name: "{autodesktop}\Blanc Engine"; Filename: "{app}\BlancEngine.exe"; Tasks: desktopicon
+Name: "{autodesktop}\Blanc Engine"; Filename: "{app}\BlancEngine.exe"; IconFilename: "{app}\BlancEngine.exe"; Tasks: desktopicon
 
 [Run]
 Filename: "{app}\BlancEngine.exe"; Description: "{cm:LaunchProgram,Blanc Engine}"; Flags: nowait postinstall skipifsilent

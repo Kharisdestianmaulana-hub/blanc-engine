@@ -119,7 +119,7 @@ impl Story {
         for raw_line in text.lines() {
             let line = raw_line.trim();
 
-            if line.is_empty() || line.starts_with("//") || line.starts_with('#') && !line.starts_with("###") {
+            if line.is_empty() || line.starts_with("//") || (line.starts_with('#') && !line.starts_with("# ") && !line.starts_with("## ")) {
                 // If line is empty and we were collecting choices, finish the choice
                 if in_choice_block && !current_choice_options.is_empty() && line.is_empty() {
                     elements.push(StoryElement::Choice(ChoiceBranch {
@@ -182,6 +182,15 @@ impl Story {
                     scene_name: line.to_string(),
                 }));
                 continue;
+            } else if let Some(md_title) = line.strip_prefix("## ").or_else(|| line.strip_prefix("# ")) {
+                let name = md_title.trim();
+                if !name.is_empty() {
+                    elements.push(StoryElement::Scene(SceneMarker {
+                        id: Uuid::new_v4().to_string(),
+                        scene_name: name.to_string(),
+                    }));
+                    continue;
+                }
             }
 
             // Check Audio tags: [BGM: name] or [SFX: name]

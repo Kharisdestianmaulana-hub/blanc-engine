@@ -807,6 +807,86 @@ impl Default for EndingUiConfig {
     }
 }
 
+/// Credits Roll screen UI customization
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CreditsUiConfig {
+    pub show_logo: bool,
+    pub overlay_dimming: f32,
+    pub panel_width: f32,
+    pub scroll_speed: f32,
+    pub auto_return_to_title: bool,
+    pub title_label: String,
+    pub subtitle_label: String,
+    pub credits_text: String,
+    pub skip_button_label: String,
+    pub title_text_hex: String,
+    pub body_text_hex: String,
+    pub background_hex: String,
+}
+
+impl Default for CreditsUiConfig {
+    fn default() -> Self {
+        Self {
+            show_logo: true,
+            overlay_dimming: 0.88,
+            panel_width: 680.0,
+            scroll_speed: 42.0,
+            auto_return_to_title: true,
+            title_label: "Credits".to_string(),
+            subtitle_label: "Thank you for playing".to_string(),
+            credits_text: "Story & Direction\nYour Name\n\nCharacter Art & Backgrounds\nYour Name\n\nMusic & Sound Design\nYour Name\n\nBuilt with Blanc Engine".to_string(),
+            skip_button_label: "Continue".to_string(),
+            title_text_hex: String::new(),
+            body_text_hex: String::new(),
+            background_hex: "#0B101D".to_string(),
+        }
+    }
+}
+
+/// Game Over screen UI customization
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct GameOverUiConfig {
+    pub show_panel: bool,
+    pub overlay_dimming: f32,
+    pub panel_width: f32,
+    pub button_width: f32,
+    pub show_load_button: bool,
+    pub show_quick_load_button: bool,
+    pub title_label: String,
+    pub subtitle_label: String,
+    pub load_button_label: String,
+    pub quick_load_button_label: String,
+    pub title_button_label: String,
+    pub title_text_hex: String,
+    pub subtitle_text_hex: String,
+    pub button_text_hex: String,
+    pub background_hex: String,
+}
+
+impl Default for GameOverUiConfig {
+    fn default() -> Self {
+        Self {
+            show_panel: true,
+            overlay_dimming: 0.85,
+            panel_width: 480.0,
+            button_width: 260.0,
+            show_load_button: true,
+            show_quick_load_button: true,
+            title_label: "GAME OVER".to_string(),
+            subtitle_label: "Your journey ends here.".to_string(),
+            load_button_label: "Load Save".to_string(),
+            quick_load_button_label: "Quick Load".to_string(),
+            title_button_label: "Return to Title".to_string(),
+            title_text_hex: "#F87171".to_string(),
+            subtitle_text_hex: String::new(),
+            button_text_hex: String::new(),
+            background_hex: "#120B10".to_string(),
+        }
+    }
+}
+
 /// Complete customizable runtime UI configuration
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -818,6 +898,8 @@ pub struct RuntimeUiConfig {
     pub save_load: SaveLoadUiConfig,
     pub history: HistoryUiConfig,
     pub ending: EndingUiConfig,
+    pub credits: CreditsUiConfig,
+    pub game_over: GameOverUiConfig,
 }
 
 /// Parse `#RRGGBB` or `RRGGBB` into RGB bytes

@@ -15,6 +15,7 @@ pub mod scene;
 pub mod story;
 pub mod theme;
 pub mod ui_config;
+pub mod validator;
 
 pub use asset::{Asset, AssetCategory, AssetRegistry};
 pub use config::SystemScreensConfig;
