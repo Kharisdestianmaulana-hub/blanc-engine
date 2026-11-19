@@ -165,6 +165,8 @@ pub struct UninstallMetadata {
     pub logo_png: Option<Vec<u8>>,
     #[serde(default)]
     pub selected_lang: Option<String>,
+    #[serde(default)]
+    pub installed_files: Vec<String>,
 }
 
 pub fn sanitize_installer_name(raw: &str) -> String {
@@ -408,8 +410,10 @@ pub fn read_embedded_payload(exe_path: &Path) -> Result<(InstallerPayloadManifes
     let manifest_len = u64::from_le_bytes(footer[0..8].try_into().unwrap());
     let data_start_offset = u64::from_le_bytes(footer[8..16].try_into().unwrap());
 
+    const MAX_MANIFEST_BYTES: u64 = 64 * 1024 * 1024; // 64 MB cap for manifest JSON
     if data_start_offset > total_len - footer_len
         || manifest_len > total_len - footer_len - data_start_offset
+        || manifest_len > MAX_MANIFEST_BYTES
     {
         return Err("Corrupted installer payload offsets.".to_string());
     }
@@ -417,12 +421,35 @@ pub fn read_embedded_payload(exe_path: &Path) -> Result<(InstallerPayloadManifes
     let manifest_pos = total_len - footer_len - manifest_len;
     f.seek(SeekFrom::Start(manifest_pos))
         .map_err(|e| format!("Failed to seek installer manifest: {}", e))?;
-    let mut manifest_bytes = vec![0u8; manifest_len as usize];
+    let manifest_usize = usize::try_from(manifest_len)
+        .map_err(|_| "Installer manifest size overflow.".to_string())?;
+    let mut manifest_bytes = vec![0u8; manifest_usize];
     f.read_exact(&mut manifest_bytes)
         .map_err(|e| format!("Failed to read installer manifest: {}", e))?;
 
     let manifest: InstallerPayloadManifest = serde_json::from_slice(&manifest_bytes)
         .map_err(|e| format!("Failed to parse installer manifest: {}", e))?;
+
+    for entry in &manifest.files {
+        let Some(end_pos) = data_start_offset
+            .checked_add(entry.offset)
+            .and_then(|s| s.checked_add(entry.size))
+        else {
+            return Err("Corrupted installer file entry offset.".to_string());
+        };
+        if end_pos > manifest_pos {
+            return Err(format!(
+                "Installer payload entry '{}' exceeds payload bounds.",
+                entry.relative_path
+            ));
+        }
+        if crate::project::safe_join_relative(Path::new("."), &entry.relative_path).is_none() {
+            return Err(format!(
+                "Unsafe relative path in installer payload: '{}'",
+                entry.relative_path
+            ));
+        }
+    }
 
     Ok((manifest, data_start_offset))
 }
@@ -445,20 +472,28 @@ where
         .map_err(|e| format!("Failed to open installer executable: {}", e))?;
 
     let total = manifest.files.len();
+    let mut installed_files = Vec::with_capacity(total + 1);
     for (idx, entry) in manifest.files.iter().enumerate() {
         on_progress(idx + 1, total, &entry.relative_path);
-        let out_path = dest_dir.join(&entry.relative_path);
+        let out_path = crate::project::safe_join_relative(dest_dir, &entry.relative_path)
+            .ok_or_else(|| format!("Rejected unsafe path in installer: {}", entry.relative_path))?;
         if let Some(parent) = out_path.parent() {
             fs::create_dir_all(parent)
                 .map_err(|e| format!("Failed to create folder for {}: {}", entry.relative_path, e))?;
         }
-        f.seek(SeekFrom::Start(data_start_offset + entry.offset))
+        let start = data_start_offset
+            .checked_add(entry.offset)
+            .ok_or_else(|| format!("Invalid offset for {}", entry.relative_path))?;
+        let size = usize::try_from(entry.size)
+            .map_err(|_| format!("File size overflow for {}", entry.relative_path))?;
+        f.seek(SeekFrom::Start(start))
             .map_err(|e| format!("Failed to seek file {}: {}", entry.relative_path, e))?;
-        let mut buf = vec![0u8; entry.size as usize];
+        let mut buf = vec![0u8; size];
         f.read_exact(&mut buf)
             .map_err(|e| format!("Failed to read file {}: {}", entry.relative_path, e))?;
         fs::write(&out_path, &buf)
             .map_err(|e| format!("Failed to write file {}: {}", entry.relative_path, e))?;
+        installed_files.push(entry.relative_path.replace('\\', "/"));
     }
 
     // Write clean per-game uninstaller executable (stub only, without embedded game payload)
@@ -480,9 +515,10 @@ where
         accent_hex: manifest.config.accent_hex.clone(),
         logo_png: manifest.config.logo_png.clone(),
         selected_lang: None,
+        installed_files,
     };
     if let Ok(meta_json) = serde_json::to_vec_pretty(&uninstall_meta) {
-        let _ = fs::write(dest_dir.join(UNINSTALL_META_FILENAME), meta_json);
+        let _ = crate::project::atomic_write(&dest_dir.join(UNINSTALL_META_FILENAME), meta_json);
     }
 
     Ok(manifest)

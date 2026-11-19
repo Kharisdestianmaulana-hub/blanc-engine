@@ -84,6 +84,7 @@ impl SettingsCategory {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SettingsFocusItem {
+    CategoryTab,
     MasterVol,
     BgmVol,
     SfxVol,
@@ -420,6 +421,7 @@ pub struct RuntimeEngine {
     read_lines: std::collections::HashSet<String>,
     read_lines_dirty: bool,
     current_line_was_read: bool,
+    scene_transition_depth: usize,
 }
 
 impl RuntimeEngine {
@@ -453,6 +455,7 @@ impl RuntimeEngine {
             read_lines: std::collections::HashSet::new(),
             read_lines_dirty: false,
             current_line_was_read: false,
+            scene_transition_depth: 0,
         };
 
         match project_dir {
@@ -644,9 +647,6 @@ impl RuntimeEngine {
         let Some(path) = self.settings_path() else {
             return;
         };
-        if let Some(parent) = path.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
         let settings = RuntimeUserSettings {
             skip_mode: self.skip_rule,
             auto_forward_delay: self.auto_forward_delay,
@@ -655,7 +655,7 @@ impl RuntimeEngine {
             fullscreen: Some(self.is_fullscreen),
         };
         if let Ok(json) = serde_json::to_string_pretty(&settings) {
-            let _ = std::fs::write(path, json);
+            let _ = blanc_core::project::atomic_write(&path, json);
         }
     }
 
@@ -804,12 +804,9 @@ impl RuntimeEngine {
         let Some(path) = self.read_history_path() else {
             return;
         };
-        if let Some(parent) = path.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
         let items: Vec<&String> = self.read_lines.iter().collect();
         if let Ok(json) = serde_json::to_string(&items) {
-            if std::fs::write(path, json).is_ok() {
+            if blanc_core::project::atomic_write(&path, json).is_ok() {
                 self.read_lines_dirty = false;
             }
         }
@@ -934,14 +931,16 @@ impl RuntimeEngine {
     }
 
     pub fn resolve_save_asset_path(&self, raw: &str) -> Option<PathBuf> {
-        let p = PathBuf::from(raw);
-        if p.is_absolute() && p.exists() {
-            return Some(p);
+        let loaded = self.loaded.as_ref()?;
+        if loaded.asset_exists(raw) {
+            return blanc_core::project::safe_join_relative(&loaded.project_dir, raw);
         }
-        self.loaded
-            .as_ref()
-            .map(|l| l.project_dir.join(raw))
-            .filter(|candidate| candidate.exists())
+        let candidate = blanc_core::project::safe_join_relative(&loaded.project_dir, raw)?;
+        if candidate.exists() && candidate.is_file() {
+            Some(candidate)
+        } else {
+            None
+        }
     }
 
     fn build_save_data(&self) -> SaveSlotData {
@@ -1012,11 +1011,8 @@ impl RuntimeEngine {
         if self.stage.current_scene_name.is_empty() {
             return;
         }
-        if let Some(parent) = path.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
         if let Ok(json) = serde_json::to_string_pretty(&self.build_save_data()) {
-            let _ = std::fs::write(path, json);
+            let _ = blanc_core::project::atomic_write(&path, json);
         }
     }
 
@@ -1027,11 +1023,8 @@ impl RuntimeEngine {
         if self.stage.current_scene_name.is_empty() {
             return;
         }
-        if let Some(parent) = path.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
         if let Ok(json) = serde_json::to_string_pretty(&self.build_save_data()) {
-            let _ = std::fs::write(path, json);
+            let _ = blanc_core::project::atomic_write(&path, json);
         }
     }
 
@@ -1058,11 +1051,8 @@ impl RuntimeEngine {
         if self.stage.current_scene_name.is_empty() {
             return false;
         }
-        if let Some(parent) = path.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
         if let Ok(json) = serde_json::to_string_pretty(&self.build_save_data()) {
-            if std::fs::write(path, json).is_ok() {
+            if blanc_core::project::atomic_write(&path, json).is_ok() {
                 self.show_toast("Quick Saved");
                 return true;
             }
@@ -1114,6 +1104,7 @@ impl RuntimeEngine {
         self.stage.current_scene_name = scene_name.to_string();
         self.stage.block_index = 0;
         self.screen = RuntimeScreen::Playing;
+        let mut pending_bgm: Option<(String, f32, bool)> = None;
 
         while self.stage.block_index < target_block {
             let block_opt = {
@@ -1174,22 +1165,11 @@ impl RuntimeEngine {
                     volume,
                     looping,
                 } => {
-                    if let Some(loaded) = &self.loaded {
-                        if let Some(p) = loaded.resolve_asset_path(&asset_id, Some(AssetCategory::Bgm)) {
-                            let effective = (self.master_volume * self.bgm_volume * volume).clamp(0.0, 1.0);
-                            if loaded.pack.is_some() {
-                                if let Some(bytes) = loaded.read_path_bytes(&p) {
-                                    self.audio.play_bgm_bytes(bytes, effective, looping);
-                                }
-                            } else {
-                                self.audio.play_bgm(&p, effective, looping);
-                            }
-                        }
-                    }
+                    pending_bgm = Some((asset_id.clone(), volume, looping));
                     self.stage.current_bgm_id = Some(asset_id);
                 }
                 ActionBlock::StopBgm { .. } => {
-                    self.audio.stop_bgm();
+                    pending_bgm = None;
                     self.stage.current_bgm_id = None;
                 }
                 ActionBlock::Dialogue { speaker, text, .. } => {
@@ -1203,6 +1183,19 @@ impl RuntimeEngine {
             }
             self.stage.block_index += 1;
         }
+        if let (Some((bgm_id, volume, looping)), Some(loaded)) = (pending_bgm, &self.loaded) {
+            if let Some(p) = loaded.resolve_asset_path(&bgm_id, Some(AssetCategory::Bgm)) {
+                let effective = (self.master_volume * self.bgm_volume * volume).clamp(0.0, 1.0);
+                if loaded.pack.is_some() {
+                    if let Some(bytes) = loaded.read_path_bytes(&p) {
+                        self.audio.play_bgm_bytes(bytes, effective, looping);
+                    }
+                } else {
+                    self.audio.play_bgm(&p, effective, looping);
+                }
+            }
+        }
+        self.scene_transition_depth = 0;
         self.step_blocks();
     }
 
@@ -1216,6 +1209,16 @@ impl RuntimeEngine {
     }
 
     pub fn load_scene(&mut self, scene_name: &str) {
+        const MAX_SCENE_TRANSITION_DEPTH: usize = 32;
+        if self.scene_transition_depth >= MAX_SCENE_TRANSITION_DEPTH {
+            self.scene_transition_depth = 0;
+            self.screen = RuntimeScreen::Ending {
+                title: format!("Scene Loop Detected ({})", scene_name),
+                ending_node_id: None,
+            };
+            return;
+        }
+
         let exists = self
             .loaded
             .as_ref()
@@ -1223,6 +1226,7 @@ impl RuntimeEngine {
             .is_some();
 
         if !exists {
+            self.scene_transition_depth = 0;
             self.screen = RuntimeScreen::Ending {
                 title: format!("Scene Not Found: {}", scene_name),
                 ending_node_id: None,
@@ -1230,6 +1234,7 @@ impl RuntimeEngine {
             return;
         }
 
+        self.scene_transition_depth += 1;
         let transition_mode = self
             .loaded
             .as_ref()
@@ -1252,6 +1257,7 @@ impl RuntimeEngine {
         }
         self.screen = RuntimeScreen::Playing;
         self.step_blocks();
+        self.scene_transition_depth = 0;
         self.save_autosave();
     }
 
@@ -1331,7 +1337,7 @@ impl RuntimeEngine {
                 ActionBlock::HideCharacter { character_id, .. } => {
                     self.stage
                         .characters
-                        .retain(|c| !c.character_id.eq_ignore_ascii_case(&character_id));
+                        .retain(|c| !same_character_identity(&c.character_id, &character_id));
                     self.stage.block_index += 1;
                 }
                 ActionBlock::PlayBgm {
@@ -1872,6 +1878,9 @@ impl RuntimeEngine {
             .settings_layout_template
             .uses_tabs();
         let mut items = Vec::new();
+        if uses_tabs {
+            items.push(SettingsFocusItem::CategoryTab);
+        }
         if !uses_tabs || self.settings_category == SettingsCategory::Audio {
             items.push(SettingsFocusItem::MasterVol);
             items.push(SettingsFocusItem::BgmVol);

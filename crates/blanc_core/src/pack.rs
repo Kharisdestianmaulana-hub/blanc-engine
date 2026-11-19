@@ -154,6 +154,16 @@ pub struct BpackArchive {
 impl BpackArchive {
     pub fn open(path: &Path) -> Result<Self, String> {
         let mut f = File::open(path).map_err(|e| format!("Cannot open {}: {}", path.display(), e))?;
+        let file_len = f
+            .metadata()
+            .map_err(|e| format!("Cannot read metadata for {}: {}", path.display(), e))?
+            .len();
+        const HEADER_FIXED_LEN: u64 = 8 + 32 + 4 + 4;
+        const MAX_INDEX_BYTES: u64 = 32 * 1024 * 1024; // 32 MB cap for JSON index
+        if file_len < HEADER_FIXED_LEN {
+            return Err("Invalid bpack header (file too small)".to_string());
+        }
+
         let mut magic = [0u8; 8];
         f.read_exact(&mut magic).map_err(|e| e.to_string())?;
         if &magic != PACK_MAGIC {
@@ -168,7 +178,11 @@ impl BpackArchive {
         let _entry_count = u32::from_le_bytes(u32_buf);
 
         f.read_exact(&mut u32_buf).map_err(|e| e.to_string())?;
-        let index_len = u32::from_le_bytes(u32_buf) as usize;
+        let index_len_u64 = u32::from_le_bytes(u32_buf) as u64;
+        if index_len_u64 > MAX_INDEX_BYTES || HEADER_FIXED_LEN + index_len_u64 > file_len {
+            return Err("Corrupt bpack index length".to_string());
+        }
+        let index_len = usize::try_from(index_len_u64).map_err(|_| "Index length overflow".to_string())?;
 
         let mut index_bytes = vec![0u8; index_len];
         f.read_exact(&mut index_bytes).map_err(|e| e.to_string())?;
@@ -176,10 +190,19 @@ impl BpackArchive {
 
         let parsed: Vec<PackEntry> =
             serde_json::from_slice(&index_bytes).map_err(|e| format!("Corrupt bpack index: {}", e))?;
-        let data_start = 8 + 32 + 4 + 4 + index_len as u64;
+        let data_start = HEADER_FIXED_LEN + index_len_u64;
 
         let mut entries = HashMap::with_capacity(parsed.len());
         for entry in parsed {
+            let Some(end_pos) = data_start
+                .checked_add(entry.offset)
+                .and_then(|s| s.checked_add(entry.size))
+            else {
+                return Err("Corrupt bpack entry offset".to_string());
+            };
+            if end_pos > file_len {
+                return Err("Corrupt bpack entry exceeds archive bounds".to_string());
+            }
             entries.insert(entry.path.to_lowercase(), entry);
         }
 
@@ -194,9 +217,15 @@ impl BpackArchive {
     pub fn read_file(&self, rel_path: &str) -> Option<Vec<u8>> {
         let key = normalize_pack_path(rel_path).to_lowercase();
         let entry = self.entries.get(&key)?;
+        let size = usize::try_from(entry.size).ok()?;
+        let start = self.data_start.checked_add(entry.offset)?;
         let mut f = File::open(&self.path).ok()?;
-        f.seek(SeekFrom::Start(self.data_start + entry.offset)).ok()?;
-        let mut buf = vec![0u8; entry.size as usize];
+        let file_len = f.metadata().ok()?.len();
+        if start.checked_add(entry.size)? > file_len {
+            return None;
+        }
+        f.seek(SeekFrom::Start(start)).ok()?;
+        let mut buf = vec![0u8; size];
         f.read_exact(&mut buf).ok()?;
         xor_keystream(&self.seed, entry.nonce, &mut buf);
         Some(buf)

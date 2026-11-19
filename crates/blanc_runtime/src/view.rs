@@ -1581,13 +1581,14 @@ fn themed_slider<'a>(
     .into()
 }
 
-fn settings_focus_row<'a>(
+fn settings_focus_box<'a>(
     is_focused: bool,
     accent: Color,
+    width: Length,
     content: Element<'a, RuntimeMessage>,
 ) -> Element<'a, RuntimeMessage> {
     container(content)
-        .width(Length::Fill)
+        .width(width)
         .padding([6.0, 10.0])
         .style(move |_| container::Style {
             background: if is_focused {
@@ -1603,6 +1604,14 @@ fn settings_focus_row<'a>(
             ..Default::default()
         })
         .into()
+}
+
+fn settings_focus_row<'a>(
+    is_focused: bool,
+    accent: Color,
+    content: Element<'a, RuntimeMessage>,
+) -> Element<'a, RuntimeMessage> {
+    settings_focus_box(is_focused, accent, Length::Fill, content)
 }
 
 fn wrap_settings_panel_box<'a>(
@@ -1976,7 +1985,14 @@ fn view_settings(engine: &RuntimeEngine) -> Element<'_, RuntimeMessage> {
                         .align_y(Alignment::Center);
                     column![
                         header,
-                        container(tabs_row).width(Length::Fill).center_x(Length::Fill),
+                        container(settings_focus_box(
+                            focused_item == Some(SettingsFocusItem::CategoryTab),
+                            theme.accent,
+                            Length::Shrink,
+                            tabs_row.into(),
+                        ))
+                        .width(Length::Fill)
+                        .center_x(Length::Fill),
                         container(content_panel)
                             .width(Length::Fill)
                             .height(Length::Fill)
@@ -1994,13 +2010,18 @@ fn view_settings(engine: &RuntimeEngine) -> Element<'_, RuntimeMessage> {
                         .spacing(18.0)
                         .width(Length::Fill)
                         .align_y(Alignment::Center);
-                    let sidebar = column![
-                        cat_btn(SettingsCategory::Audio, 180.0),
-                        cat_btn(SettingsCategory::Gameplay, 180.0),
-                        cat_btn(SettingsCategory::System, 180.0),
-                    ]
-                    .spacing(10.0)
-                    .width(Length::Fixed(200.0));
+                    let sidebar = settings_focus_box(
+                        focused_item == Some(SettingsFocusItem::CategoryTab),
+                        theme.accent,
+                        Length::Fixed(200.0),
+                        column![
+                            cat_btn(SettingsCategory::Audio, 180.0),
+                            cat_btn(SettingsCategory::Gameplay, 180.0),
+                            cat_btn(SettingsCategory::System, 180.0),
+                        ]
+                        .spacing(10.0)
+                        .into(),
+                    );
                     let body = row![
                         sidebar,
                         container(content_panel)
@@ -2023,13 +2044,18 @@ fn view_settings(engine: &RuntimeEngine) -> Element<'_, RuntimeMessage> {
                         .spacing(18.0)
                         .width(Length::Fill)
                         .align_y(Alignment::Center);
-                    let sidebar = column![
-                        cat_btn(SettingsCategory::Audio, 180.0),
-                        cat_btn(SettingsCategory::Gameplay, 180.0),
-                        cat_btn(SettingsCategory::System, 180.0),
-                    ]
-                    .spacing(10.0)
-                    .width(Length::Fixed(200.0));
+                    let sidebar = settings_focus_box(
+                        focused_item == Some(SettingsFocusItem::CategoryTab),
+                        theme.accent,
+                        Length::Fixed(200.0),
+                        column![
+                            cat_btn(SettingsCategory::Audio, 180.0),
+                            cat_btn(SettingsCategory::Gameplay, 180.0),
+                            cat_btn(SettingsCategory::System, 180.0),
+                        ]
+                        .spacing(10.0)
+                        .into(),
+                    );
                     let body = row![
                         container(content_panel)
                             .width(Length::Fill)

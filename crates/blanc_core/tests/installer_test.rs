@@ -79,5 +79,11 @@ fn test_installer_payload_roundtrip() {
         );
     }
 
+    // Verify path traversal in installer payload is rejected
+    let bad_setup = temp_dir.join("Bad_Setup.exe");
+    let bad_files = vec![("../escaped.exe".to_string(), b"EVIL".to_vec())];
+    write_installer_exe(stub, &bad_setup, &cfg, "MyVN.exe", &bad_files).unwrap();
+    assert!(read_embedded_payload(&bad_setup).is_err());
+
     let _ = std::fs::remove_dir_all(temp_dir);
 }

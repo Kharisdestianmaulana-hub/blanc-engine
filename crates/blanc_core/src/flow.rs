@@ -312,12 +312,9 @@ impl StoryFlowGraph {
 
     /// Save graph to JSON file
     pub fn save_to_file(&self, path: &Path) -> Result<(), std::io::Error> {
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)?;
-        }
         let json = serde_json::to_string_pretty(self)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
-        fs::write(path, json)?;
+        crate::project::atomic_write(path, json)?;
         Ok(())
     }
 

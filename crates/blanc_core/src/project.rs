@@ -1,5 +1,5 @@
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -7,6 +7,147 @@ use thiserror::Error;
 use crate::asset::AssetRegistry;
 use crate::config::SystemScreensConfig;
 use crate::scene::Scene;
+
+/// Safely joins a relative path to `base_dir`, rejecting any path traversal (`..`),
+/// root directories, or drive prefixes. Normalizes `\` to `/` before parsing components.
+pub fn safe_join_relative(base_dir: &Path, rel_path: &str) -> Option<PathBuf> {
+    let trimmed = rel_path.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let normalized = trimmed.replace('\\', "/");
+    let mut out = base_dir.to_path_buf();
+    let mut pushed_any = false;
+
+    for comp in Path::new(&normalized).components() {
+        match comp {
+            Component::CurDir => {}
+            Component::Normal(seg) => {
+                let s = seg.to_string_lossy();
+                if s.is_empty() || s.contains(':') || s.contains('\0') {
+                    return None;
+                }
+                out.push(seg);
+                pushed_any = true;
+            }
+            Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
+                return None;
+            }
+        }
+    }
+
+    if pushed_any {
+        Some(out)
+    } else {
+        None
+    }
+}
+
+/// Writes `bytes` to `path` atomically via a sibling temporary file + rename,
+/// falling back to direct `fs::write` if rename is blocked on Windows.
+pub fn atomic_write(path: &Path, bytes: impl AsRef<[u8]>) -> std::io::Result<()> {
+    let data = bytes.as_ref();
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            fs::create_dir_all(parent)?;
+        }
+    }
+    let file_name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("file");
+    let tmp_name = format!(".{}.blanc_tmp_{}", file_name, std::process::id());
+    let tmp_path = path.with_file_name(tmp_name);
+
+    if fs::write(&tmp_path, data).is_ok() {
+        if fs::rename(&tmp_path, path).is_ok() {
+            return Ok(());
+        }
+        let _ = fs::remove_file(&tmp_path);
+    }
+    fs::write(path, data)
+}
+
+/// Validates that the parent folder of `manifest_path` is a dedicated Blanc Engine
+/// project directory and NOT a broad user/system folder (like `Documents`, `Desktop`, or a drive root).
+pub fn validate_project_folder_for_deletion(manifest_path: &Path) -> Result<PathBuf, String> {
+    let folder = manifest_path
+        .parent()
+        .ok_or_else(|| "Project path has no parent directory.".to_string())?;
+
+    if folder.parent().is_none() {
+        return Err("Refusing to delete a drive root directory.".to_string());
+    }
+
+    let normal_count = folder
+        .components()
+        .filter(|c| matches!(c, Component::Normal(_)))
+        .count();
+    if normal_count < 2 {
+        return Err(format!(
+            "Refusing to delete top-level directory '{}'.",
+            folder.display()
+        ));
+    }
+
+    let folder_name = folder
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("")
+        .trim();
+    let forbidden_names = [
+        "documents",
+        "desktop",
+        "downloads",
+        "pictures",
+        "music",
+        "videos",
+        "onedrive",
+        "users",
+        "home",
+        "program files",
+        "program files (x86)",
+        "windows",
+        "appdata",
+        "local",
+        "roaming",
+    ];
+    if forbidden_names
+        .iter()
+        .any(|f| folder_name.eq_ignore_ascii_case(f))
+    {
+        return Err(format!(
+            "Refusing to delete system/user folder '{}'. Move the project into its own subfolder first.",
+            folder.display()
+        ));
+    }
+
+    for env_key in ["USERPROFILE", "HOME", "APPDATA", "LOCALAPPDATA"] {
+        if let Some(val) = std::env::var_os(env_key) {
+            if folder == Path::new(&val) {
+                return Err(format!(
+                    "Refusing to delete user profile directory '{}'.",
+                    folder.display()
+                ));
+            }
+        }
+    }
+
+    let has_project_markers = manifest_path.exists()
+        || folder.join("Scenes").is_dir()
+        || folder.join("Assets").is_dir()
+        || folder.join("Settings").is_dir()
+        || folder.join("Story").is_dir();
+
+    if !has_project_markers {
+        return Err(format!(
+            "Directory '{}' does not contain recognizable Blanc Engine project files.",
+            folder.display()
+        ));
+    }
+
+    Ok(folder.to_path_buf())
+}
 
 #[derive(Debug, Error)]
 pub enum ProjectError {
@@ -159,7 +300,7 @@ impl Project {
     pub fn save_manifest(&mut self, manifest_path: &Path) -> Result<(), ProjectError> {
         self.updated_at = Utc::now();
         let content = serde_json::to_string_pretty(&self)?;
-        fs::write(manifest_path, content)?;
+        atomic_write(manifest_path, content)?;
         Ok(())
     }
 
@@ -243,9 +384,10 @@ impl Project {
     ) -> Result<Option<crate::asset::Asset>, ProjectError> {
         if let Some(removed) = self.assets.remove(asset_id) {
             if delete_file {
-                let file_path = project_dir.join(&removed.relative_path);
-                if file_path.exists() {
-                    let _ = fs::remove_file(file_path);
+                if let Some(file_path) = safe_join_relative(project_dir, &removed.relative_path) {
+                    if file_path.exists() && file_path.is_file() {
+                        let _ = fs::remove_file(file_path);
+                    }
                 }
             }
             let manifest_path = Self::manifest_path_in_dir(project_dir, &self.name);

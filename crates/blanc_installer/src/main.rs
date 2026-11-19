@@ -87,6 +87,7 @@ struct InstallerApp {
     launch_after: bool,
     uninstall_dir: Option<PathBuf>,
     uninstall_title: String,
+    uninstall_files: Vec<String>,
     remove_save_data: bool,
     install_progress: f32,
     install_status: String,
@@ -106,7 +107,7 @@ impl InstallerApp {
                 .unwrap_or_else(|| "Game".to_string())
         });
 
-        let (title, version, publisher, game_exe_name, accent_hex, logo_png) = match meta {
+        let (title, version, publisher, game_exe_name, accent_hex, logo_png, uninstall_files) = match meta {
             Some(m) => (
                 m.game_title,
                 m.version,
@@ -114,6 +115,7 @@ impl InstallerApp {
                 m.game_exe_name,
                 m.accent_hex,
                 m.logo_png,
+                m.installed_files,
             ),
             None => (
                 fallback_title,
@@ -122,6 +124,7 @@ impl InstallerApp {
                 String::new(),
                 "#6366F1".to_string(),
                 None,
+                Vec::new(),
             ),
         };
 
@@ -146,6 +149,7 @@ impl InstallerApp {
             launch_after: false,
             uninstall_dir: Some(dir),
             uninstall_title: title,
+            uninstall_files,
             remove_save_data: false,
             install_progress: 0.0,
             install_status: String::new(),
@@ -195,6 +199,7 @@ impl InstallerApp {
                         launch_after: true,
                         uninstall_dir: None,
                         uninstall_title: String::new(),
+                        uninstall_files: Vec::new(),
                         remove_save_data: false,
                         install_progress: 0.0,
                         install_status: String::new(),
@@ -242,6 +247,7 @@ impl InstallerApp {
                         launch_after: false,
                         uninstall_dir: None,
                         uninstall_title: String::new(),
+                        uninstall_files: Vec::new(),
                         remove_save_data: false,
                         install_progress: 0.0,
                         install_status: String::new(),
@@ -484,7 +490,7 @@ impl InstallerApp {
                 }
                 _ => {
                     if let Some(dir) = &self.uninstall_dir {
-                        remove_installed_files_except_self(dir, &self.exe_path);
+                        remove_installed_files_except_self(dir, &self.exe_path, &self.uninstall_files);
                     }
                     if self.remove_save_data {
                         if let Some(save_root) = app_data_game_dir(&self.uninstall_title) {
@@ -1141,12 +1147,21 @@ fn ps_escape(s: &str) -> String {
 }
 
 fn folder_size_kb(dir: &Path) -> u64 {
-    fn walk(p: &Path, acc: &mut u64) {
+    fn walk(p: &Path, acc: &mut u64, depth: usize) {
+        if depth > 16 {
+            return;
+        }
         if let Ok(entries) = std::fs::read_dir(p) {
             for e in entries.flatten() {
+                let Ok(ft) = e.file_type() else {
+                    continue;
+                };
+                if ft.is_symlink() {
+                    continue;
+                }
                 let path = e.path();
-                if path.is_dir() {
-                    walk(&path, acc);
+                if ft.is_dir() {
+                    walk(&path, acc, depth + 1);
                 } else if let Ok(meta) = e.metadata() {
                     *acc = acc.saturating_add(meta.len());
                 }
@@ -1154,7 +1169,7 @@ fn folder_size_kb(dir: &Path) -> u64 {
         }
     }
     let mut bytes = 0u64;
-    walk(dir, &mut bytes);
+    walk(dir, &mut bytes, 0);
     (bytes / 1024).max(1)
 }
 
@@ -1235,9 +1250,15 @@ fn register_windows_install(
 fn stop_running_game_process(game_exe_name: &str) {
     #[cfg(windows)]
     {
-        if !game_exe_name.trim().is_empty() {
+        let trimmed = game_exe_name.trim();
+        let is_safe_exe_name = !trimmed.is_empty()
+            && trimmed.to_ascii_lowercase().ends_with(".exe")
+            && !trimmed.contains('/')
+            && !trimmed.contains('\\')
+            && !trimmed.starts_with('-');
+        if is_safe_exe_name {
             let _ = Command::new("taskkill")
-                .args(["/IM", game_exe_name.trim(), "/F"])
+                .args(["/IM", trimmed, "/F"])
                 .creation_flags(CREATE_NO_WINDOW)
                 .status();
         }
@@ -1270,8 +1291,37 @@ fn remove_windows_shortcuts_and_registry(title: &str) {
     }
 }
 
-fn remove_installed_files_except_self(install_dir: &Path, self_exe: &Path) {
+fn remove_installed_files_except_self(install_dir: &Path, self_exe: &Path, installed_files: &[String]) {
     let self_name = self_exe.file_name().map(|n| n.to_os_string());
+    if !installed_files.is_empty() {
+        for rel in installed_files {
+            if let Some(target) = blanc_core::project::safe_join_relative(install_dir, rel) {
+                if self_name.as_ref().is_some_and(|n| target.file_name() == Some(n.as_os_str())) {
+                    continue;
+                }
+                if target.is_file() {
+                    let _ = std::fs::remove_file(&target);
+                }
+                let mut parent_opt = target.parent();
+                while let Some(parent) = parent_opt {
+                    if parent == install_dir || !parent.starts_with(install_dir) {
+                        break;
+                    }
+                    if std::fs::remove_dir(parent).is_err() {
+                        break;
+                    }
+                    parent_opt = parent.parent();
+                }
+            }
+        }
+        let _ = std::fs::remove_file(install_dir.join(UNINSTALL_META_FILENAME));
+        return;
+    }
+
+    // Fallback for legacy installs without `installed_files` list, only if `.blanc_uninstall.json` exists
+    if !install_dir.join(UNINSTALL_META_FILENAME).exists() {
+        return;
+    }
     if let Ok(entries) = std::fs::read_dir(install_dir) {
         for entry in entries.flatten() {
             let p = entry.path();
@@ -1294,8 +1344,8 @@ fn schedule_self_folder_cleanup(install_dir: &Path, self_exe: &Path) {
         let dir_esc = ps_escape(&install_dir.to_string_lossy());
         let exe_esc = ps_escape(&self_exe.to_string_lossy());
         let script = format!(
-            "$p = Get-Process -Id {} -ErrorAction SilentlyContinue; if ($p) {{ $p.WaitForExit(15000) | Out-Null }}; for ($i = 0; $i -lt 20; $i++) {{ Remove-Item -LiteralPath '{}' -Force -ErrorAction SilentlyContinue; Remove-Item -LiteralPath '{}' -Recurse -Force -ErrorAction SilentlyContinue; if (-not (Test-Path -LiteralPath '{}')) {{ break }}; Start-Sleep -Milliseconds 250 }}",
-            pid, exe_esc, dir_esc, dir_esc
+            "$p = Get-Process -Id {} -ErrorAction SilentlyContinue; if ($p) {{ $p.WaitForExit(15000) | Out-Null }}; for ($i = 0; $i -lt 20; $i++) {{ Remove-Item -LiteralPath '{}' -Force -ErrorAction SilentlyContinue; if ((Get-ChildItem -LiteralPath '{}' -Force -ErrorAction SilentlyContinue | Measure-Object).Count -eq 0) {{ Remove-Item -LiteralPath '{}' -Force -ErrorAction SilentlyContinue }}; if (-not (Test-Path -LiteralPath '{}')) {{ break }}; Start-Sleep -Milliseconds 250 }}",
+            pid, exe_esc, dir_esc, dir_esc, exe_esc
         );
         let _ = Command::new("powershell")
             .args([

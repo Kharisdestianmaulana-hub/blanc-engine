@@ -84,7 +84,7 @@ impl LocaleManifest {
         std::fs::create_dir_all(&dir).map_err(|e| format!("Failed to create locales dir: {}", e))?;
         let json = serde_json::to_string_pretty(self)
             .map_err(|e| format!("Failed to serialize locale manifest: {}", e))?;
-        std::fs::write(Self::manifest_path(project_dir), json)
+        crate::project::atomic_write(&Self::manifest_path(project_dir), json)
             .map_err(|e| format!("Failed to write locale manifest: {}", e))
     }
 
@@ -179,7 +179,7 @@ impl LocaleStrings {
         std::fs::create_dir_all(&dir).map_err(|e| format!("Failed to create locales dir: {}", e))?;
         let json = serde_json::to_string_pretty(self)
             .map_err(|e| format!("Failed to serialize locale strings: {}", e))?;
-        std::fs::write(Self::file_path(project_dir, code), json)
+        crate::project::atomic_write(&Self::file_path(project_dir, code), json)
             .map_err(|e| format!("Failed to write locale strings: {}", e))
     }
 }
@@ -274,18 +274,33 @@ pub fn scene_choice_option_key(scene_name: &str, block_index: usize, opt_index: 
 }
 
 fn collect_bscene_files(dir: &Path, out: &mut Vec<PathBuf>) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
-    };
-    let mut paths: Vec<PathBuf> = entries.flatten().map(|e| e.path()).collect();
-    paths.sort();
-    for path in paths {
-        if path.is_dir() {
-            collect_bscene_files(&path, out);
-        } else if path.extension().and_then(|e| e.to_str()) == Some("bscene") {
-            out.push(path);
+    fn walk(dir: &Path, out: &mut Vec<PathBuf>, depth: usize) {
+        if depth > 16 {
+            return;
+        }
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        let mut items: Vec<(PathBuf, bool)> = entries
+            .flatten()
+            .filter_map(|e| {
+                let ft = e.file_type().ok()?;
+                if ft.is_symlink() {
+                    return None;
+                }
+                Some((e.path(), ft.is_dir()))
+            })
+            .collect();
+        items.sort_by(|a, b| a.0.cmp(&b.0));
+        for (path, is_dir) in items {
+            if is_dir {
+                walk(&path, out, depth + 1);
+            } else if path.extension().and_then(|e| e.to_str()) == Some("bscene") {
+                out.push(path);
+            }
         }
     }
+    walk(dir, out, 0);
 }
 
 /// Extract all UI labels, unique character speaker names, and scene dialogue/choice items from a project.

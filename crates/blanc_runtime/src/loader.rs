@@ -204,9 +204,10 @@ impl LoadedProject {
     pub fn asset_exists(&self, rel_path: &str) -> bool {
         if let Some(pack) = &self.pack {
             pack.read_file(rel_path).is_some()
-        } else {
-            let full = self.project_dir.join(rel_path);
+        } else if let Some(full) = blanc_core::project::safe_join_relative(&self.project_dir, rel_path) {
             full.exists() && full.is_file()
+        } else {
+            false
         }
     }
 
@@ -264,10 +265,14 @@ impl LoadedProject {
             return None;
         }
 
+        let safe_project_path = |rel: &str| -> Option<PathBuf> {
+            blanc_core::project::safe_join_relative(&self.project_dir, rel)
+        };
+
         // 1. Exact ID lookup in AssetRegistry
         if let Some(asset) = self.project.assets.get(asset_ref) {
             if self.asset_exists(&asset.relative_path) {
-                return Some(self.project_dir.join(&asset.relative_path));
+                return safe_project_path(&asset.relative_path);
             }
         }
 
@@ -288,13 +293,13 @@ impl LoadedProject {
                 .unwrap_or("")
                 .to_lowercase();
             if (name_lower == needle || stem_lower == needle) && self.asset_exists(&asset.relative_path) {
-                return Some(self.project_dir.join(&asset.relative_path));
+                return safe_project_path(&asset.relative_path);
             }
         }
 
         // 3. Direct relative path check in project_dir / pack
         if self.asset_exists(asset_ref) {
-            return Some(self.project_dir.join(asset_ref));
+            return safe_project_path(asset_ref);
         }
 
         None
@@ -325,7 +330,7 @@ impl LoadedProject {
             {
                 let name_lower = asset.name.to_lowercase();
                 if name_lower.starts_with(&char_lower) && self.asset_exists(&asset.relative_path) {
-                    return Some(self.project_dir.join(&asset.relative_path));
+                    return blanc_core::project::safe_join_relative(&self.project_dir, &asset.relative_path);
                 }
             }
         }
@@ -345,14 +350,9 @@ impl LoadedProject {
         }
         let rel = self.project.custom_logo_path.as_ref()?;
         if self.asset_exists(rel) {
-            return Some(self.project_dir.join(rel));
+            return blanc_core::project::safe_join_relative(&self.project_dir, rel);
         }
-        let abs = PathBuf::from(rel);
-        if abs.is_absolute() && abs.exists() {
-            Some(abs)
-        } else {
-            None
-        }
+        None
     }
 }
 
@@ -398,17 +398,29 @@ fn find_manifest_file(dir: &Path) -> Option<PathBuf> {
 }
 
 fn collect_bscene_files(dir: &Path, out: &mut Vec<PathBuf>) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_dir() {
-            collect_bscene_files(&path, out);
-        } else if path.is_file()
-            && path.extension().and_then(|s| s.to_str()) == Some(Scene::EXTENSION)
-        {
-            out.push(path);
+    fn walk(dir: &Path, out: &mut Vec<PathBuf>, depth: usize) {
+        if depth > 16 {
+            return;
+        }
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let Ok(ft) = entry.file_type() else {
+                continue;
+            };
+            if ft.is_symlink() {
+                continue;
+            }
+            let path = entry.path();
+            if ft.is_dir() {
+                walk(&path, out, depth + 1);
+            } else if ft.is_file()
+                && path.extension().and_then(|s| s.to_str()) == Some(Scene::EXTENSION)
+            {
+                out.push(path);
+            }
         }
     }
+    walk(dir, out, 0);
 }

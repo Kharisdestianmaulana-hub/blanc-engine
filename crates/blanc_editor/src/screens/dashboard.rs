@@ -2832,7 +2832,7 @@ impl DashboardState {
 
             let can_delete = self.scenes_list.len() > 1;
             let item_row: Element<'a, DashboardMessage> = if can_delete {
-                let btn_delete = button(icon_close())
+                let btn_delete = button(icon_trash())
                     .padding([SPACE_1, SPACE_2])
                     .style(danger_icon_button_style)
                     .on_press(DashboardMessage::DeleteScene(idx));
@@ -5102,7 +5102,7 @@ impl DashboardState {
 
         let item_engine = row![
             text("Engine: ").size(LABEL_SM).color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b)),
-            text("Blanc Engine 0.1.0")
+            text("Blanc Engine 0.1.1")
                 .size(BODY_SM)
                 .color(iced::Color::from_rgb8(ACCENT_PRIMARY.r, ACCENT_PRIMARY.g, ACCENT_PRIMARY.b)),
         ]
@@ -6228,7 +6228,7 @@ impl DashboardState {
 
             if !is_default {
                 card_row = card_row.push(
-                    button(text("×").size(LABEL_MD))
+                    button(icon_trash())
                         .padding([SPACE_2, SPACE_2])
                         .style(danger_icon_button_style)
                         .on_press(DashboardMessage::LocaleRemoveLanguage(lang.code.clone())),

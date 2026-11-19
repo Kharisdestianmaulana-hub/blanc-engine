@@ -385,8 +385,45 @@ impl EditorApp {
                     }
                 }
             }
-            WelcomeMessage::RemoveRecentProject(path) => {
-                state.config.remove_recent(&path);
+            WelcomeMessage::RequestDeleteProject(proj) => {
+                state.pending_delete_project = Some(proj);
+            }
+            WelcomeMessage::CancelDeleteProject => {
+                state.pending_delete_project = None;
+            }
+            WelcomeMessage::ConfirmRemoveFromHub => {
+                if let Some(proj) = state.pending_delete_project.take() {
+                    state.config.remove_recent(&proj.path);
+                    state.settings_status_message = Some(format!("Removed '{}' from Hub list.", proj.name));
+                }
+            }
+            WelcomeMessage::ConfirmDeleteProjectFolder => {
+                if let Some(proj) = state.pending_delete_project.take() {
+                    state.config.remove_recent(&proj.path);
+                    match blanc_core::project::validate_project_folder_for_deletion(&proj.path) {
+                        Ok(folder) => {
+                            if folder.exists() {
+                                match std::fs::remove_dir_all(&folder) {
+                                    Ok(_) => {
+                                        state.error_message = None;
+                                    }
+                                    Err(err) => {
+                                        state.error_message = Some(format!(
+                                            "Removed from Hub, but failed to delete folder: {}",
+                                            err
+                                        ));
+                                    }
+                                }
+                            }
+                        }
+                        Err(reason) => {
+                            state.error_message = Some(format!(
+                                "Removed from Hub, but skipped folder deletion: {}",
+                                reason
+                            ));
+                        }
+                    }
+                }
             }
             WelcomeMessage::RevealInExplorer(path) => {
                 #[cfg(target_os = "windows")]
@@ -621,7 +658,12 @@ impl EditorApp {
                     async move {
                         let res = tokio::task::spawn_blocking(move || -> Result<(), String> {
                             const FORM_ACTION_URL: &str = "https://docs.google.com/forms/d/e/1FAIpQLSfX7ScWucadKsJ9BJ3rEfILWfAh6baSW9ISZy8YiWNd6KlzqQ/formResponse";
-                            let resp = ureq::post(FORM_ACTION_URL)
+                            let agent = ureq::AgentBuilder::new()
+                                .timeout_connect(std::time::Duration::from_secs(10))
+                                .timeout(std::time::Duration::from_secs(15))
+                                .build();
+                            let resp = agent
+                                .post(FORM_ACTION_URL)
                                 .send_form(&[
                                     ("entry.897757391", title.as_str()),
                                     ("entry.203269822", author.as_str()),
@@ -3044,8 +3086,8 @@ impl EditorApp {
             .join(env!("CARGO_PKG_VERSION"));
         std::fs::create_dir_all(&dir).ok()?;
         let target = dir.join(filename);
-        let needs_write = match std::fs::metadata(&target) {
-            Ok(meta) => meta.len() != bytes.len() as u64,
+        let needs_write = match std::fs::read(&target) {
+            Ok(existing) => existing.as_slice() != bytes,
             Err(_) => true,
         };
         if needs_write {
@@ -3389,27 +3431,50 @@ impl EditorApp {
         dir: &std::path::Path,
         out: &mut Vec<(String, Vec<u8>)>,
     ) -> Result<(), String> {
-        let entries = std::fs::read_dir(dir)
-            .map_err(|e| format!("Failed to read {}: {}", dir.display(), e))?;
-        for entry in entries.flatten() {
-            let path = entry.path();
-            let name = entry.file_name().to_string_lossy().to_string();
-            if path.is_dir() {
-                if matches!(name.as_str(), "Saves" | "Exports" | ".git" | "target") {
+        fn walk(
+            root: &std::path::Path,
+            dir: &std::path::Path,
+            out: &mut Vec<(String, Vec<u8>)>,
+            depth: usize,
+        ) -> Result<(), String> {
+            if depth > 16 {
+                return Ok(());
+            }
+            let entries = std::fs::read_dir(dir)
+                .map_err(|e| format!("Failed to read {}: {}", dir.display(), e))?;
+            for entry in entries.flatten() {
+                let Ok(ft) = entry.file_type() else {
+                    continue;
+                };
+                if ft.is_symlink() {
                     continue;
                 }
-                Self::collect_project_files(root, &path, out)?;
-            } else if path.is_file() {
-                let rel = path
-                    .strip_prefix(root)
-                    .map_err(|e| format!("Path prefix error: {}", e))?;
-                let rel_norm = rel.to_string_lossy().replace('\\', "/");
-                let bytes = std::fs::read(&path)
-                    .map_err(|e| format!("Failed to read {}: {}", path.display(), e))?;
-                out.push((rel_norm, bytes));
+                let path = entry.path();
+                let name = entry.file_name().to_string_lossy().to_string();
+                if ft.is_dir() {
+                    if matches!(
+                        name.as_str(),
+                        "Saves" | "Exports" | "Builds" | "Backups" | ".git" | "target"
+                    ) {
+                        continue;
+                    }
+                    walk(root, &path, out, depth + 1)?;
+                } else if ft.is_file() {
+                    if name.starts_with('.') && name.contains(".blanc_tmp_") {
+                        continue;
+                    }
+                    let rel = path
+                        .strip_prefix(root)
+                        .map_err(|e| format!("Path prefix error: {}", e))?;
+                    let rel_norm = rel.to_string_lossy().replace('\\', "/");
+                    let bytes = std::fs::read(&path)
+                        .map_err(|e| format!("Failed to read {}: {}", path.display(), e))?;
+                    out.push((rel_norm, bytes));
+                }
             }
+            Ok(())
         }
-        Ok(())
+        walk(root, dir, out, 0)
     }
 
     pub fn view(&self) -> Element<'_, AppMessage> {

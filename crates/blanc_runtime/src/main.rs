@@ -234,10 +234,23 @@ impl RuntimeApp {
                 self.engine.text_speed = s;
             }
             RuntimeMessage::ToggleAutoPlay => {
-                self.engine.toggle_auto_play();
+                if self.engine.screen == RuntimeScreen::Playing
+                    && self.engine.stage.active_choice.is_none()
+                {
+                    self.engine.toggle_auto_play();
+                } else {
+                    return self.handle_horizontal_nav(-1);
+                }
             }
             RuntimeMessage::ToggleSkip => {
-                self.engine.toggle_skip();
+                if self.engine.screen == RuntimeScreen::Playing
+                    && self.engine.stage.active_choice.is_none()
+                {
+                    self.engine.toggle_skip();
+                } else {
+                    self.engine.move_focus(1);
+                    self.engine.save_load_action_index = 0;
+                }
             }
             RuntimeMessage::SetSkipMode(mode) => {
                 self.engine.set_skip_rule(mode);
@@ -263,6 +276,12 @@ impl RuntimeApp {
                 {
                     self.engine.settings_category = self.engine.settings_category.cycle(delta);
                     self.engine.focus_index = 0;
+                } else if delta > 0 {
+                    self.engine.move_focus(1);
+                    self.engine.save_load_action_index = 0;
+                } else if delta < 0 {
+                    self.engine.move_focus(-1);
+                    self.engine.save_load_action_index = 0;
                 }
             }
             RuntimeMessage::ToggleFullscreen => {
@@ -305,9 +324,16 @@ impl RuntimeApp {
             Subscription::none()
         };
 
-        let key_sub = keyboard::on_key_press(|key, _modifiers| match key {
+        let key_sub = keyboard::on_key_press(|key, modifiers| match key {
             Key::Named(Named::ArrowUp) => Some(RuntimeMessage::FocusPrev),
-            Key::Named(Named::ArrowDown) | Key::Named(Named::Tab) => Some(RuntimeMessage::FocusNext),
+            Key::Named(Named::ArrowDown) => Some(RuntimeMessage::FocusNext),
+            Key::Named(Named::Tab) => {
+                if modifiers.shift() {
+                    Some(RuntimeMessage::CycleSettingsCategory(-1))
+                } else {
+                    Some(RuntimeMessage::CycleSettingsCategory(1))
+                }
+            }
             Key::Named(Named::ArrowLeft) => Some(RuntimeMessage::NavLeft),
             Key::Named(Named::ArrowRight) => Some(RuntimeMessage::NavRight),
             Key::Character(ref c) if c.eq_ignore_ascii_case("q") => Some(RuntimeMessage::CycleSettingsCategory(-1)),
@@ -394,7 +420,8 @@ impl RuntimeApp {
                 if let Some(item) = items.get(idx % items.len().max(1)).copied() {
                     match item {
                         SettingsFocusItem::Back => return self.update(RuntimeMessage::CloseSettings),
-                        SettingsFocusItem::TextSpeed
+                        SettingsFocusItem::CategoryTab
+                        | SettingsFocusItem::TextSpeed
                         | SettingsFocusItem::SkipMode
                         | SettingsFocusItem::DisplayMode
                         | SettingsFocusItem::Language => return self.handle_horizontal_nav(1),
@@ -448,6 +475,17 @@ impl RuntimeApp {
                     return Task::none();
                 };
                 match item {
+                    SettingsFocusItem::CategoryTab => {
+                        let cats = crate::engine::SettingsCategory::ALL;
+                        let cur = cats
+                            .iter()
+                            .position(|&c| c == self.engine.settings_category)
+                            .unwrap_or(0) as isize;
+                        let next = cats[(cur + delta).rem_euclid(cats.len() as isize) as usize];
+                        self.engine.settings_category = next;
+                        self.engine.focus_index = 0;
+                        return Task::none();
+                    }
                     SettingsFocusItem::MasterVol => {
                         let next = (self.engine.master_volume + delta as f32 * 0.05).clamp(0.0, 1.0);
                         return self.update(RuntimeMessage::SetMasterVolume(next));
@@ -503,7 +541,11 @@ impl RuntimeApp {
                             return self.update(RuntimeMessage::SetLanguage(langs[next_idx].code.clone()));
                         }
                     }
-                    SettingsFocusItem::Back => {}
+                    SettingsFocusItem::Back => {
+                        if items.first() == Some(&SettingsFocusItem::CategoryTab) {
+                            self.engine.focus_index = 0;
+                        }
+                    }
                 }
             }
             RuntimeScreen::SaveLoad { .. } => {

@@ -1,5 +1,5 @@
 use std::path::PathBuf;
-use iced::widget::{button, column, container, row, scrollable, text, text_input, Space};
+use iced::widget::{button, column, container, row, scrollable, stack, text, text_input, Space};
 use iced::{Alignment, Element, Length};
 use serde::{Deserialize, Serialize};
 
@@ -11,8 +11,9 @@ use blanc_core::theme::typography::*;
 use crate::icons::*;
 use crate::theme::{
     badge_container_style, callout_container_style, card_container_style, code_container_style,
-    icon_button_style, input_field_style, primary_button_style, project_card_style,
-    secondary_button_style, sidebar_button_style, sidebar_container_style, subtle_button_style,
+    danger_icon_button_style, icon_button_style, input_field_style, modal_backdrop_style,
+    primary_button_style, project_card_style, secondary_button_style, sidebar_button_style,
+    sidebar_container_style, subtle_button_style,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -50,6 +51,7 @@ pub enum DocsTopic {
     ActionBlocks,
     StoryFlow,
     UiDesigner,
+    Localization,
     AssetGuidelines,
     RuntimeControls,
 }
@@ -206,7 +208,10 @@ pub enum WelcomeMessage {
     CreateProjectConfirmed,
     OpenProjectClicked,
     OpenRecentProject(PathBuf),
-    RemoveRecentProject(PathBuf),
+    RequestDeleteProject(RecentProject),
+    ConfirmRemoveFromHub,
+    ConfirmDeleteProjectFolder,
+    CancelDeleteProject,
     RevealInExplorer(PathBuf),
     ChangeDefaultFolder,
     OpenDefaultFolder,
@@ -259,6 +264,7 @@ pub struct WelcomeState {
     // Hub config & recents
     pub config: HubConfig,
     pub settings_status_message: Option<String>,
+    pub pending_delete_project: Option<RecentProject>,
 
     // First-time onboarding
     pub show_onboarding: bool,
@@ -299,6 +305,7 @@ impl Default for WelcomeState {
             error_message: None,
             config,
             settings_status_message: None,
+            pending_delete_project: None,
             show_onboarding,
             onboarding_step: 0,
             submit_title: String::new(),
@@ -337,10 +344,71 @@ impl WelcomeState {
             .height(Length::Fill)
             .padding(SPACE_6);
 
-        row![sidebar, content_container]
+        let base_view: Element<'_, WelcomeMessage> = row![sidebar, content_container]
             .width(Length::Fill)
             .height(Length::Fill)
-            .into()
+            .into();
+
+        if let Some(proj) = &self.pending_delete_project {
+            let folder_display = proj
+                .path
+                .parent()
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_else(|| proj.path.to_string_lossy().to_string());
+            let confirm_modal = container(
+                container(
+                    column![
+                        text("Delete Project?")
+                            .size(HEADING_SM)
+                            .color(iced::Color::from_rgb8(TEXT_PRIMARY.r, TEXT_PRIMARY.g, TEXT_PRIMARY.b)),
+                        text(format!("Project: {}", proj.name))
+                            .size(BODY_SM)
+                            .color(iced::Color::from_rgb8(TEXT_PRIMARY.r, TEXT_PRIMARY.g, TEXT_PRIMARY.b)),
+                        text(format!("Folder: {}", folder_display))
+                            .size(LABEL_SM)
+                            .color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b)),
+                        text("Choose whether to only remove it from the Hub list or permanently delete the entire project folder from disk.")
+                            .size(BODY_SM)
+                            .color(iced::Color::from_rgb8(TEXT_SECONDARY.r, TEXT_SECONDARY.g, TEXT_SECONDARY.b)),
+                        Space::with_height(SPACE_2),
+                        row![
+                            Space::with_width(Length::Fill),
+                            button(text("Cancel").size(LABEL_SM))
+                                .padding([SPACE_2, SPACE_3])
+                                .style(secondary_button_style)
+                                .on_press(WelcomeMessage::CancelDeleteProject),
+                            button(text("Remove from Hub Only").size(LABEL_SM))
+                                .padding([SPACE_2, SPACE_3])
+                                .style(secondary_button_style)
+                                .on_press(WelcomeMessage::ConfirmRemoveFromHub),
+                            button(
+                                row![icon_trash(), text("Delete Project & Folder").size(LABEL_SM)]
+                                    .spacing(SPACE_1)
+                                    .align_y(Alignment::Center),
+                            )
+                            .padding([SPACE_2, SPACE_3])
+                            .style(danger_icon_button_style)
+                            .on_press(WelcomeMessage::ConfirmDeleteProjectFolder),
+                        ]
+                        .spacing(SPACE_2)
+                        .align_y(Alignment::Center),
+                    ]
+                    .spacing(SPACE_2),
+                )
+                .padding(SPACE_5)
+                .width(Length::Fixed(540.0))
+                .style(card_container_style),
+            )
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .center_x(Length::Fill)
+            .center_y(Length::Fill)
+            .style(modal_backdrop_style);
+
+            stack![base_view, confirm_modal].into()
+        } else {
+            base_view
+        }
     }
 
     // ==========================================
@@ -377,7 +445,7 @@ impl WelcomeState {
         .align_y(Alignment::Center);
 
         let badge = container(
-            text("v0.1.0")
+            text("v0.1.1")
                 .size(LABEL_SM)
                 .color(iced::Color::from_rgb8(ACCENT_PRIMARY.r, ACCENT_PRIMARY.g, ACCENT_PRIMARY.b)),
         )
@@ -715,10 +783,10 @@ impl WelcomeState {
         .style(subtle_button_style)
         .on_press(WelcomeMessage::RevealInExplorer(parent_dir));
 
-        let btn_remove = button(icon_close())
+        let btn_remove = button(icon_trash())
             .padding([SPACE_2, SPACE_3])
-            .style(subtle_button_style)
-            .on_press(WelcomeMessage::RemoveRecentProject(project.path.clone()));
+            .style(danger_icon_button_style)
+            .on_press(WelcomeMessage::RequestDeleteProject(project.clone()));
 
         let actions = row![btn_open, btn_reveal, btn_remove]
             .spacing(SPACE_2)
@@ -951,6 +1019,16 @@ impl WelcomeState {
         .style(sidebar_button_style(self.active_docs_topic == DocsTopic::UiDesigner))
         .on_press(WelcomeMessage::SelectDocsTopic(DocsTopic::UiDesigner));
 
+        let topic_localization = button(
+            row![icon_message(), text("Localization").size(LABEL_MD)]
+                .spacing(SPACE_2)
+                .align_y(Alignment::Center),
+        )
+        .padding([SPACE_2, SPACE_3])
+        .width(Length::Fill)
+        .style(sidebar_button_style(self.active_docs_topic == DocsTopic::Localization))
+        .on_press(WelcomeMessage::SelectDocsTopic(DocsTopic::Localization));
+
         let topic_assets = button(
             row![icon_palette(), text("Asset Guidelines").size(LABEL_MD)]
                 .spacing(SPACE_2)
@@ -978,6 +1056,7 @@ impl WelcomeState {
             topic_blocks,
             topic_flow,
             topic_ui,
+            topic_localization,
             topic_assets,
             topic_controls,
         ]
@@ -990,6 +1069,7 @@ impl WelcomeState {
             DocsTopic::ActionBlocks => self.doc_action_blocks(),
             DocsTopic::StoryFlow => self.doc_story_flow(),
             DocsTopic::UiDesigner => self.doc_ui_designer(),
+            DocsTopic::Localization => self.doc_localization(),
             DocsTopic::AssetGuidelines => self.doc_asset_guidelines(),
             DocsTopic::RuntimeControls => self.doc_runtime_controls(),
         };
@@ -1248,6 +1328,37 @@ Alice: "In that case, let's head to the cafeteria together!"
             ),
         ]
         .spacing(SPACE_4)
+        .into()
+    }
+
+    fn doc_localization(&self) -> Element<'_, WelcomeMessage> {
+        column![
+            text("Localization & Multi-Language Support")
+                .size(HEADING_MD)
+                .color(iced::Color::from_rgb8(TEXT_PRIMARY.r, TEXT_PRIMARY.g, TEXT_PRIMARY.b)),
+            text("Translate your visual novel into any language without duplicating scenes. Blanc Engine separates engine UI labels from your story script language.")
+                .size(BODY_MD)
+                .color(iced::Color::from_rgb8(TEXT_SECONDARY.r, TEXT_SECONDARY.g, TEXT_SECONDARY.b)),
+            Space::with_height(SPACE_3),
+
+            self.create_step_card(
+                "1. Source Language vs Story Script Language",
+                "Set the language your story is originally written in ('Story Script Language' in Story Setup or Localization, e.g. en, id, ja, ko). Scene dialogue and speaker names are automatically hidden when editing that native language so you never translate them twice."
+            ),
+            self.create_step_card(
+                "2. Section-by-Section Translation",
+                "Use the SECTIONS column (UI Labels, Speakers, individual Scenes, or All Strings) with per-section progress counters and cross-group search to translate cleanly."
+            ),
+            self.create_step_card(
+                "3. CSV Export / Import",
+                "Export all strings to an RFC-4180 CSV spreadsheet for external translators or AI tools, then import the completed CSV back into your project."
+            ),
+            self.create_step_card(
+                "4. In-Game Language Switching",
+                "Players can switch languages anytime in Runtime Settings -> System -> Language, and the Windows installer automatically inherits the chosen setup language on first launch."
+            ),
+        ]
+        .spacing(SPACE_3)
         .into()
     }
 
@@ -1622,7 +1733,7 @@ Alice: "In that case, let's head to the cafeteria together!"
                 Space::with_height(SPACE_2),
                 row![
                     text("Engine Version:").size(BODY_SM).color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b)).width(Length::Fixed(180.0)),
-                    text("v0.1.0").size(BODY_SM).color(iced::Color::from_rgb8(TEXT_PRIMARY.r, TEXT_PRIMARY.g, TEXT_PRIMARY.b)),
+                    text("v0.1.1").size(BODY_SM).color(iced::Color::from_rgb8(TEXT_PRIMARY.r, TEXT_PRIMARY.g, TEXT_PRIMARY.b)),
                 ].spacing(SPACE_2),
                 row![
                     text("Engine License:").size(BODY_SM).color(iced::Color::from_rgb8(TEXT_MUTED.r, TEXT_MUTED.g, TEXT_MUTED.b)).width(Length::Fixed(180.0)),
@@ -1700,7 +1811,7 @@ Alice: "In that case, let's head to the cafeteria together!"
                     .size(HEADING_SM)
                     .color(iced::Color::from_rgb8(TEXT_PRIMARY.r, TEXT_PRIMARY.g, TEXT_PRIMARY.b)),
                 container(
-                    text("v0.1.0")
+                    text("v0.1.1")
                         .size(LABEL_SM)
                         .color(iced::Color::from_rgb8(ACCENT_PRIMARY.r, ACCENT_PRIMARY.g, ACCENT_PRIMARY.b)),
                 )

@@ -99,3 +99,21 @@ fn test_advanced_script_parsing() {
         _ => panic!("Expected choice branch"),
     }
 }
+
+#[test]
+fn test_safe_join_and_folder_deletion_guard() {
+    use blanc_core::project::{safe_join_relative, validate_project_folder_for_deletion};
+    use std::path::Path;
+
+    let base = Path::new("/tmp/my_project");
+    assert!(safe_join_relative(base, "Assets/Backgrounds/room.png").is_some());
+    assert!(safe_join_relative(base, "Assets\\BGM\\song.ogg").is_some());
+    assert!(safe_join_relative(base, "../secret.txt").is_none());
+    assert!(safe_join_relative(base, "Assets/../../secret.txt").is_none());
+    assert!(safe_join_relative(base, "/etc/passwd").is_none());
+    assert!(safe_join_relative(base, "C:\\Windows\\System32\\cmd.exe").is_none());
+
+    // System folders like Documents or Desktop must be rejected
+    assert!(validate_project_folder_for_deletion(Path::new("C:\\Users\\Alice\\Documents\\Game.blanc")).is_err());
+    assert!(validate_project_folder_for_deletion(Path::new("C:\\Users\\Alice\\Desktop\\Game.blanc")).is_err());
+}
